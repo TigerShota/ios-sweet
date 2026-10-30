@@ -38,7 +38,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu cpio
           git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
-          sudo install -m755 /tmp/mkbootimg/mkbootimg.py /usr/local/bin/mkbootimg
+          ls /tmp/mkbootimg
+          printf '#!/bin/sh\nexec python3 /tmp/mkbootimg/mkbootimg.py "$@"\n' | sudo tee /usr/local/bin/mkbootimg >/dev/null
+          sudo chmod +x /usr/local/bin/mkbootimg
 
       - name: iPhone X device tree (/product for MobileGestalt)
         run: |
