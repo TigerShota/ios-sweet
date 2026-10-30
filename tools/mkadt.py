@@ -9,9 +9,14 @@ import hashlib, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
-# Kernel-managed RAM: above every Qualcomm XPU carve-out (see NOTES.md)
+# Kernel-managed RAM: gauguin's low bank, cut BEFORE the holes. Linux iomem:
+# usable low RAM is 9b000000-bcbfffff; b0000000-b03fffff is a soft-reserved
+# 16 MiB (the kernel image itself lands there); bcc00000-c0000000 is not RAM
+# and c0000000-c7afffff is the XPU-protected removed_region. Handing the
+# kernel pages from either kills the SoC with a silent reset (observed:
+# random bsd_init death, no panic). 204 MiB is clean end to end.
 PHYS_BASE = 0xb0000000
-MEM_SIZE = 0x4d000000
+MEM_SIZE = 0xcc00000
 # Panic log buffer, carved from the TOP of the dram range and exposed to XNU as
 # /pram + /chosen/embedded-panic-log-size. Without it, pe_init.c's
 # check_for_panic_log() leaves gPanicBase == 0, debug_log_init() bails out twice
