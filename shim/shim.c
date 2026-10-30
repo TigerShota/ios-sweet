@@ -377,6 +377,24 @@ void shim_main(uint64_t dtb)
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
+	/* Qualcomm KPSS apps watchdog (drivers/soc/qcom/watchdog_v2.c,
+	 * qcom,wdt@17c10000): ABL may leave it armed with a 20 s bark time
+	 * (DTS qcom,bark-time 0x4e20). XNU never pets it, so ~20 s into the
+	 * boot it BITEs and the PMIC resets the SoC (observed on gauguin as
+	 * a black screen + reboot with no panic text). Show its state, then
+	 * disable it (pet once) before XNU starts. */
+	stage = "wdog";
+	{
+		uintptr_t wdt = 0x17c10000UL;
+		uint32_t en = rd32(wdt + 0x08);
+		con_hex2("WDT", "en=", en, "sts=", rd32(wdt + 0x0c));
+		con_hex2("WDT", "bark=", rd32(wdt + 0x10), "bite=", rd32(wdt + 0x14));
+		wr32(wdt + 0x04, 1);		/* WDT0_RST: pet */
+		wr32(wdt + 0x08, 0);		/* WDT0_EN: disable */
+		__asm__ volatile("dsb sy" ::: "memory");
+		con_hex2("WDT", "en now=", rd32(wdt + 0x08), 0, 0);
+		delay_ms(5000);			/* keep the values on screen */
+	}
 	con_str("SHIM", "sweet milestone 4: xnu loader");
 	con_skip();
 	const char *why = loader_boot(dtb);
