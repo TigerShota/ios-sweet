@@ -14,7 +14,8 @@ on:
         description: "boot-args (first bring-up: cpus=1, console visible)"
         default: "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 ufsrw=1 rootrw=1 ignition_level=1 wdt_test=no_user_checkin wdt=-1"
       highmem:
-        description: "1 = upper DDR bank 4G (default), 0 = low bank 0xb0000000/1.2G (diagnostics)"
+        description: "1 = upper DDR bank (unstable on gauguin), 0 = low bank 0xb0000000/1.2G (default)"
+        default: "0"
 
 jobs:
   build:
@@ -62,7 +63,7 @@ jobs:
       - name: Build ADT + payload + shim
         run: |
           mkdir -p shim/out
-          HIGHMEM=${HIGHMEM:-1}
+          HIGHMEM=${HIGHMEM:-0}
           if [ "$HIGHMEM" = "1" ]; then
             python3 tools/mkadt.py gauguin/gauguin.adt --highmem
           else

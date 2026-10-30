@@ -22,6 +22,11 @@ PANIC_LOG_SIZE = 0x100000
 # node is <0x80000000 0x3cc00000>, <0xc0000000 0x40000000>, <0x1_00000000
 # 0x10000000>... iomem shows the high bank RAM as c7b00000-1ffffffff with the
 # top carve-outs starting at 0x1_f8300000; use 0xf8000000 for margin.
+# OBSERVED on gauguin (2026-10-31): the kernel dies at a random bsd_init
+# stage with a PMIC reset when zones live in the upper bank (0x1_00000000+),
+# while the low bank below works deep into VM init. lito's XPU carve-outs
+# differ from sweet's SM7150; until they are mapped, --highmem is off by
+# default and 1.2 GB below 4G is what the phone boots with.
 HIGH_PHYS_BASE = 0x100000000
 HIGH_MEM_SIZE = 0xf8000000
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
