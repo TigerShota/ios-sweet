@@ -96,10 +96,11 @@ const char *loader_boot(uintptr_t dtb)
 	con_hex("VIRT", p->virt_base);
 	con_hex("ENTRY", p->entry_va);
 
-	/* Only the kernel's own footprint [phys_base, top) is untouchable; the
-	 * ramdisk may live further up inside the same window (mkpayload places
-	 * segments from phys_base, kernel_end is far below mem_size). */
+	/* Only the kernel's own footprint [phys_base, kern_top) is untouchable;
+	 * the ramdisk may live further up inside the same window. kernel_end is
+	 * a VA: convert with pa_of_va_base before comparing. */
 	uint64_t kern_top = (p->kernel_end + p->adt_size + 2 * PAGE_16K + 0xffff) & ~0xffffULL;
+	kern_top += pa_of_va_base;
 	if (rd_end > p->phys_base && rd_start < kern_top)
 		return "ramdisk overlaps kernel image";
 
