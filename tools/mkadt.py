@@ -9,14 +9,16 @@ import hashlib, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
-# Kernel-managed RAM: gauguin's low bank, cut BEFORE the holes. Linux iomem:
-# usable low RAM is 9b000000-bcbfffff; b0000000-b03fffff is a soft-reserved
-# 16 MiB (the kernel image itself lands there); bcc00000-c0000000 is not RAM
-# and c0000000-c7afffff is the XPU-protected removed_region. Handing the
-# kernel pages from either kills the SoC with a silent reset (observed:
-# random bsd_init death, no panic). 204 MiB is clean end to end.
-PHYS_BASE = 0xb0000000
-MEM_SIZE = 0xcc00000
+# Kernel-managed RAM: gauguin's SECOND clean window. Linux iomem: RAM is
+# 9b000000-bcbfffff and c7b00000-1ffffffff; between them bcc00000-c7afffff
+# is the XPU-protected removed_region, and f2400000-ffbfffff is reserved.
+# Handing the kernel the first window (b0000000+0x4d00000) or the high bank
+# killed the SoC with silent PMIC resets at random bsd_init stages; 204 MiB
+# of the first window froze in arm_vm_init at the console VA handoff. The
+# recovery system itself runs from c7b00000+, so every page there is proven
+# good; 672 MiB up to f1b00000 stays clear of the reserved block above.
+PHYS_BASE = 0xc7b00000
+MEM_SIZE = 0x2a000000
 # Panic log buffer, carved from the TOP of the dram range and exposed to XNU as
 # /pram + /chosen/embedded-panic-log-size. Without it, pe_init.c's
 # check_for_panic_log() leaves gPanicBase == 0, debug_log_init() bails out twice
