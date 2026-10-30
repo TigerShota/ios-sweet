@@ -57,6 +57,7 @@ jobs:
 
       - name: Build ADT + payload + shim
         run: |
+          mkdir -p shim/out
           python3 tools/mkadt.py gauguin/gauguin.adt --highmem
           python3 tools/mkpayload.py "xnu/out/${{ inputs.kernel }}" gauguin/gauguin.adt shim/out/payload.bin --cmdline "${{ inputs.cmdline }}"
           (cd shim && SWEET_DTB=../gauguin/dtb ./build.sh out/payload.bin)
