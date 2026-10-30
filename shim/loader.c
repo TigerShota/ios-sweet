@@ -96,9 +96,12 @@ const char *loader_boot(uintptr_t dtb)
 	con_hex("VIRT", p->virt_base);
 	con_hex("ENTRY", p->entry_va);
 
-	/* The payload must not overlap where the kernel goes. */
-	if (rd_end > p->phys_base && rd_start < p->phys_base + p->mem_size)
-		return "ramdisk overlaps kernel memory";
+	/* Only the kernel's own footprint [phys_base, top) is untouchable; the
+	 * ramdisk may live further up inside the same window (mkpayload places
+	 * segments from phys_base, kernel_end is far below mem_size). */
+	uint64_t kern_top = (p->kernel_end + p->adt_size + 2 * PAGE_16K + 0xffff) & ~0xffffULL;
+	if (rd_end > p->phys_base && rd_start < kern_top)
+		return "ramdisk overlaps kernel image";
 
 	for (uint32_t i = 0; i < p->nsegs; i++) {
 		const struct payload_seg *s = &p->segs[i];
