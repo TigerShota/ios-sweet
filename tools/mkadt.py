@@ -9,16 +9,19 @@ import hashlib, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
-# Kernel-managed RAM: gauguin bank 1, the proven-executable clean window.
-# Linux iomem: RAM is 9b000000-bcbfffff and c7b00000-1ffffffff; bcc00000+ is
-# the XPU-protected removed_region and beyond. Observed on the phone:
-#   b0000000 + 4d00000 (spans the hole)  -> random silent PMIC resets
-#   100000000+ (upper bank)              -> random silent PMIC resets
-#   c7b00000 + 2a00000 (Linux data RAM)  -> XNU does not execute AT ALL
-#   b0000000 + cc00000 (this window)     -> executes deep into arm_vm_init
-# Start above the ABL payload (ends aa3fe070) and stop before the hole.
-PHYS_BASE = 0xb0000000
-MEM_SIZE = 0xcc00000
+# Kernel-managed RAM: gauguin bank 1, largest clean CONTIGUOUS executable
+# window. 6 GB device: RAM 80000000-ffbfffff + 1_00000000-1_ffffffff.
+# Observed on the phone:
+#   b0000000 + 4d00000 (spans removed_region hole) -> random silent resets
+#   100000000+ (upper bank)                        -> random silent resets
+#   c7b00000 + 2a00000 (Linux data area)           -> XNU does not execute
+#   b0000000 + cc00000 (204M clean)                -> dies in pmap_bootstrap
+#                                                      (too small; 1.2G passes it)
+# Window a2400000-bcc00000 (424M): above cont_splash+dfps (ends a2400000),
+# below removed_region (bcc00000). The ABL payload at a9426000-aa3fe070 sits
+# inside but is dead memory once the shim copied the kernel out.
+PHYS_BASE = 0xa2400000
+MEM_SIZE = 0x1a800000
 # Panic log buffer, carved from the TOP of the dram range and exposed to XNU as
 # /pram + /chosen/embedded-panic-log-size. Without it, pe_init.c's
 # check_for_panic_log() leaves gPanicBase == 0, debug_log_init() bails out twice
