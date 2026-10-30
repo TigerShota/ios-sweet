@@ -13,6 +13,8 @@ on:
       cmdline:
         description: "boot-args (first bring-up: cpus=1, console visible)"
         default: "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 ufsrw=1 rootrw=1 ignition_level=1 wdt_test=no_user_checkin wdt=-1"
+      highmem:
+        description: "1 = upper DDR bank 4G (default), 0 = low bank 0xb0000000/1.2G (diagnostics)"
 
 jobs:
   build:
@@ -60,10 +62,17 @@ jobs:
       - name: Build ADT + payload + shim
         run: |
           mkdir -p shim/out
-          python3 tools/mkadt.py gauguin/gauguin.adt --highmem
+          HIGHMEM=${HIGHMEM:-1}
+          if [ "$HIGHMEM" = "1" ]; then
+            python3 tools/mkadt.py gauguin/gauguin.adt --highmem
+          else
+            python3 tools/mkadt.py gauguin/gauguin.adt
+          fi
           python3 tools/mkpayload.py "xnu/out/${{ inputs.kernel }}" gauguin/gauguin.adt shim/out/payload.bin --cmdline "${{ inputs.cmdline }}"
           (cd shim && SWEET_DTB=../gauguin/dtb ./build.sh out/payload.bin)
           ls -la shim/out
+        env:
+          HIGHMEM: ${{ inputs.highmem }}
 
       - uses: actions/upload-artifact@v4
         with:
