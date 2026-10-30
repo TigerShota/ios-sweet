@@ -45,6 +45,7 @@ jobs:
 
       - name: Fetch IPSW DMGs (OS + SystemOS + AppOS)
         run: |
+          sudo chown "$(id -un):" /mnt
           URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
           echo "IPSW: $URL"
           python3 tools/remotezip.py "$URL" 087-86698-044.dmg /mnt
