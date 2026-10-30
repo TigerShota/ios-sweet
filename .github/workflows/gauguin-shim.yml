@@ -1,0 +1,72 @@
+name: gauguin-shim
+
+on:
+  workflow_dispatch:
+    inputs:
+      xnu_run_id:
+        description: "xnu workflow run ID (empty = latest successful)"
+        required: false
+        default: ""
+      kernel:
+        description: "kernel artifact file name"
+        default: "kernel.development.sweet"
+      cmdline:
+        description: "boot-args (first bring-up: cpus=1, console visible)"
+        default: "debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 ufsrw=1 rootrw=1 ignition_level=1 wdt_test=no_user_checkin wdt=-1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch xnu kernel artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.xnu_run_id }}
+        run: |
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list --workflow xnu.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          fi
+          echo "Using xnu run $RUN_ID"
+          gh run download "$RUN_ID" -n xnu-kernel -D xnu/out
+          ls -la xnu/out
+
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu cpio
+          git clone --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg /tmp/mkbootimg
+          sudo install -m755 /tmp/mkbootimg/mkbootimg.py /usr/local/bin/mkbootimg
+
+      - name: iPhone X device tree (/product for MobileGestalt)
+        run: |
+          set -e
+          URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
+          echo "IPSW: $URL"
+          mkdir -p research/ipsw-x/dt
+          python3 tools/remotezip.py "$URL" DeviceTree.d22ap.im4p research/ipsw-x/dt
+          ASSET=$(curl -fsSL https://api.github.com/repos/blacktop/ipsw/releases/latest | jq -r '.assets[] | select(.name | test("^ipsw_.*_linux_x86_64\\.tar\\.gz$")) | .browser_download_url')
+          echo "ipsw: $ASSET"
+          curl -fsSL -o /tmp/ipsw.tgz "$ASSET"
+          tar xf /tmp/ipsw.tgz -C /tmp
+          BIN=$(find /tmp -type f -name ipsw | head -1)
+          sudo install -m755 "$BIN" /usr/local/bin/ipsw
+          ipsw img4 im4p extract research/ipsw-x/dt/Firmware/all_flash/DeviceTree.d22ap.im4p -o research/ipsw-x/d22ap.adt
+
+      - name: Build ADT + payload + shim
+        run: |
+          python3 tools/mkadt.py gauguin/gauguin.adt --highmem
+          python3 tools/mkpayload.py "xnu/out/${{ inputs.kernel }}" gauguin/gauguin.adt shim/out/payload.bin --cmdline "${{ inputs.cmdline }}"
+          (cd shim && SWEET_DTB=../gauguin/dtb ./build.sh out/payload.bin)
+          ls -la shim/out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gauguin-shim-boot
+          path: |
+            shim/out/shim-boot.img
+            shim/out/payload.bin
+            gauguin/gauguin.adt
+          if-no-files-found: error

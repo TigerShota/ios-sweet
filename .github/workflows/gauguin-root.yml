@@ -1,0 +1,77 @@
+name: gauguin-root
+
+on:
+  workflow_dispatch:
+    inputs:
+      size:
+        description: "root image size"
+        default: "16G"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check HFS+ kernel support (fails fast if the runner lacks it)
+        run: |
+          sudo modprobe hfsplus 2>/dev/null || true
+          if ! grep -q hfsplus /proc/filesystems; then
+            echo "::error::hfsplus filesystem unavailable on this runner kernel; the root image needs a macOS-runner variant of mkiosroot"
+            exit 1
+          fi
+          grep hfsplus /proc/filesystems
+
+      - name: Deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hfsprogs rsync attr build-essential cmake libfuse3-dev libicu-dev zlib1g-dev libbz2-dev liblzma-dev
+
+      - name: Build apfs-fuse
+        run: |
+          git clone --depth 1 https://github.com/sgan81/apfs-fuse /tmp/apfs-fuse
+          cmake -S /tmp/apfs-fuse -B /tmp/apfs-fuse/build
+          cmake --build /tmp/apfs-fuse/build -j"$(nproc)"
+          sudo cmake --install /tmp/apfs-fuse/build
+          command -v apfs-fuse
+
+      - name: FUSE node
+        run: |
+          sudo modprobe fuse 2>/dev/null || true
+          [ -e /dev/fuse ] || sudo mknod /dev/fuse c 10 229
+          sudo chmod 666 /dev/fuse
+          ls -la /dev/fuse
+
+      - name: Fetch IPSW DMGs (OS + SystemOS + AppOS)
+        run: |
+          URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
+          echo "IPSW: $URL"
+          python3 tools/remotezip.py "$URL" 087-86698-044.dmg /mnt
+          python3 tools/remotezip.py "$URL" 087-86593-047.dmg /mnt
+          python3 tools/remotezip.py "$URL" 087-86715-047.dmg /mnt
+          df -h /mnt
+          ls -la /mnt
+
+      - name: mkiosroot + root tweaks
+        run: |
+          sudo tools/mkiosroot.sh /mnt/087-86698-044.dmg /mnt/087-86593-047.dmg /mnt/087-86715-047.dmg /mnt/ios16-root.img "${{ inputs.size }}"
+          sudo mkdir -p /mnt/iosroot
+          sudo mount -t hfsplus -o loop,force /mnt/ios16-root.img /mnt/iosroot
+          sudo python3 tools/sweet-root-tweaks.py /mnt/iosroot
+          sudo umount /mnt/iosroot
+          sudo fsck.hfsplus -f -y /mnt/ios16-root.img || true
+
+      - name: Compress + split (artifact cap)
+        run: |
+          cd /mnt
+          gzip -1 ios16-root.img
+          split -b 9G -d ios16-root.img.gz root.part-
+          df -h /mnt
+          ls -la /mnt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios16-root
+          path: /mnt/root.part-*
+          if-no-files-found: error

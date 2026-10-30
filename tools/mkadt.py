@@ -18,18 +18,19 @@ MEM_SIZE = 0x4d000000
 # and the kernel hangs right after "kdp_core zlib memory" — reproduced on QEMU
 # and independently on ios-fajita.
 PANIC_LOG_SIZE = 0x100000
-# --highmem (phone only): the whole upper DDR bank. The live FDT memory node is
-# <0x80000000 2G>, <0x1_00000000 0xfcc00000>; every fixed reserved-memory
-# carve-out is in the low bank and the dynamic pools are limited below 4G.
+# --highmem (phone only): the whole upper DDR bank. gauguin's live FDT memory
+# node is <0x80000000 0x3cc00000>, <0xc0000000 0x40000000>, <0x1_00000000
+# 0x10000000>... iomem shows the high bank RAM as c7b00000-1ffffffff with the
+# top carve-outs starting at 0x1_f8300000; use 0xf8000000 for margin.
 HIGH_PHYS_BASE = 0x100000000
-HIGH_MEM_SIZE = 0xfcc00000
+HIGH_MEM_SIZE = 0xf8000000
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
 GICD, GICD_SIZE = 0x17a00000, 0x10000
 GICR, GICR_SIZE = 0x17a60000, 0x100000
-FB, FB_SIZE = 0x9c000000, 0x1700000
-SWEET_ECID = 0x5357454554000001  # 'SWEET' + 1, synthetic
+FB, FB_SIZE = 0xa0000000, 0x2300000  # gauguin cont_splash_region (lito)
+SWEET_ECID = 0x47415547494e0001  # 'GAUGIN' + 1, synthetic
 FB_W, FB_H, FB_STRIDE = 1080, 2400, 1080 * 4
 # Internal UFS host (ufshc@1d84000 "ufs_mem"); QEMU virt has none
 UFS, UFS_SIZE = 0x01d84000, 0x3000
@@ -149,7 +150,7 @@ def build(seed=None, qemu=False, highmem=False):
             ('l3-cache-id', u32(0)),     # shared L3
             ('state', cstr('running' if core == 0 else 'stopped')),
             ('timebase-frequency', u32(timebase)),
-            ('clock-frequency', u32(2304000000 if core >= 6 else 1804800000)),
+            ('clock-frequency', u32(2203000000 if core >= 6 else 1804800000)),
             ('bus-frequency', u32(100000000)),
             ('memory-frequency', u32(1866000000)),
             ('peripheral-frequency', u32(timebase)),
@@ -231,7 +232,7 @@ def build(seed=None, qemu=False, highmem=False):
     # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching.
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + cstr('qcom,sm7150') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + cstr('xiaomi,gauguin') + cstr('qcom,sm7225') + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
