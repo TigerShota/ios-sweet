@@ -1,0 +1,33 @@
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -706,8 +706,9 @@
+  *   reg    = <phys size>       absolute physical address, not arm-io relative
+  *   width, height              pixels
+  *   stride                     bytes per line, 32bpp
+- * Lines wrap back to the top instead of scrolling; the line after the cursor
+- * is kept blank so the newest output is easy to find.
++ * When the screen is full it is cleared and output restarts from the top, so
++ * a photo of a dead boot shows the true last lines; the row below the cursor
++ * is kept blank so the newest output is easy to find.
+  */
+
+ extern unsigned char iso_font[256 * 16];
+@@ -734,8 +735,15 @@
+ static void
+ fbcon_newline(void)
+ {
+ 	fbcon_col = 0;
+-	fbcon_row = (fbcon_row + 1) % fbcon_rows;
++	if (fbcon_row + 1 < fbcon_rows) {
++		fbcon_row++;
++	} else {
++		/* Full: clear and restart from the top instead of wrapping,
++		 * so the lowest non-blank row is always the newest output. */
++		for (uint32_t r = 0; r < fbcon_rows; r++) {
++			fbcon_clear_row(r);
++		}
++		fbcon_row = 0;
++	}
+ 	fbcon_clear_row(fbcon_row);
+ 	fbcon_clear_row((fbcon_row + 1) % fbcon_rows);
+ }
