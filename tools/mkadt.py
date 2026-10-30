@@ -9,19 +9,23 @@ import hashlib, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
-# Kernel-managed RAM: gauguin bank 1, largest clean CONTIGUOUS executable
-# window. 6 GB device: RAM 80000000-ffbfffff + 1_00000000-1_ffffffff.
-# Observed on the phone:
+# Kernel-managed RAM: gauguin bank 1. mkpayload aligns virt_base 32 MiB below
+# the mach header and start.s maps V=P with 32 MiB L2 blocks, so phys_base
+# MUST be 32 MiB (0x2000000) aligned or execution dies the moment the MMU
+# turns on (observed: a2400000 -> dead after stage 0; c7b00000 -> no output
+# at all). b0000000 (aligned) runs to EARLY 12. 6 GB device, RAM windows per
+# Linux iomem: 9b000000-bcbfffff and c7b00000-1ffffffff.
 #   b0000000 + 4d00000 (spans removed_region hole) -> random silent resets
 #   100000000+ (upper bank)                        -> random silent resets
-#   c7b00000 + 2a00000 (Linux data area)           -> XNU does not execute
-#   b0000000 + cc00000 (204M clean)                -> dies in pmap_bootstrap
-#                                                      (too small; 1.2G passes it)
-# Window a2400000-bcc00000 (424M): above cont_splash+dfps (ends a2400000),
-# below removed_region (bcc00000). The ABL payload at a9426000-aa3fe070 sits
-# inside but is dead memory once the shim copied the kernel out.
-PHYS_BASE = 0xa2400000
-MEM_SIZE = 0x1a800000
+#   b0000000 + cc00000 (204M, aligned, clean)      -> dies in pmap_bootstrap
+#   c7b00000 + 2a00000 (misaligned)                -> XNU does not execute
+#   a2400000 + 1a80000 (misaligned)                -> dead after start.s stage 0
+# Chosen: 9c000000 + 20000000 (512M, 32M-aligned, ends bc000000 before the
+# bcc00000 removed_region; kern_top ~9e500000 clears the ABL payload at
+# a9426000; the splash at a0000000-a2300000 is inside the window but pages
+# are handed out from topOfKernelData upward and are not reached early).
+PHYS_BASE = 0x9c000000
+MEM_SIZE = 0x20000000
 # Panic log buffer, carved from the TOP of the dram range and exposed to XNU as
 # /pram + /chosen/embedded-panic-log-size. Without it, pe_init.c's
 # check_for_panic_log() leaves gPanicBase == 0, debug_log_init() bails out twice
