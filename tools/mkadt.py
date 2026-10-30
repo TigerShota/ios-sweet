@@ -9,16 +9,16 @@ import hashlib, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
-# Kernel-managed RAM: gauguin's SECOND clean window. Linux iomem: RAM is
-# 9b000000-bcbfffff and c7b00000-1ffffffff; between them bcc00000-c7afffff
-# is the XPU-protected removed_region, and f2400000-ffbfffff is reserved.
-# Handing the kernel the first window (b0000000+0x4d00000) or the high bank
-# killed the SoC with silent PMIC resets at random bsd_init stages; 204 MiB
-# of the first window froze in arm_vm_init at the console VA handoff. The
-# recovery system itself runs from c7b00000+, so every page there is proven
-# good; 672 MiB up to f1b00000 stays clear of the reserved block above.
-PHYS_BASE = 0xc7b00000
-MEM_SIZE = 0x2a000000
+# Kernel-managed RAM: gauguin bank 1, the proven-executable clean window.
+# Linux iomem: RAM is 9b000000-bcbfffff and c7b00000-1ffffffff; bcc00000+ is
+# the XPU-protected removed_region and beyond. Observed on the phone:
+#   b0000000 + 4d00000 (spans the hole)  -> random silent PMIC resets
+#   100000000+ (upper bank)              -> random silent PMIC resets
+#   c7b00000 + 2a00000 (Linux data RAM)  -> XNU does not execute AT ALL
+#   b0000000 + cc00000 (this window)     -> executes deep into arm_vm_init
+# Start above the ABL payload (ends aa3fe070) and stop before the hole.
+PHYS_BASE = 0xb0000000
+MEM_SIZE = 0xcc00000
 # Panic log buffer, carved from the TOP of the dram range and exposed to XNU as
 # /pram + /chosen/embedded-panic-log-size. Without it, pe_init.c's
 # check_for_panic_log() leaves gPanicBase == 0, debug_log_init() bails out twice
