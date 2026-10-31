@@ -50,7 +50,7 @@ jobs:
         env:
           ADDRS: ${{ inputs.addrs }}
         run: |
-          sudo python3 - <<'PYEOF'
+          sudo ADDRS="$ADDRS" python3 - <<'PYEOF'
           import struct, glob, bisect, mmap
 
           targets = sorted(set(int(x, 16) for x in __import__('os').environ['ADDRS'].replace(',', ' ').split()))
