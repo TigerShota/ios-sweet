@@ -24,40 +24,48 @@ jobs:
           sudo install -m755 "$BIN" /usr/local/bin/ipsw
           ipsw version
 
-      - name: Download SystemOS DMG + extract dyld cache
+      - name: Download SystemOS DMG + extract MAIN dyld cache
         run: |
           URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
           echo "IPSW: $URL"
           python3 tools/remotezip.py "$URL" 087-86593-047.dmg .
-          # SystemOS dmg is APFS: apfs-fuse or 7z may work; try mounting loop (needs root, runners allow)
-          sudo mkdir -p /mnt/sysos
-          sudo apt-get update && sudo apt-get install -y libfuse3-dev libicu-dev zlib1g-dev libbz2-dev liblzma-dev build-essential cmake git attr rsync
+          sudo apt-get update && sudo apt-get install -y libfuse3-dev libicu-dev zlib1g-dev libbz2-dev liblzma-dev build-essential cmake git
           git clone --depth 1 --recurse-submodules https://github.com/sgan81/apfs-fuse /tmp/apfs-fuse
-          cmake -S /tmp/apfs-fuse -B /tmp/apfs-fuse/build
-          cmake --build /tmp/apfs-fuse/build -j"$(nproc)"
-          sudo cmake --install /tmp/apfs-fuse/build
+          cmake -S /tmp/apfs-fuse -B /tmp/apfs-fuse/build > /dev/null
+          cmake --build /tmp/apfs-fuse/build -j"$(nproc)" > /dev/null
+          sudo cmake --install /tmp/apfs-fuse/build > /dev/null
           [ -e /dev/fuse ] || sudo mknod /dev/fuse c 10 229
           sudo chmod 666 /dev/fuse
-          sudo apfs-fuse 087-86593-047.dmg /mnt/sysos 2>&1 | tail -3 || true
-          sudo ls /mnt/sysos
-          CACHE=$(sudo find /mnt/sysos -name 'dyld_shared_cache_arm64' | head -1)
-          echo "CACHE=$CACHE"
+          sudo mkdir -p /mnt/sysos
+          sudo apfs-fuse 087-86593-047.dmg /mnt/sysos 2>&1 | tail -1 || true
+          echo "--- all dyld caches found ---"
+          sudo find /mnt/sysos -path '*com.apple.dyld*' -name 'dyld_shared_cache*' | head -20
+          CACHE=$(sudo find /mnt/sysos -path '*com.apple.dyld*' -name 'dyld_shared_cache_arm64' ! -path '*DriverKit*' ! -path '*Cryptexes/App*' | head -1)
+          echo "MAIN CACHE=$CACHE"
           sudo cp "$CACHE" /tmp/dsc.bin
           sudo cp "${CACHE}.symbols" /tmp/dsc.symbols 2>/dev/null || true
           ls -la /tmp/dsc.*
 
       - name: Symbolize
         run: |
-          # ipsw dyld info: list images and their ranges, then find which image holds the address
-          ipsw dyld info /tmp/dsc.bin --images 2>/dev/null | head -50 || true
-          # try direct symbol lookup
           ADDR="${{ inputs.addr }}"
           echo "=== symbolizing $ADDR ==="
-          ipsw dyld info /tmp/dsc.bin --imports 2>/dev/null | head -5 || true
-          # brute: search all images for the offset
+          # image containing the address
+          ipsw dyld info /tmp/dsc.bin --images 2>/dev/null > /tmp/images.txt || true
+          wc -l /tmp/images.txt
+          head -5 /tmp/images.txt
           python3 - <<PYEOF
-          import subprocess, sys
+          import subprocess, re
           addr = int("${{ inputs.addr }}", 16)
-          out = subprocess.run(['ipsw','dyld','info','/tmp/dsc.bin','--images'], capture_output=True, text=True).stdout
-          print(out[:2000])
+          # find the image whose [base, base+size) contains addr
+          best = None
+          try:
+              out = subprocess.run(['ipsw','dyld','info','/tmp/dsc.bin','--images'],
+                                   capture_output=True, text=True).stdout
+              print(out[:1500])
+          except Exception as e:
+              print('ERR', e)
           PYEOF
+          # ipsw dyld split then use nm-style dump
+          ipsw dyld split /tmp/dsc.bin --output /tmp/split 2>/dev/null || mkdir -p /tmp/split
+          ls /tmp/split 2>/dev/null | head -10 || true
