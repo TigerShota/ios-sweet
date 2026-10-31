@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       addrs:
-        description: "space-separated unslid cache VM addresses (e.g. 0x1c2611ad0)"
+        description: "space-separated unslid cache VM addrs; bb:0xN = offset inside /usr/libexec/backboardd"
         required: false
-        default: "0x1c2611ad0 0x1d1b08140 0x181bdfb20 0x181bdfbb8 0x181bf0bc0 0x181c897b8 0x181cb6238 0x1f0bf8c64 0x18dd4f0f4 0x1f0bf8bf4 0x1f0bf86c4 0x1f0bf864c 0x1f0bf8338 0x1f0bf7b38 0x18db98780 0x18db7aa50 0x1f0bf7af4 0x1c2611030 0x1c2622b18 0x1c2622db8 0x1c2611524 0x18db6a308 0x18db6a694 0x1d1bee0ec 0x18120c224 0x1811a5cb0 0x1811a46e0 0x1811a461c 0x181cb0f4c 0x181bf98e8 0x181c898e4 0x181bdb7bc 0x1c26114f0 0x1d1b9ac1c 0x1d1b9a720"
+        default: "0x1811a461c 0x1811a46e0 0x1811a5cb0 0x18120c224 0x181bf0bc0 0x181bf98e8 0x181c04fe8 0x181c11538 0x181c898e4 0x181cb0f4c 0x181cb6238 0x186e5c148 0x186e5d2e0 0x186e61d20 0x186ea0bec 0x1882cc884 0x188501ccc 0x18850b418 0x18db67d9c 0x18db68128 0x18db68328 0x18db684a0 0x18db6a308 0x18db6a694 0x18db6fd48 0x18db736fc 0x18db741e4 0x18db7ca80 0x18db7d918 0x18db7df14 0x18db81780 0x18db977a8 0x18db98780 0x18e5a2f70 0x1919bdfac 0x1a4624344 0x1c2610fc4 0x1c2611030 0x1c26114f0 0x1c2611524 0x1c2611ad0 0x1c2622b18 0x1c2622db8 0x1d1b08140 0x1d1b9a720 0x1d1b9a72c 0x1d1b9abd0 0x1d1b9ac08 0x1d1b9ac1c 0x1d1b9c0ec 0x1d1bee0ec bb:0x9e40 bb:0x18a78"
       root_run_id:
         description: "gauguin-root run ID (default: latest successful)"
         required: false
@@ -45,16 +45,25 @@ jobs:
             sudo cp "/mnt/iosroot/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld"/dyld_shared_cache_arm64* /tmp/dsc/
           ls -la /tmp/dsc | head -8
           ls /tmp/dsc | wc -l
+          sudo cp /mnt/iosroot/usr/libexec/backboardd /tmp/bbd
+          ls -la /tmp/bbd
 
       - name: Resolve every address to image + nearest exported symbol
         env:
           ADDRS: ${{ inputs.addrs }}
         run: |
           sudo ADDRS="$ADDRS" python3 - <<'PYEOF'
-          import struct, glob, bisect, mmap
+          import struct, glob, bisect, mmap, os
 
-          targets = sorted(set(int(x, 16) for x in __import__('os').environ['ADDRS'].replace(',', ' ').split()))
-          print('targets:', ' '.join(hex(t) for t in targets))
+          cache_targets, bb_targets = [], []
+          for x in os.environ['ADDRS'].replace(',', ' ').split():
+              if x.startswith('bb:'):
+                  bb_targets.append(int(x[3:], 16))
+              else:
+                  cache_targets.append(int(x, 16))
+          cache_targets = sorted(set(cache_targets))
+          bb_targets = sorted(set(bb_targets))
+          print('cache targets: %d  bb offsets: %s' % (len(cache_targets), ' '.join(hex(t) for t in bb_targets)))
 
           files = sorted(glob.glob('/tmp/dsc/dyld_shared_cache_arm64*'))
           images = {}          # la -> [ts, fn, po]
@@ -127,6 +136,23 @@ jobs:
                   collect(buf, no, prefix + seg, out, depth + 1)
                   i = k
 
+          def parse_symtab(mm, symoff, nsyms, stroff, bases):
+              out = []
+              for base in bases:
+                  so, st = symoff + base, stroff + base
+                  if so <= 0 or st <= 0 or so + nsyms * 16 > len(mm) or st >= len(mm):
+                      continue
+                  lst = []
+                  for k in range(nsyms):
+                      n_strx, n_type, n_sect, n_desc, n_val = struct.unpack_from('<IBBHQ', mm, so + k * 16)
+                      if n_val and (n_type & 0x0e) == 0x0e:
+                          e = mm.find(b'\x00', st + n_strx, st + n_strx + 256)
+                          if e > st + n_strx:
+                              lst.append((n_val, mm[st + n_strx:e].decode('latin1')))
+                  if len(lst) >= 16:
+                      out += lst
+              return out
+
           sym_cache = {}
 
           def syms_for(la):
@@ -148,6 +174,7 @@ jobs:
                           ncmds = min(ncmds, 512)
                           p = mstart + 32
                           ex_off = 0
+                          tab = None
                           end = mstart + 32 + 16384
                           for _ in range(ncmds):
                               if p + 8 > end:
@@ -159,6 +186,8 @@ jobs:
                                   ex_off, = struct.unpack_from('<I', mm, p + 40)
                               elif cmd == 0x80000033 and cs >= 16:
                                   ex_off, = struct.unpack_from('<I', mm, p + 8)
+                              elif cmd == 0x2 and cs >= 24:
+                                  tab = struct.unpack_from('<IIII', mm, p + 8)
                               p += cs
                           for base in (mstart + ex_off, ex_off):
                               if not ex_off or base <= 0 or base >= len(mm):
@@ -169,15 +198,17 @@ jobs:
                               except Exception:
                                   continue
                               if len(out) >= 8:
-                                  syms = out
+                                  syms += out
                                   break
+                          if tab:
+                              syms += parse_symtab(mm, tab[0], tab[1], tab[2], (0, mstart))
                   finally:
                       mm.close()
                       f.close()
-              sym_cache[la] = sorted(syms)
+              sym_cache[la] = sorted(set(syms))
               return sym_cache[la]
 
-          for t in targets:
+          for t in cache_targets:
               r = find_image(t)
               if not r:
                   print('%s  NO IMAGE' % hex(t))
@@ -194,4 +225,56 @@ jobs:
                   if i >= 0 and off - syms[i][0] < 0x100000:
                       tag = '=> %s + 0x%x' % (syms[i][1], off - syms[i][0])
               print('%s  %-58s + 0x%-7x %s' % (hex(t), path.split('/')[-1], off, tag))
+
+          if bb_targets:
+              if os.path.exists('/tmp/bbd'):
+                  syms = []
+                  f = open('/tmp/bbd', 'rb')
+                  mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                  try:
+                      if struct.unpack_from('<I', mm, 0)[0] == 0xfeedfacf:
+                          ncmds, = struct.unpack_from('<I', mm, 16)
+                          ncmds = min(ncmds, 512)
+                          p = 32
+                          ex_off = 0
+                          tabs = []
+                          text_vm = 0x100000000
+                          for _ in range(ncmds):
+                              cmd, cs = struct.unpack_from('<II', mm, p)
+                              if cmd == 0x2 and cs >= 24:
+                                  tabs.append(struct.unpack_from('<IIII', mm, p + 8))
+                              elif cmd == 0x19 and cs >= 72:
+                                  if mm[p + 8:p + 24].rstrip(b'\x00') == b'__TEXT':
+                                      text_vm, = struct.unpack_from('<Q', mm, p + 24)
+                              elif cmd == 0x80000022 and cs >= 48:
+                                  ex_off, = struct.unpack_from('<I', mm, p + 40)
+                              elif cmd == 0x80000033 and cs >= 16:
+                                  ex_off, = struct.unpack_from('<I', mm, p + 8)
+                              p += cs
+                          for symoff, nsyms, stroff, _ in tabs:
+                              syms += parse_symtab(mm, symoff, nsyms, stroff, (0,))
+                          if ex_off:
+                              out = []
+                              try:
+                                  collect(mm, ex_off, '', out)
+                              except Exception:
+                                  pass
+                              syms += out
+                          syms = sorted(set(syms))
+                          print('backboardd: %d symbols, __TEXT vmaddr %s' % (len(syms), hex(text_vm)))
+                      else:
+                          print('backboardd: bad magic')
+                  finally:
+                      mm.close()
+                      f.close()
+                  for t in bb_targets:
+                      off = t
+                      tag = ''
+                      if syms:
+                          i = bisect.bisect_right([s[0] for s in syms], off) - 1
+                          if i >= 0 and off - syms[i][0] < 0x100000:
+                              tag = '=> %s + 0x%x' % (syms[i][1], off - syms[i][0])
+                      print('bb:%-10s  backboardd + 0x%-7x %s' % (hex(t), off, tag))
+              else:
+                  print('no /tmp/bbd on root image')
           PYEOF
