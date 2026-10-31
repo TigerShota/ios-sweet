@@ -97,6 +97,14 @@ jobs:
           las = sorted(images)
           print('images:', len(las))
 
+          all_maps = []
+          for fn in files:
+              for a, s, o, mx in maps_by_file.get(fn, []):
+                  all_maps.append((a, s, fn, o))
+          all_maps.sort()
+          all_starts = [m[0] for m in all_maps]
+          print('maps: %d across %d files' % (len(all_maps), len(maps_by_file)))
+
           def find_image(t):
               i = bisect.bisect_right(las, t) - 1
               if i < 0:
@@ -161,10 +169,12 @@ jobs:
               syms = []
               ts, fn, po = images[la]
               mstart = None
-              for a, s, o, mx in maps_by_file.get(fn, []):
-                  if a <= la < a + s:
+              i = bisect.bisect_right(all_starts, la) - 1
+              if i >= 0:
+                  a, s, mf, o = all_maps[i]
+                  if la < a + s:
                       mstart = o + (la - a)
-                      break
+                      fn = mf
               diag = ''
               info = 'no-map'
               if mstart is not None:
