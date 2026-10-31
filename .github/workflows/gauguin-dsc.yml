@@ -61,6 +61,17 @@ jobs:
           df -h /mnt
           ls -la
 
+      # Public release assets work with Chinese mirror prefixes (ghfast.top),
+      # unlike artifact zips which need auth and download at ~46 KB/s here.
+      - name: Upload to release
+        run: |
+          gh release delete dsc-16.7.16 --yes --cleanup-tag || true
+          gh release create dsc-16.7.16 /mnt/dsc/dsc.part-*.gz \
+            --title "dyld shared cache 16.7.16" \
+            --notes "iPhone10,3 iOS 16.7.16 SystemOS dyld shared cache (split tar.gz)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: dyld-shared-cache
