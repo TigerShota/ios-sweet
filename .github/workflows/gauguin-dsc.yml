@@ -1,0 +1,62 @@
+name: gauguin-dsc
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libfuse3-dev libicu-dev zlib1g-dev libbz2-dev liblzma-dev
+
+      - name: Build apfs-fuse
+        run: |
+          git clone --depth 1 --recurse-submodules https://github.com/sgan81/apfs-fuse /tmp/apfs-fuse
+          cmake -S /tmp/apfs-fuse -B /tmp/apfs-fuse/build
+          cmake --build /tmp/apfs-fuse/build -j"$(nproc)"
+          sudo cmake --install /tmp/apfs-fuse/build
+          command -v apfs-fuse
+
+      - name: FUSE node
+        run: |
+          sudo modprobe fuse 2>/dev/null || true
+          [ -e /dev/fuse ] || sudo mknod /dev/fuse c 10 229
+          sudo chmod 666 /dev/fuse
+          ls -la /dev/fuse
+
+      - name: Fetch OS DMG
+        run: |
+          sudo chown "$(id -un):" /mnt
+          URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
+          echo "IPSW: $URL"
+          python3 tools/remotezip.py "$URL" 087-86698-044.dmg /mnt
+          df -h /mnt
+          ls -la /mnt
+
+      - name: Extract dyld shared cache
+        run: |
+          sudo mkdir -p /mnt/os /mnt/dsc/System/Library/Caches/com.apple.dyld
+          sudo apfs-fuse /mnt/087-86698-044.dmg /mnt/os
+          sudo cp /mnt/os/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64* /mnt/dsc/System/Library/Caches/com.apple.dyld/
+          sudo fusermount3 -u /mnt/os || sudo umount -l /mnt/os
+          du -sh /mnt/dsc
+          ls -la /mnt/dsc/System/Library/Caches/com.apple.dyld | head
+
+      - name: Split (artifact cap)
+        run: |
+          cd /mnt/dsc
+          tar cf - System | split --filter='gzip -1 > $FILE.gz' -b 4G -d - dsc.part-
+          df -h /mnt
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dyld-shared-cache
+          path: /mnt/dsc/dsc.part-*.gz
+          if-no-files-found: error
