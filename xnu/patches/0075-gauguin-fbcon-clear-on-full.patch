@@ -1,6 +1,6 @@
 --- a/pexpert/arm/pe_serial.c
 +++ b/pexpert/arm/pe_serial.c
-@@ -706,8 +706,9 @@
+@@ -705,6 +705,7 @@
   *   reg    = <phys size>       absolute physical address, not arm-io relative
   *   width, height              pixels
   *   stride                     bytes per line, 32bpp
@@ -10,9 +10,7 @@
 + * a photo of a dead boot shows the true last lines; the row below the cursor
 + * is kept blank so the newest output is easy to find.
   */
-
- extern unsigned char iso_font[256 * 16];
-@@ -734,8 +735,15 @@
+@@ -733,8 +734,17 @@
  static void
  fbcon_newline(void)
  {
