@@ -3,10 +3,10 @@ name: symbolize
 on:
   workflow_dispatch:
     inputs:
-      addr:
-        description: "cache-relative address to symbolize (hex, e.g. 0x42611ad0)"
-        required: true
-        default: "0x42611ad0"
+      addrs:
+        description: "space-separated unslid cache VM addresses (e.g. 0x1c2611ad0)"
+        required: false
+        default: "0x1c2611ad0 0x1d1b08140 0x181bdfb20 0x181bdfbb8 0x181bf0bc0 0x181c897b8 0x181cb6238 0x1f0bf8c64 0x18dd4f0f4 0x1f0bf8bf4 0x1f0bf86c4 0x1f0bf864c 0x1f0bf8338 0x1f0bf7b38 0x18db98780 0x18db7aa50 0x1f0bf7af4 0x1c2611030 0x1c2622b18 0x1c2622db8 0x1c2611524 0x18db6a308 0x18db6a694 0x1d1bee0ec 0x18120c224 0x1811a5cb0 0x1811a46e0 0x1811a461c 0x181cb0f4c 0x181bf98e8 0x181c898e4 0x181bdb7bc 0x1c26114f0 0x1d1b9ac1c 0x1d1b9a720"
       root_run_id:
         description: "gauguin-root run ID (default: latest successful)"
         required: false
@@ -46,67 +46,152 @@ jobs:
           ls -la /tmp/dsc | head -8
           ls /tmp/dsc | wc -l
 
-      - name: Locate image by scanning every subcache
+      - name: Resolve every address to image + nearest exported symbol
+        env:
+          ADDRS: ${{ inputs.addrs }}
         run: |
           sudo python3 - <<'PYEOF'
-          import struct, glob
+          import struct, glob, bisect, mmap
 
-          cache_off = int("${{ inputs.addr }}", 16)
-          target = 0x180000000 + cache_off   # unslid VM address
-          print('target VM:', hex(target))
+          targets = sorted(set(int(x, 16) for x in __import__('os').environ['ADDRS'].replace(',', ' ').split()))
+          print('targets:', ' '.join(hex(t) for t in targets))
 
           files = sorted(glob.glob('/tmp/dsc/dyld_shared_cache_arm64*'))
-          all_images = []
+          images = {}          # la -> [ts, fn, po]
+          maps_by_file = {}    # fn -> [(a, s, o, mx)]
           for fn in files:
               with open(fn, 'rb') as f:
                   h = f.read(0x140)
                   if len(h) < 0x140:
                       continue
-                  magic, = struct.unpack_from('<I', h, 0)
-                  if magic != 0x646c7964:
+                  if struct.unpack_from('<I', h, 0)[0] != 0x646c7964:
                       continue
                   mo, mc = struct.unpack_from('<II', h, 0x10)
                   ito, = struct.unpack_from('<Q', h, 0x88)
                   itc, = struct.unpack_from('<Q', h, 0x90)
                   maps = []
                   f.seek(mo)
-                  for i in range(mc):
+                  for _ in range(mc):
                       a, s, o, mx, init = struct.unpack('<QQQII', f.read(32))
-                      maps.append((a, s))
-                  n = 0
+                      maps.append((a, s, o, mx))
+                  maps_by_file[fn] = maps
                   if itc and itc < 4000 and ito:
                       f.seek(ito)
-                      for i in range(itc):
+                      for _ in range(itc):
                           e = f.read(32)
                           if len(e) < 32:
                               break
                           la, ts, po = struct.unpack_from('<QII', e, 16)
-                          if la == 0:
-                              continue
-                          all_images.append((la, ts, fn, po))
-                          n += 1
-                  print(fn.split('/')[-1], 'maps:', [(hex(a), hex(s)) for a,s in maps], 'images:', n)
+                          if la and la not in images:
+                              images[la] = [ts, fn, po]
 
-          all_images.sort()
-          print('total images:', len(all_images))
-          hit = None
-          for la, ts, fn, po in all_images:
-              if la <= target < la + max(ts, 0x4000):
-                  hit = (la, ts, fn, po)
-                  break
-          if not hit:
-              below = [t for t in all_images if t[0] <= target]
-              hit = below[-1] if below else None
-          if hit:
-              la, ts, fn, po = hit
+          las = sorted(images)
+          print('images:', len(las))
+
+          def find_image(t):
+              i = bisect.bisect_right(las, t) - 1
+              if i < 0:
+                  return None
+              la = las[i]
+              ts, fn, po = images[la]
+              return la, ts, fn, po
+
+          def uleb(buf, i):
+              r = 0; s = 0
+              while True:
+                  b = buf[i]; i += 1
+                  r |= (b & 0x7f) << s; s += 7
+                  if not (b & 0x80):
+                      return r, i
+
+          def collect(buf, off, prefix, out, depth=0):
+              if depth > 64 or off <= 0 or off >= len(buf):
+                  return
+              ts, i = uleb(buf, off)
+              term_end = i + ts
+              if ts and term_end <= len(buf):
+                  flags, j = uleb(buf, i)
+                  if not (flags & 0x08):
+                      addr, j = uleb(buf, j)
+                      if prefix:
+                          out.append((addr, prefix))
+              if term_end > len(buf):
+                  return
+              nc, i = uleb(buf, term_end)
+              for _ in range(nc):
+                  e = buf.find(b'\x00', i)
+                  if e < 0:
+                      return
+                  seg = buf[i:e].decode('latin1')
+                  no, k = uleb(buf, e + 1)
+                  collect(buf, no, prefix + seg, out, depth + 1)
+                  i = k
+
+          sym_cache = {}
+
+          def syms_for(la):
+              if la in sym_cache:
+                  return sym_cache[la]
+              syms = []
+              ts, fn, po = images[la]
+              mstart = None
+              for a, s, o, mx in maps_by_file.get(fn, []):
+                  if a <= la < a + s:
+                      mstart = o + (la - a)
+                      break
+              if mstart is not None:
+                  f = open(fn, 'rb')
+                  mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                  try:
+                      if mstart + 32 <= len(mm) and struct.unpack_from('<I', mm, mstart)[0] == 0xfeedfacf:
+                          ncmds, = struct.unpack_from('<I', mm, mstart + 16)
+                          ncmds = min(ncmds, 512)
+                          p = mstart + 32
+                          ex_off = 0
+                          end = mstart + 32 + 16384
+                          for _ in range(ncmds):
+                              if p + 8 > end:
+                                  break
+                              cmd, cs = struct.unpack_from('<II', mm, p)
+                              if cs <= 0 or p + cs > end:
+                                  break
+                              if cmd == 0x80000022 and cs >= 48:
+                                  ex_off, = struct.unpack_from('<I', mm, p + 40)
+                              elif cmd == 0x80000033 and cs >= 16:
+                                  ex_off, = struct.unpack_from('<I', mm, p + 8)
+                              p += cs
+                          for base in (mstart + ex_off, ex_off):
+                              if not ex_off or base <= 0 or base >= len(mm):
+                                  continue
+                              out = []
+                              try:
+                                  collect(mm, base, '', out)
+                              except Exception:
+                                  continue
+                              if len(out) >= 8:
+                                  syms = out
+                                  break
+                  finally:
+                      mm.close()
+                      f.close()
+              sym_cache[la] = sorted(syms)
+              return sym_cache[la]
+
+          for t in targets:
+              r = find_image(t)
+              if not r:
+                  print('%s  NO IMAGE' % hex(t))
+                  continue
+              la, ts, fn, po = r
               with open(fn, 'rb') as f:
                   f.seek(po)
-                  path = f.read(512).split(b'\0')[0].decode(errors='replace')
-              print('=== RESULT ===')
-              print('IMAGE:', path)
-              print('loadAddress:', hex(la), 'textSize:', hex(ts))
-              print('offset in image:', hex(target - la))
-              print('file:', fn.split('/')[-1])
-          else:
-              print('no image found')
+                  path = f.read(512).split(b'\x00')[0].decode(errors='replace')
+              off = t - la
+              tag = ''
+              syms = syms_for(la)
+              if syms:
+                  i = bisect.bisect_right([s[0] for s in syms], off) - 1
+                  if i >= 0 and off - syms[i][0] < 0x100000:
+                      tag = '=> %s + 0x%x' % (syms[i][1], off - syms[i][0])
+              print('%s  %-58s + 0x%-7x %s' % (hex(t), path.split('/')[-1], off, tag))
           PYEOF
