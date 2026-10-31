@@ -41,18 +41,14 @@ jobs:
           df -h /mnt
           ls -la /mnt
 
+      # The FUSE mount is user_id=0 without allow_other: the non-root bash
+      # cannot traverse it, so the glob must expand inside the root shell.
       - name: Extract dyld shared cache
         run: |
           sudo mkdir -p /mnt/sysos /mnt/dsc/System/Library/Caches/com.apple.dyld
           sudo apfs-fuse /mnt/087-86593-047.dmg /mnt/sysos
           sleep 2
-          sudo ls -la /mnt/sysos
-          sudo ls -la /mnt/sysos/root
-          sudo ls -la /mnt/sysos/root/System
-          sudo ls -la /mnt/sysos/root/System/Library/Caches || true
-          sudo find /mnt/sysos -maxdepth 6 -type d || true
-          sudo find /mnt/sysos -name 'dyld_shared_cache*' || true
-          sudo cp /mnt/sysos/root/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64* /mnt/dsc/System/Library/Caches/com.apple.dyld/
+          sudo bash -c 'cp /mnt/sysos/root/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64* /mnt/dsc/System/Library/Caches/com.apple.dyld/'
           sudo fusermount3 -u /mnt/sysos || sudo umount -l /mnt/sysos
           du -sh /mnt/dsc
           ls -la /mnt/dsc/System/Library/Caches/com.apple.dyld | head
