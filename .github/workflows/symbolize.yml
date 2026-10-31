@@ -1,0 +1,63 @@
+name: symbolize
+
+on:
+  workflow_dispatch:
+    inputs:
+      addr:
+        description: "cache-relative address to symbolize (hex, e.g. 0x42611ad0)"
+        required: true
+        default: "0x42611ad0"
+
+jobs:
+  sym:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch ipsw tool
+        run: |
+          ASSET=$(curl -fsSL https://api.github.com/repos/blacktop/ipsw/releases/latest | jq -r '.assets[] | select(.name | test("^ipsw_.*_linux_x86_64\\.tar\\.gz$")) | .browser_download_url')
+          curl -fsSL -o /tmp/ipsw.tgz "$ASSET"
+          tar xf /tmp/ipsw.tgz -C /tmp
+          BIN=$(find /tmp -type f -name ipsw | head -1)
+          sudo install -m755 "$BIN" /usr/local/bin/ipsw
+          ipsw version
+
+      - name: Download SystemOS DMG + extract dyld cache
+        run: |
+          URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
+          echo "IPSW: $URL"
+          python3 tools/remotezip.py "$URL" 087-86593-047.dmg .
+          # SystemOS dmg is APFS: apfs-fuse or 7z may work; try mounting loop (needs root, runners allow)
+          sudo mkdir -p /mnt/sysos
+          sudo apt-get update && sudo apt-get install -y libfuse3-dev libicu-dev zlib1g-dev libbz2-dev liblzma-dev build-essential cmake git attr rsync
+          git clone --depth 1 --recurse-submodules https://github.com/sgan81/apfs-fuse /tmp/apfs-fuse
+          cmake -S /tmp/apfs-fuse -B /tmp/apfs-fuse/build
+          cmake --build /tmp/apfs-fuse/build -j"$(nproc)"
+          sudo cmake --install /tmp/apfs-fuse/build
+          [ -e /dev/fuse ] || sudo mknod /dev/fuse c 10 229
+          sudo chmod 666 /dev/fuse
+          sudo apfs-fuse 087-86593-047.dmg /mnt/sysos 2>&1 | tail -3 || true
+          sudo ls /mnt/sysos
+          CACHE=$(sudo find /mnt/sysos -name 'dyld_shared_cache_arm64' | head -1)
+          echo "CACHE=$CACHE"
+          sudo cp "$CACHE" /tmp/dsc.bin
+          sudo cp "${CACHE}.symbols" /tmp/dsc.symbols 2>/dev/null || true
+          ls -la /tmp/dsc.*
+
+      - name: Symbolize
+        run: |
+          # ipsw dyld info: list images and their ranges, then find which image holds the address
+          ipsw dyld info /tmp/dsc.bin --images 2>/dev/null | head -50 || true
+          # try direct symbol lookup
+          ADDR="${{ inputs.addr }}"
+          echo "=== symbolizing $ADDR ==="
+          ipsw dyld info /tmp/dsc.bin --imports 2>/dev/null | head -5 || true
+          # brute: search all images for the offset
+          python3 - <<PYEOF
+          import subprocess, sys
+          addr = int("${{ inputs.addr }}", 16)
+          out = subprocess.run(['ipsw','dyld','info','/tmp/dsc.bin','--images'], capture_output=True, text=True).stdout
+          print(out[:2000])
+          PYEOF
