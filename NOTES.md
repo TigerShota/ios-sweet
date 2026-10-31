@@ -2,6 +2,16 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-31 GAUGUIN PORT (read first) <<<
+Fork TigerShota/ios-sweet: XNU bring-up on Redmi Note 9 Pro 5G (gauguin, SM7225). Local tooling dir D:\hackios (Windows, no local compile; all builds via GitHub Actions: workflows xnu.yml / gauguin-shim.yml / gauguin-root.yml). Full hardware facts, boot-experiment matrix and memory map live in the agent project memory, not here.
+- **ROOT CAUSE of every "stuck at EARLY 8" boot: DXB applies patches with `git apply --check` (byte-strict). The 0012/0075-gauguin rewrites were uploaded via the Contents API with CRLF line endings -> `git apply` rejected them -> DXB printed only a warning and skipped them -> the early console died at stage 8 by design (old code called sweet_early_disable() there). All "EARLY 8" observations were the console dying, not the kernel.**
+- Fix: 0012 converted to LF and re-uploaded (commit 58c8f9a, CI run 41160849327); 0075-gauguin was already LF. 0076-gauguin deleted (VA probe folded into 0012's sweet_early_relocate).
+- Local patch validation MUST use `python D:\hackios\tools\patchcheck.py` (rewritten 2026-10-31): rejects CR bytes, then runs real `git apply --check` in a scratch repo populated from the buildtree (D:\hackios\out\bt\xnu). The old fuzzy simulator gave false passes.
+- Contents-API uploads never normalize line endings; `git push` with core.autocrlf=true does. Any byte-sensitive file (patches) uploaded via the API must be LF.
+- Memory window: PHYS_BASE 0x9c000000 + 512M (32MiB-aligned, avoids the XPU hole at 0xb4d00000); FB 0xa0000000/0x2300000; virt_base 0xfffffe0006000000.
+- 2026-10-31 first REAL boot of the fixed 0012 kernel: stages 9-17 visible, then `pmap_map_bd_with_options: no PTE for vaddr=0xfffffe000c000000` (stage 17 fbcon ml_io_map_wcomb). Root cause: the early-io L3 preallocation window (arm_vm_init.c "2MB + FB + 10MB per 256MB segment", 8MB-rounded) is exactly 32MB on a 512M config = one L2 slot; the 35MB fbcon map + 26MB prior io maps needs two. sweet's 204M config rounded to 24MB and crossed into a second slot by luck. Fix: patch 0082 adds `va_l1_end += 2 * ARM_TT_L2_SIZE` (commit face7d62).
+- Boot: `fastboot boot shim-boot.img` only; never flash. 11 partition backups in D:\hackios\backup.
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **STATE at end of 2026-10-18 (evening):**
