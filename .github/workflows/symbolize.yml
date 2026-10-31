@@ -71,7 +71,7 @@ jobs:
                   maps = []
                   f.seek(mo)
                   for i in range(mc):
-                      a, s, o, mx, init, fl = struct.unpack('<QQQIIi', f.read(32))
+                      a, s, o, mx, init = struct.unpack('<QQQII', f.read(32))
                       maps.append((a, s))
                   n = 0
                   if itc and itc < 4000 and ito:
