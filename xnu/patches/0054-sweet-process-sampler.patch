@@ -196,7 +196,8 @@
 +{
 +	static int chan;
 +	if (!PE_parse_boot_argn("sweetsample", sweet_sample_names, sizeof(sweet_sample_names))) {
-+		strlcpy(sweet_sample_names, "SpringBoard,backboardd", sizeof(sweet_sample_names));
++		strlcpy(sweet_sample_names, "SpringBoard,backboardd,lsd,installd,launchd",
++		    sizeof(sweet_sample_names));
 +	}
 +	if (sweet_sample_names[0] == '-') {
 +		return;
