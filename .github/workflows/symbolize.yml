@@ -166,10 +166,12 @@ jobs:
                       mstart = o + (la - a)
                       break
               diag = ''
+              info = 'no-map'
               if mstart is not None:
                   f = open(fn, 'rb')
                   mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
                   try:
+                      info = 'badmagic@%s' % hex(mstart)
                       if mstart + 32 <= len(mm) and struct.unpack_from('<I', mm, mstart)[0] == 0xfeedfacf:
                           _, _, _, _, ncmds, sizeofcmds, _ = struct.unpack_from('<IIIIIII', mm, mstart)
                           end = mstart + 32 + sizeofcmds
@@ -210,12 +212,14 @@ jobs:
                                       if tab[0] + base + 16 <= len(mm):
                                           raw = struct.unpack_from('<IBBHQ', mm, tab[0] + base)
                                       diag += ' b%d:%s' % (base, raw)
+                          info = 'nc=%d sz=%s ex=%s/%s tab=%s' % (ncmds, sizeofcmds, hex(ex_off), hex(ex_sz), tab)
                   finally:
                       mm.close()
                       f.close()
-              sym_cache[la] = sorted(set(syms))
+              sym_cache[la] = sorted(set((a - la if a >= la else a, n) for a, n in syms))
               if diag:
                   print('DIAG %s: %s' % (hex(la), diag))
+              print('IMG %s %s n=%d' % (hex(la), info, len(sym_cache[la])))
               return sym_cache[la]
 
           for t in cache_targets:
@@ -270,7 +274,7 @@ jobs:
                               except Exception:
                                   pass
                               syms += out
-                          syms = sorted(set(syms))
+                          syms = sorted(set((a - text_vm if a >= text_vm else a, n) for a, n in syms))
                           print('backboardd: %d symbols, __TEXT vmaddr %s' % (len(syms), hex(text_vm)))
                       else:
                           print('backboardd: bad magic')
