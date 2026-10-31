@@ -14,7 +14,9 @@ import os, struct, subprocess, sys, zlib
 # curl rather than urllib: urllib hangs on this host's broken IPv6 route to
 # Apple's CDN, curl falls back to IPv4.
 def curl(*args):
-    return subprocess.run(['curl', '-sfL', '--max-time', '300', *args],
+    return subprocess.run(['curl', '-sfL', '--max-time', '300',
+                           '--connect-timeout', '30', '--retry', '8',
+                           '--retry-all-errors', '--retry-delay', '5', *args],
                           check=True, capture_output=True).stdout
 
 
@@ -64,7 +66,7 @@ def central_dir(url):
     return out
 
 
-CHUNK = 64 << 20
+CHUNK = 8 << 20
 
 
 def extract(url, entry, outdir):
