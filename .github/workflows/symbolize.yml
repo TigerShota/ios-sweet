@@ -7,6 +7,10 @@ on:
         description: "cache-relative address to symbolize (hex, e.g. 0x42611ad0)"
         required: true
         default: "0x42611ad0"
+      root_run_id:
+        description: "gauguin-root run ID (default: latest successful)"
+        required: false
+        default: ""
 
 jobs:
   sym:
@@ -15,48 +19,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download SystemOS DMG + extract all cache subvolumes
+      - name: Download root image artifact + loop-mount HFS+
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT_ID: ${{ inputs.root_run_id }}
         run: |
-          URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
-          echo "IPSW: $URL"
-          python3 tools/remotezip.py "$URL" 087-86593-047.dmg .
-          sudo apt-get update && sudo apt-get install -y libfuse3-dev libicu-dev zlib1g-dev libbz2-dev liblzma-dev build-essential cmake git
-          git clone --depth 1 --recurse-submodules https://github.com/sgan81/apfs-fuse /tmp/apfs-fuse
-          cmake -S /tmp/apfs-fuse -B /tmp/apfs-fuse/build > /dev/null
-          cmake --build /tmp/apfs-fuse/build -j"$(nproc)" > /dev/null
-          sudo cmake --install /tmp/apfs-fuse/build > /dev/null
-          [ -e /dev/fuse ] || sudo mknod /dev/fuse c 10 229
-          sudo chmod 666 /dev/fuse
-          sudo mkdir -p /mnt/sysos /tmp/dsc
-          for try in 1 2 3; do
-            sudo umount /mnt/sysos 2>/dev/null || true
-            sudo apfs-fuse 087-86593-047.dmg /mnt/sysos 2>&1 | tail -1 || true
-            DIR=$(dirname "$(sudo find /mnt/sysos -path '*com.apple.dyld*' -name 'dyld_shared_cache_arm64' ! -path '*DriverKit*' ! -path '*Cryptexes/App*' | head -1)")
-            echo "attempt $try: DIR=$DIR"
-            if [ -n "$DIR" ]; then
-              ok=1
-              for f in "$DIR"/dyld_shared_cache_arm64*; do
-                case "$f" in *.symbols) continue;; esac
-                sudo cp "$f" /tmp/dsc/ || ok=0
-              done
-              [ "$ok" = 1 ] && break
-            fi
-            sleep 5
-          done
-          ls /tmp/dsc | head -8
+          sudo apt-get update && sudo apt-get install -y hfsprogs
+          if [ -z "$ROOT_ID" ]; then
+            ROOT_ID=$(gh run list --workflow gauguin-root.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          fi
+          echo "root run: $ROOT_ID"
+          gh run download "$ROOT_ID" -R "$GITHUB_REPOSITORY" -n ios16-root -D parts
+          cat parts/root.part-* > root.img.gz
+          rm -rf parts
+          gunzip -1 -f root.img.gz || true
+          ls -la root.img*
+          sudo mkdir -p /mnt/iosroot
+          sudo mount -t hfsplus -o loop,force root.img /mnt/iosroot || sudo fsck.hfsplus -f -y root.img && sudo mount -t hfsplus -o loop,force root.img /mnt/iosroot
+          ls /mnt/iosroot
+          sudo mkdir -p /tmp/dsc
+          sudo cp /mnt/iosroot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64* /tmp/dsc/ || \
+            sudo cp "/mnt/iosroot/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld"/dyld_shared_cache_arm64* /tmp/dsc/
+          ls -la /tmp/dsc | head -8
           ls /tmp/dsc | wc -l
 
       - name: Locate image by scanning every subcache
         run: |
           sudo python3 - <<'PYEOF'
-          import struct, glob, bisect
+          import struct, glob
 
           cache_off = int("${{ inputs.addr }}", 16)
           target = 0x180000000 + cache_off   # unslid VM address
           print('target VM:', hex(target))
 
           files = sorted(glob.glob('/tmp/dsc/dyld_shared_cache_arm64*'))
-          all_images = []   # (loadAddress, file, pathOffset)
+          all_images = []
           for fn in files:
               with open(fn, 'rb') as f:
                   h = f.read(0x140)
@@ -66,46 +63,42 @@ jobs:
                   if magic != 0x646c7964:
                       continue
                   mo, mc = struct.unpack_from('<II', h, 0x10)
-                  # dyldInCacheMH@0x78, dyldInCacheEntry@0x80, imagesTextOffset@0x88, imagesTextCount@0x90
-                  mho, ito = struct.unpack_from('<Q', h, 0x88)
+                  ito, = struct.unpack_from('<Q', h, 0x88)
                   itc, = struct.unpack_from('<Q', h, 0x90)
-                  # mapping range
-                  f.seek(mo)
                   maps = []
+                  f.seek(mo)
                   for i in range(mc):
                       a, s, o, mx, init, fl = struct.unpack('<QQQIIi', f.read(32))
                       maps.append((a, s))
-                  # imagesText table: 32-byte entries
-                  if itc and itc < 4000 and ito and ito + itc*32 < 0x40000000:
+                  n = 0
+                  if itc and itc < 4000 and ito:
                       f.seek(ito)
                       for i in range(itc):
                           e = f.read(32)
                           if len(e) < 32:
                               break
-                          uu = e[:16]
                           la, ts, po = struct.unpack_from('<QII', e, 16)
                           if la == 0:
                               continue
                           all_images.append((la, ts, fn, po))
-                  print(fn.split('/')[-1], 'maps:', [(hex(a), hex(s)) for a, s in maps], 'images:', itc if itc < 4000 else '?')
+                          n += 1
+                  print(fn.split('/')[-1], 'maps:', [(hex(a), hex(s)) for a,s in maps], 'images:', n)
 
           all_images.sort()
           print('total images:', len(all_images))
-          # which image holds target
-          best = None
+          hit = None
           for la, ts, fn, po in all_images:
-              if la <= target < la + max(ts, 0x1000):
-                  best = (la, ts, fn, po)
+              if la <= target < la + max(ts, 0x4000):
+                  hit = (la, ts, fn, po)
                   break
-          if not best:
-              # fall back: nearest below
+          if not hit:
               below = [t for t in all_images if t[0] <= target]
-              best = below[-1] if below else None
-          if best:
-              la, ts, fn, po = best
-              f = open(fn, 'rb')
-              f.seek(po)
-              path = f.read(512).split(b'\0')[0].decode(errors='replace')
+              hit = below[-1] if below else None
+          if hit:
+              la, ts, fn, po = hit
+              with open(fn, 'rb') as f:
+                  f.seek(po)
+                  path = f.read(512).split(b'\0')[0].decode(errors='replace')
               print('=== RESULT ===')
               print('IMAGE:', path)
               print('loadAddress:', hex(la), 'textSize:', hex(ts))
