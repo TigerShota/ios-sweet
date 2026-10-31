@@ -32,15 +32,14 @@ jobs:
             sudo umount /mnt/sysos 2>/dev/null || true
             sudo apfs-fuse 087-86593-047.dmg /mnt/sysos 2>&1 | tail -1 || true
             DIR=$(dirname "$(sudo find /mnt/sysos -path '*com.apple.dyld*' -name 'dyld_shared_cache_arm64' ! -path '*DriverKit*' ! -path '*Cryptexes/App*' | head -1)")
-            if [ -n "$DIR" ] && sudo cp "$DIR"/dyld_shared_cache_arm64* /tmp/dsc/ 2>/dev/null; then
-              break
+            echo "attempt $try: DIR=$DIR"
+            if [ -n "$DIR" ]; then
+              sudo cp -v "$DIR/dyld_shared_cache_arm64" /tmp/dsc/ && break
             fi
-            echo "mount attempt $try failed, retrying"
             sleep 5
           done
-          echo "DIR=$DIR"
-          ls -la /tmp/dsc | head -10
-          [ -f /tmp/dsc/dyld_shared_cache_arm64 ] || { echo "FATAL: cache not copied"; exit 1; }
+          ls -la /tmp/dsc
+          [ -f /tmp/dsc/dyld_shared_cache_arm64 ] || { echo "FATAL: header cache not copied"; exit 1; }
 
       - name: Parse header + subcaches, locate image and symbol
         run: |
