@@ -50,6 +50,7 @@ jobs:
           sleep 2
           sudo bash -c 'cp /mnt/sysos/root/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64* /mnt/dsc/System/Library/Caches/com.apple.dyld/'
           sudo fusermount3 -u /mnt/sysos || sudo umount -l /mnt/sysos
+          sudo chown -R "$(id -un):" /mnt/dsc
           du -sh /mnt/dsc
           ls -la /mnt/dsc/System/Library/Caches/com.apple.dyld | head
 
