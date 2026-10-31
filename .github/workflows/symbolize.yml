@@ -15,15 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch ipsw tool
-        run: |
-          ASSET=$(curl -fsSL https://api.github.com/repos/blacktop/ipsw/releases/latest | jq -r '.assets[] | select(.name | test("^ipsw_.*_linux_x86_64\\.tar\\.gz$")) | .browser_download_url')
-          curl -fsSL -o /tmp/ipsw.tgz "$ASSET"
-          tar xf /tmp/ipsw.tgz -C /tmp
-          BIN=$(find /tmp -type f -name ipsw | head -1)
-          sudo install -m755 "$BIN" /usr/local/bin/ipsw
-          ipsw version
-
       - name: Download SystemOS DMG + extract MAIN dyld cache
         run: |
           URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
@@ -38,34 +29,55 @@ jobs:
           sudo chmod 666 /dev/fuse
           sudo mkdir -p /mnt/sysos
           sudo apfs-fuse 087-86593-047.dmg /mnt/sysos 2>&1 | tail -1 || true
-          echo "--- all dyld caches found ---"
-          sudo find /mnt/sysos -path '*com.apple.dyld*' -name 'dyld_shared_cache*' | head -20
           CACHE=$(sudo find /mnt/sysos -path '*com.apple.dyld*' -name 'dyld_shared_cache_arm64' ! -path '*DriverKit*' ! -path '*Cryptexes/App*' | head -1)
           echo "MAIN CACHE=$CACHE"
           sudo cp "$CACHE" /tmp/dsc.bin
           sudo cp "${CACHE}.symbols" /tmp/dsc.symbols 2>/dev/null || true
           ls -la /tmp/dsc.*
 
-      - name: Symbolize
+      - name: Parse cache header + locate image
         run: |
-          ADDR="${{ inputs.addr }}"
-          echo "=== symbolizing $ADDR ==="
-          # image containing the address
-          ipsw dyld info /tmp/dsc.bin --images 2>/dev/null > /tmp/images.txt || true
-          wc -l /tmp/images.txt
-          head -5 /tmp/images.txt
-          python3 - <<PYEOF
-          import subprocess, re
+          python3 - <<'PYEOF'
+          import struct
+
           addr = int("${{ inputs.addr }}", 16)
-          # find the image whose [base, base+size) contains addr
-          best = None
-          try:
-              out = subprocess.run(['ipsw','dyld','info','/tmp/dsc.bin','--images'],
-                                   capture_output=True, text=True).stdout
-              print(out[:1500])
-          except Exception as e:
-              print('ERR', e)
+          f = open('/tmp/dsc.bin', 'rb')
+          hdr = f.read(0x140)
+          magic, = struct.unpack_from('<I', hdr, 0)
+          print('magic:', hex(magic))
+          # dyld_cache_header (arm64, v1): uuid(16) @4, cacheType @20(4), ...
+          # mappingOffset @32? layout differs by version; print fields
+          mappingOffset, mappingCount = struct.unpack_from('<II', hdr, 0x20)
+          print('mappingOffset:', mappingOffset, 'mappingCount:', mappingCount)
+          imagesOffsetOld, imagesCountOld = struct.unpack_from('<II', hdr, 0x28)
+          print('imagesOffset(old):', imagesOffsetOld, 'imagesCount(old):', imagesCountOld)
+          dyldInCacheMH, codesignOffset, codesignSize = struct.unpack_from('<QQQ', hdr, 0x30)
+          slideInfoOffset, slideInfoSize = struct.unpack_from('<QQ', hdr, 0x48)
+          print('slideInfo:', hex(slideInfoOffset), slideInfoSize)
+
+          # mappings
+          f.seek(mappingOffset)
+          for i in range(mappingCount):
+              m = f.read(32)
+              addr_o, size_o, off_o, maxProt, initProt, flags = struct.unpack('<QQQIIi', m)
+              print(f'mapping {i}: addr {hex(addr_o)} size {hex(size_o)} file {hex(off_o)} prot {initProt:#x}')
+              if addr_o <= addr < addr_o + size_o:
+                  file_off = off_o + (addr - addr_o)
+                  print(f'  -> ADDR in this mapping, file offset {hex(file_off)}')
+
+          # images (dyld_cache_image_info: addr(8) modTime(8) inode(8) pathFileOffset(4) pad(4))
+          if imagesCountOld and imagesCountOld < 10000:
+              f.seek(imagesOffsetOld)
+              best = None
+              for i in range(imagesCountOld):
+                  rec = f.read(32)
+                  iaddr, mtime, inode, pathOff, pad = struct.unpack('<QQQII', rec)
+                  if iaddr == 0: continue
+                  if best is None or (iaddr <= addr and (best is None or iaddr > best[0])):
+                      if iaddr <= addr:
+                          best = (iaddr, pathOff)
+              if best:
+                  f.seek(best[1])
+                  path = f.read(400).split(b'\0')[0].decode()
+                  print('IMAGE:', path, 'base:', hex(best[0]), 'offset in image:', hex(addr - best[0]))
           PYEOF
-          # ipsw dyld split then use nm-style dump
-          ipsw dyld split /tmp/dsc.bin --output /tmp/split 2>/dev/null || mkdir -p /tmp/split
-          ls /tmp/split 2>/dev/null | head -10 || true
