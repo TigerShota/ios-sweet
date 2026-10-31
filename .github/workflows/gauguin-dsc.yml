@@ -30,21 +30,23 @@ jobs:
           sudo chmod 666 /dev/fuse
           ls -la /dev/fuse
 
-      - name: Fetch OS DMG
+      # The shared cache ships in the SystemOS DMG (mkiosroot.sh copies
+      # sysos's root/ to private/preboot/Cryptexes/OS), not in the OS DMG.
+      - name: Fetch SystemOS DMG
         run: |
           sudo chown "$(id -un):" /mnt
           URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
           echo "IPSW: $URL"
-          python3 tools/remotezip.py "$URL" 087-86698-044.dmg /mnt
+          python3 tools/remotezip.py "$URL" 087-86593-047.dmg /mnt
           df -h /mnt
           ls -la /mnt
 
       - name: Extract dyld shared cache
         run: |
-          sudo mkdir -p /mnt/os /mnt/dsc/System/Library/Caches/com.apple.dyld
-          sudo apfs-fuse /mnt/087-86698-044.dmg /mnt/os
-          sudo cp /mnt/os/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64* /mnt/dsc/System/Library/Caches/com.apple.dyld/
-          sudo fusermount3 -u /mnt/os || sudo umount -l /mnt/os
+          sudo mkdir -p /mnt/sysos /mnt/dsc/System/Library/Caches/com.apple.dyld
+          sudo apfs-fuse /mnt/087-86593-047.dmg /mnt/sysos
+          sudo cp /mnt/sysos/root/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64* /mnt/dsc/System/Library/Caches/com.apple.dyld/
+          sudo fusermount3 -u /mnt/sysos || sudo umount -l /mnt/sysos
           du -sh /mnt/dsc
           ls -la /mnt/dsc/System/Library/Caches/com.apple.dyld | head
 
