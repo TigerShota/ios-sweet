@@ -1,0 +1,43 @@
+name: root-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "gauguin-root run ID whose ios16-root artifact to publish"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Download artifact and split for Release (2 GiB asset cap)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          mkdir parts
+          gh run download "$RUN_ID" -n ios16-root -D parts
+          ls -la parts
+          cat parts/root.part-* > ios16-root.img.gz
+          rm -rf parts
+          ls -la ios16-root.img.gz
+          split -b 1900M -d ios16-root.img.gz rel-
+          sha256sum rel-* > SHA256SUMS
+          ls -la
+
+      - name: Create release and upload parts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="root-${{ inputs.run_id }}"
+          gh release create "$TAG" rel-* SHA256SUMS \
+            --title "ios16-root (${{ inputs.run_id }})" \
+            --notes "iOS 16.7.16 root image (HFS+), gzip, split into 1900M parts.
+          Rejoin: cat rel-* > ios16-root.img.gz && gunzip ios16-root.img.gz
+          Source: gauguin-root run ${{ inputs.run_id }}." || true
+          gh release upload "$TAG" rel-* SHA256SUMS --clobber || true
