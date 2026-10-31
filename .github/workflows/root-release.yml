@@ -21,7 +21,7 @@ jobs:
           RUN_ID: ${{ inputs.run_id }}
         run: |
           mkdir parts
-          gh run download "$RUN_ID" -n ios16-root -D parts
+          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n ios16-root -D parts
           ls -la parts
           cat parts/root.part-* > ios16-root.img.gz
           rm -rf parts
@@ -36,8 +36,9 @@ jobs:
         run: |
           TAG="root-${{ inputs.run_id }}"
           gh release create "$TAG" rel-* SHA256SUMS \
+            -R "$GITHUB_REPOSITORY" \
             --title "ios16-root (${{ inputs.run_id }})" \
             --notes "iOS 16.7.16 root image (HFS+), gzip, split into 1900M parts.
           Rejoin: cat rel-* > ios16-root.img.gz && gunzip ios16-root.img.gz
           Source: gauguin-root run ${{ inputs.run_id }}." || true
-          gh release upload "$TAG" rel-* SHA256SUMS --clobber || true
+          gh release upload "$TAG" rel-* SHA256SUMS -R "$GITHUB_REPOSITORY" --clobber || true
