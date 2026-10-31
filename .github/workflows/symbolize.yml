@@ -35,7 +35,10 @@ jobs:
           gunzip -1 -f root.img.gz || true
           ls -la root.img*
           sudo mkdir -p /mnt/iosroot
-          sudo mount -t hfsplus -o loop,force root.img /mnt/iosroot || sudo fsck.hfsplus -f -y root.img && sudo mount -t hfsplus -o loop,force root.img /mnt/iosroot
+          if ! sudo mount -t hfsplus -o loop,force root.img /mnt/iosroot; then
+            sudo fsck.hfsplus -f -y root.img || true
+            sudo mount -t hfsplus -o loop,force root.img /mnt/iosroot
+          fi
           ls /mnt/iosroot
           sudo mkdir -p /tmp/dsc
           sudo cp /mnt/iosroot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64* /tmp/dsc/ || \
