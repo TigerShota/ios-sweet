@@ -34,7 +34,6 @@ jobs:
           sudo ls -la "$DIR" | head -60
           sudo mkdir -p /tmp/dsc
           sudo cp "$DIR"/dyld_shared_cache_arm64* /tmp/dsc/
-          sudo cp "${DIR}/dyld_shared_cache_arm64.symbols" /tmp/dsc/ 2>/dev/null || true
           ls -la /tmp/dsc | head -10
 
       - name: Parse header + subcaches, locate image and symbol
