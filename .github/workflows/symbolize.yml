@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download SystemOS DMG + extract MAIN dyld cache
+      - name: Download SystemOS DMG + extract dyld cache (all subcaches)
         run: |
           URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
           echo "IPSW: $URL"
@@ -29,55 +29,73 @@ jobs:
           sudo chmod 666 /dev/fuse
           sudo mkdir -p /mnt/sysos
           sudo apfs-fuse 087-86593-047.dmg /mnt/sysos 2>&1 | tail -1 || true
-          CACHE=$(sudo find /mnt/sysos -path '*com.apple.dyld*' -name 'dyld_shared_cache_arm64' ! -path '*DriverKit*' ! -path '*Cryptexes/App*' | head -1)
-          echo "MAIN CACHE=$CACHE"
-          sudo cp "$CACHE" /tmp/dsc.bin
-          sudo cp "${CACHE}.symbols" /tmp/dsc.symbols 2>/dev/null || true
-          ls -la /tmp/dsc.*
+          DIR=$(dirname "$(sudo find /mnt/sysos -path '*com.apple.dyld*' -name 'dyld_shared_cache_arm64' ! -path '*DriverKit*' ! -path '*Cryptexes/App*' | head -1)")
+          echo "DIR=$DIR"
+          sudo ls -la "$DIR" | head -60
+          sudo mkdir -p /tmp/dsc
+          sudo cp "$DIR"/dyld_shared_cache_arm64* /tmp/dsc/
+          sudo cp "${DIR}/dyld_shared_cache_arm64.symbols" /tmp/dsc/ 2>/dev/null || true
+          ls -la /tmp/dsc | head -10
 
-      - name: Parse cache header + locate image
+      - name: Parse header + subcaches, locate image and symbol
         run: |
-          python3 - <<'PYEOF'
-          import struct
+          sudo python3 - <<'PYEOF'
+          import struct, glob, bisect
 
           addr = int("${{ inputs.addr }}", 16)
-          f = open('/tmp/dsc.bin', 'rb')
-          hdr = f.read(0x140)
+          base = '/tmp/dsc/dyld_shared_cache_arm64'
+          f = open(base, 'rb')
+          hdr = f.read(0x1c0)
           magic, = struct.unpack_from('<I', hdr, 0)
           print('magic:', hex(magic))
-          # dyld_cache_header (arm64, v1): uuid(16) @4, cacheType @20(4), ...
-          # mappingOffset @32? layout differs by version; print fields
-          mappingOffset, mappingCount = struct.unpack_from('<II', hdr, 0x20)
+          # dyld_cache_header: uuid(16)@4, cacheType(4)@20, mappingOffset(4)@32? No:
+          # actual: magic(4) uuid(16) cacheType(4) mappingOffset(4) mappingCount(4) imagesOffset(4) imagesCount(4)...
+          mappingOffset, mappingCount = struct.unpack_from('<II', hdr, 0x14)
+          imagesOffset, imagesCount = struct.unpack_from('<II', hdr, 0x1c)
           print('mappingOffset:', mappingOffset, 'mappingCount:', mappingCount)
-          imagesOffsetOld, imagesCountOld = struct.unpack_from('<II', hdr, 0x28)
-          print('imagesOffset(old):', imagesOffsetOld, 'imagesCount(old):', imagesCountOld)
-          dyldInCacheMH, codesignOffset, codesignSize = struct.unpack_from('<QQQ', hdr, 0x30)
-          slideInfoOffset, slideInfoSize = struct.unpack_from('<QQ', hdr, 0x48)
-          print('slideInfo:', hex(slideInfoOffset), slideInfoSize)
+          print('imagesOffset:', imagesOffset, 'imagesCount:', imagesCount)
+          subcachesOffset, subcachesCount = struct.unpack_from('<II', hdr, 0x50) if len(hdr) > 0x58 else (0, 0)
+          print('subcaches:', subcachesOffset, subcachesCount)
 
           # mappings
           f.seek(mappingOffset)
+          mappings = []
           for i in range(mappingCount):
               m = f.read(32)
-              addr_o, size_o, off_o, maxProt, initProt, flags = struct.unpack('<QQQIIi', m)
-              print(f'mapping {i}: addr {hex(addr_o)} size {hex(size_o)} file {hex(off_o)} prot {initProt:#x}')
-              if addr_o <= addr < addr_o + size_o:
-                  file_off = off_o + (addr - addr_o)
-                  print(f'  -> ADDR in this mapping, file offset {hex(file_off)}')
+              a, s, o, mx, init, fl = struct.unpack('<QQQIIi', m)
+              mappings.append((a, s, o, init))
+              mark = '  <== ADDR HERE' if a <= addr < a + s else ''
+              print(f'mapping {i}: addr {hex(a)} size {hex(s)} file {hex(o)} prot {init:#x}{mark}')
 
-          # images (dyld_cache_image_info: addr(8) modTime(8) inode(8) pathFileOffset(4) pad(4))
-          if imagesCountOld and imagesCountOld < 10000:
-              f.seek(imagesOffsetOld)
-              best = None
-              for i in range(imagesCountOld):
-                  rec = f.read(32)
-                  iaddr, mtime, inode, pathOff, pad = struct.unpack('<QQQII', rec)
-                  if iaddr == 0: continue
-                  if best is None or (iaddr <= addr and (best is None or iaddr > best[0])):
-                      if iaddr <= addr:
-                          best = (iaddr, pathOff)
-              if best:
-                  f.seek(best[1])
-                  path = f.read(400).split(b'\0')[0].decode()
-                  print('IMAGE:', path, 'base:', hex(best[0]), 'offset in image:', hex(addr - best[0]))
+          # subcaches (dyld_subcache_entry2: uuid(16) modulus(4)? v1: uuid(16)+fileOffset(4))
+          if subcachesCount:
+              f.seek(subcachesOffset)
+              for i in range(subcachesCount):
+                  e = f.read(24)
+                  u, fo = struct.unpack_from('<16sI', e, 0)
+                  print(f'subcache {i}: fileOffset {hex(fo)}')
+
+          # images
+          f.seek(imagesOffset)
+          imgs = []
+          for i in range(imagesCount):
+              rec = f.read(32)
+              iaddr, mtime, inode, pathOff, pad = struct.unpack('<QQQII', rec)
+              if iaddr:
+                  imgs.append((iaddr, pathOff))
+          imgs.sort()
+          print('images:', len(imgs))
+          idx = bisect.bisect_right([a for a,_ in imgs], addr) - 1
+          if idx >= 0:
+              iaddr, pathOff = imgs[idx]
+              # path file offsets are relative to the FILE (whole cache dir), read from the right file
+              f.seek(pathOff)
+              path = f.read(512).split(b'\0')[0].decode(errors='replace')
+              print('IMAGE:', path)
+              print('image base:', hex(iaddr), 'offset in image:', hex(addr - iaddr))
+          # print neighbors
+          for j in (idx+1,):
+              if 0 <= j < len(imgs):
+                  f.seek(imgs[j][1])
+                  print('next image:', f.read(512).split(b'\0')[0].decode(errors='replace'))
           PYEOF
