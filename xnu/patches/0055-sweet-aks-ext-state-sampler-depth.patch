@@ -32,23 +32,42 @@
  		break;
 --- a/osfmk/kern/exception.c
 +++ b/osfmk/kern/exception.c
-@@ -995,7 +995,7 @@
+@@ -995,21 +995,32 @@
  	task_lock(task);
  	queue_iterate(&task->threads, thread, thread_t, task_threads) {
  		arm_saved_state_t *ss = find_user_regs(thread);
 -		char line[220];
-+		char line[400];
- 		int n;
+-		int n;
++		char line[200];
++		int n, chunk;
  		uint64_t fp;
  
-@@ -1005,7 +1005,7 @@
+ 		if (ss == NULL || !is_saved_state64(ss)) {
+ 			continue;
+ 		}
  		fp = get_saved_state_fp(ss);
- 		n = snprintf(line, sizeof(line), "SMP %s t%d pc 0x%llx lr 0x%llx sp 0x%llx bt", name, tn++,
+-		n = snprintf(line, sizeof(line), "SMP %s t%d pc 0x%llx lr 0x%llx sp 0x%llx bt", name, tn++,
++		printf("SMP %s t%d pc 0x%llx lr 0x%llx sp 0x%llx\n", name, tn,
  		    get_saved_state_pc(ss), get_saved_state_lr(ss), get_saved_state_sp(ss));
 -		for (int i = 0; i < 8 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; i++) {
-+		for (int i = 0; i < 16 && fp != 0 && (fp & 7) == 0 && n < (int)sizeof(line) - 20; i++) {
++		/* The console printf drops everything past ~270 bytes of a
++		 * single line, so each trace continues on "tN.k bt" lines of
++		 * at most 8 frames. */
++		chunk = 0;
++		n = snprintf(line, sizeof(line), "SMP %s t%d.0 bt", name, tn);
++		tn++;
++		for (int i = 0; i < 48 && fp != 0 && (fp & 7) == 0; i++) {
  			uint64_t frame[2];
  			if (vm_map_read_user(map, fp, frame, sizeof(frame)) != KERN_SUCCESS) {
+ 				break;
+ 			}
++			if (i > 0 && i % 8 == 0) {
++				printf("%s\n", line);
++				n = snprintf(line, sizeof(line), "SMP %s t%d.%d bt", name, tn - 1, chunk + 1);
++				chunk++;
++			}
+ 			n += snprintf(line + n, sizeof(line) - n, " 0x%llx", frame[1]);
+ 			if (frame[0] <= fp) {
  				break;
 --- a/bsd/dev/sweet_sample.c
 +++ b/bsd/dev/sweet_sample.c
