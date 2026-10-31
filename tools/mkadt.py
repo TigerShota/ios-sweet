@@ -20,12 +20,15 @@ import adt  # noqa: E402
 #   b0000000 + cc00000 (204M, aligned, clean)      -> dies in pmap_bootstrap
 #   c7b00000 + 2a00000 (misaligned)                -> XNU does not execute
 #   a2400000 + 1a80000 (misaligned)                -> dead after start.s stage 0
-# Chosen: 9c000000 + 20000000 (512M, 32M-aligned, ends bc000000 before the
-# bcc00000 removed_region; kern_top ~9e500000 clears the ABL payload at
-# a9426000; the splash at a0000000-a2300000 is inside the window but pages
-# are handed out from topOfKernelData upward and are not reached early).
-PHYS_BASE = 0x9c000000
-MEM_SIZE = 0x20000000
+# Chosen: a4000000 + 18000000 (384M, 32M-aligned, ends bc000000 before the
+# bcc00000 removed_region). OBSERVED 2026-10-31: with 9c000000+20000000 the
+# splash framebuffer a0000000-a2300000 lies INSIDE the window; once pmap
+# starts freeing pages (after the root mounts) pmap_assert_free panics on
+# the still-mapped fbcon pages (pmap.c:2811). The window must exclude the
+# FB entirely: a4000000 is the first 32M-aligned base above it. 384M is
+# well beyond what the sweet userland needed (204M).
+PHYS_BASE = 0xa4000000
+MEM_SIZE = 0x18000000
 # Panic log buffer, carved from the TOP of the dram range and exposed to XNU as
 # /pram + /chosen/embedded-panic-log-size. Without it, pe_init.c's
 # check_for_panic_log() leaves gPanicBase == 0, debug_log_init() bails out twice
