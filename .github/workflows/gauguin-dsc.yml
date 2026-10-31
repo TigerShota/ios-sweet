@@ -61,6 +61,9 @@ jobs:
         run: |
           cd /mnt/dsc
           tar cf - System | split --filter='gzip -1 > $FILE.gz' -b 4G -d - dsc.part-
+          # Mirror proxies stall on a single 1.1 GB asset but serve small
+          # ones fast: binary-chunk the gzip part into 100 MB assets.
+          split -b 100M -d --additional-suffix=.bin dsc.part-00.gz dsc.chunk-
           df -h /mnt
           ls -la
 
@@ -69,14 +72,8 @@ jobs:
       - name: Upload to release
         run: |
           gh release delete dsc-16.7.16 --yes --cleanup-tag || true
-          gh release create dsc-16.7.16 /mnt/dsc/dsc.part-*.gz \
+          gh release create dsc-16.7.16 /mnt/dsc/dsc.chunk-* \
             --title "dyld shared cache 16.7.16" \
-            --notes "iPhone10,3 iOS 16.7.16 SystemOS dyld shared cache (split tar.gz)"
+            --notes "iPhone10,3 iOS 16.7.16 SystemOS dyld shared cache (concat chunks in order, then gunzip+tar)"
         env:
           GH_TOKEN: ${{ github.token }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dyld-shared-cache
-          path: /mnt/dsc/dsc.part-*.gz
-          if-no-files-found: error
