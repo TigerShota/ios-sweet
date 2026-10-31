@@ -77,11 +77,16 @@ jobs:
 
           f = open(fn, 'rb')
           hdr = f.read(0x200)
-          # scan header for plausible (imagesOffset, imagesCount) pairs: both < 64MB, count in (100, 2000)
-          cands = []
-          for off in range(0x10, 0x100, 4):
-              a, c = struct.unpack_from('<II', hdr, off)
-              if 0x1000 < a < 0x4000000 and 100 < c < 2000:
-                  cands.append((off, a, c))
-          print('image table candidates (offset, imagesOffset, imagesCount):', cands)
+          print('--- header hex 0x00-0x200 ---')
+          for i in range(0, 0x200, 32):
+              print(f'{i:04x}: ' + ' '.join(f'{b:02x}' for b in hdr[i:i+32]))
+          print('--- u32 words 0x00-0x200 ---')
+          for i in range(0, 0x200, 16):
+              ws = struct.unpack_from('<4I', hdr, i)
+              print(f'{i:04x}: ' + ' '.join(f'{w:08x}' for w in ws))
+          # mapping at 512
+          f.seek(mappingOffset)
+          for i in range(mappingCount):
+              a, s, o, mx, init, fl = struct.unpack('<QQQIIi', f.read(32))
+              print(f'mapping {i}: addr {hex(a)} size {hex(s)} file {hex(o)} prot {init:#x}')
           PYEOF
