@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download SystemOS DMG + extract dyld cache (all subcaches)
+      - name: Download SystemOS DMG + extract all cache subvolumes
         run: |
           URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
           echo "IPSW: $URL"
@@ -34,59 +34,83 @@ jobs:
             DIR=$(dirname "$(sudo find /mnt/sysos -path '*com.apple.dyld*' -name 'dyld_shared_cache_arm64' ! -path '*DriverKit*' ! -path '*Cryptexes/App*' | head -1)")
             echo "attempt $try: DIR=$DIR"
             if [ -n "$DIR" ]; then
-              sudo cp -v "$DIR/dyld_shared_cache_arm64" /tmp/dsc/ && break
+              ok=1
+              for f in "$DIR"/dyld_shared_cache_arm64*; do
+                case "$f" in *.symbols) continue;; esac
+                sudo cp "$f" /tmp/dsc/ || ok=0
+              done
+              [ "$ok" = 1 ] && break
             fi
             sleep 5
           done
-          ls -la /tmp/dsc
-          [ -f /tmp/dsc/dyld_shared_cache_arm64 ] || { echo "FATAL: header cache not copied"; exit 1; }
+          ls /tmp/dsc | head -8
+          ls /tmp/dsc | wc -l
 
-      - name: Parse header + subcaches, locate image and symbol
+      - name: Locate image by scanning every subcache
         run: |
           sudo python3 - <<'PYEOF'
           import struct, glob, bisect
 
-          addr = int("${{ inputs.addr }}", 16)
-          files = sorted(glob.glob('/tmp/dsc/dyld_shared_cache_arm64*'))
-          print('files:', [f.split('/')[-1] for f in files])
+          cache_off = int("${{ inputs.addr }}", 16)
+          target = 0x180000000 + cache_off   # unslid VM address
+          print('target VM:', hex(target))
 
-          # find the file that holds the real cache header: mappingCount > 0
-          hdr_file = None
+          files = sorted(glob.glob('/tmp/dsc/dyld_shared_cache_arm64*'))
+          all_images = []   # (loadAddress, file, pathOffset)
           for fn in files:
               with open(fn, 'rb') as f:
-                  h = f.read(0x80)
-                  if len(h) < 0x80:
+                  h = f.read(0x140)
+                  if len(h) < 0x140:
                       continue
                   magic, = struct.unpack_from('<I', h, 0)
                   if magic != 0x646c7964:
                       continue
                   mo, mc = struct.unpack_from('<II', h, 0x10)
-                  print(fn.split('/')[-1], 'magic ok, mappingOffset', mo, 'mappingCount', mc)
-                  if mc and mc < 20:
-                      hdr_file = (fn, mo, mc)
-                      break
-          if not hdr_file:
-              print('no real header found, dump first 256 bytes of bare file:')
-              with open('/tmp/dsc/dyld_shared_cache_arm64','rb') as f:
-                  d = f.read(256)
-              for i in range(0, 256, 32):
-                  print(' '.join(f'{b:02x}' for b in d[i:i+32]))
-              raise SystemExit(1)
-          fn, mappingOffset, mappingCount = hdr_file
-          print('HEADER FILE:', fn)
+                  # dyldInCacheMH@0x78, dyldInCacheEntry@0x80, imagesTextOffset@0x88, imagesTextCount@0x90
+                  mho, ito = struct.unpack_from('<Q', h, 0x88)
+                  itc, = struct.unpack_from('<Q', h, 0x90)
+                  # mapping range
+                  f.seek(mo)
+                  maps = []
+                  for i in range(mc):
+                      a, s, o, mx, init, fl = struct.unpack('<QQQIIi', f.read(32))
+                      maps.append((a, s))
+                  # imagesText table: 32-byte entries
+                  if itc and itc < 4000 and ito and ito + itc*32 < 0x40000000:
+                      f.seek(ito)
+                      for i in range(itc):
+                          e = f.read(32)
+                          if len(e) < 32:
+                              break
+                          uu = e[:16]
+                          la, ts, po = struct.unpack_from('<QII', e, 16)
+                          if la == 0:
+                              continue
+                          all_images.append((la, ts, fn, po))
+                  print(fn.split('/')[-1], 'maps:', [(hex(a), hex(s)) for a, s in maps], 'images:', itc if itc < 4000 else '?')
 
-          f = open(fn, 'rb')
-          hdr = f.read(0x200)
-          print('--- header hex 0x00-0x200 ---')
-          for i in range(0, 0x200, 32):
-              print(f'{i:04x}: ' + ' '.join(f'{b:02x}' for b in hdr[i:i+32]))
-          print('--- u32 words 0x00-0x200 ---')
-          for i in range(0, 0x200, 16):
-              ws = struct.unpack_from('<4I', hdr, i)
-              print(f'{i:04x}: ' + ' '.join(f'{w:08x}' for w in ws))
-          # mapping at 512
-          f.seek(mappingOffset)
-          for i in range(mappingCount):
-              a, s, o, mx, init, fl = struct.unpack('<QQQIIi', f.read(32))
-              print(f'mapping {i}: addr {hex(a)} size {hex(s)} file {hex(o)} prot {init:#x}')
+          all_images.sort()
+          print('total images:', len(all_images))
+          # which image holds target
+          best = None
+          for la, ts, fn, po in all_images:
+              if la <= target < la + max(ts, 0x1000):
+                  best = (la, ts, fn, po)
+                  break
+          if not best:
+              # fall back: nearest below
+              below = [t for t in all_images if t[0] <= target]
+              best = below[-1] if below else None
+          if best:
+              la, ts, fn, po = best
+              f = open(fn, 'rb')
+              f.seek(po)
+              path = f.read(512).split(b'\0')[0].decode(errors='replace')
+              print('=== RESULT ===')
+              print('IMAGE:', path)
+              print('loadAddress:', hex(la), 'textSize:', hex(ts))
+              print('offset in image:', hex(target - la))
+              print('file:', fn.split('/')[-1])
+          else:
+              print('no image found')
           PYEOF
