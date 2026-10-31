@@ -100,7 +100,7 @@ diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
  #include <stdint.h>
  #include <kern/misc_protos.h>
  
--#define EARLY_FB ((volatile uint32_t *)(uintptr_t)0x9c000000)
+-#define EARLY_FB ((volatile uint32_t *)(uintptr_t)0xa0000000)
 +static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0xa0000000;
 +#define EARLY_FB early_fb
  #define EARLY_WIDTH 1080u
@@ -132,14 +132,22 @@ diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
  	sweet_early_string(": ");
  	sweet_early_string(label);
  	sweet_early_putc('\n');
-@@ -121,9 +126,17 @@
+@@ -121,9 +126,25 @@
  }
  
  void
 +sweet_early_relocate(uint64_t base)
 +{
 +	sweet_early_mark(8, "leaving bootstrap TTBR0");
-+	early_fb = (volatile uint32_t *)(uintptr_t)base;
++	volatile uint32_t *nv = (volatile uint32_t *)(uintptr_t)base;
++	for (unsigned int y = 0; y < 32u; y++) {
++		for (unsigned int x = 0; x < 192u; x++) {
++			nv[y * EARLY_STRIDE + x] = 0xffffffffu;
++		}
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++	sweet_early_mark(9, "new VA probed, switching");
++	early_fb = nv;
 +	__asm__ volatile("dsb sy" ::: "memory");
 +	sweet_early_mark(9, "kernel framebuffer VA live");
 +}
