@@ -30,7 +30,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,545 @@
+@@ -0,0 +1,597 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -41,6 +41,9 @@
 + * tlmm 21 (active low), irq tlmm 22; GCC votes 0x52000 bits 6/7/10, SE0
 + * RCG 0x21148 (parent 0 = XO 19.2 MHz); SPI FIFO opcodes TX=1 RX=2
 + * DUPLEX=3 packed into M_CMD0 << 27. SCK = 19.2M/(2*2) = 4.8 MHz.
++ * v7: packing CFG1 0x000FFEFE (v6 typo'd F/E -> garbled unpack, the
++ * sweetlog24/25 stall) and the Linux transfer order: M_CMD first, then
++ * TX_WATERMARK=1 arms the FIFO pump; data is pushed on TX_READY.
 + * Boot-args: gauguintouch=0/1 (default on), gauguintouchdelay=<seconds>.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -95,7 +98,8 @@
 +#define SPI_OP_RX      2u
 +#define SPI_OP_DUPLEX  3u
 +#define SE_DONE        (1u << 0)
-+#define SE_ERRORS      (0x0eu | (1u << 9) | (1u << 10) | (1u << 12) | (1u << 13))
++#define SE_ERRORS      (0x0eu | (1u << 9) | (1u << 10) | (1u << 12) | (1u << 13) | \
++                        (1u << 24) | (1u << 25) | (1u << 28) | (1u << 29))
 +#define SE_ABORT_DONE  (1u << 5)
 +#define SE_TX_READY    (1u << 30)
 +#define SE_RX_READY    (1u << 26)
@@ -121,6 +125,7 @@
 +	int page;
 +	int x[NVT_MAX_TOUCH], y[NVT_MAX_TOUCH];
 +	uint32_t active, irq_status;
++	unsigned tx_chunk;          /* bytes pushable per TX_READY event */
 +} gt;
 +static int gt_sleep_chan;
 +
@@ -176,25 +181,18 @@
 +	gt_wr(gt.se, SPI_TX_LEN, tx || duplex ? len : 0u);
 +	gt_wr(gt.se, SPI_RX_LEN, rx || duplex ? len : 0u);
 +	/*
-+	 * Pre-fill the TX FIFO before starting: with the watermark at 1 word
-+	 * a 1-3 byte transfer never reaches it, TX_READY never asserts and
-+	 * the sequencer completes with the payload still unsent (sweetlog20:
-+	 * DONE+watermarks, err=5, zero RX). GENI accepts FIFO writes while
-+	 * the engine is idle.
++	 * Linux order (setup_fifo_xfer): M_CMD first, THEN arm the TX
++	 * watermark - the wm write is the event that starts the FIFO pump.
++	 * TX_READY then fires whenever the FIFO is at/below wm and data is
++	 * pushed on it; pre-filling before M_CMD never raises the pump event
++	 * and the sequencer stalls forever (sweetlog24/25: err=60).
 +	 */
-+	unsigned prefilled = 0;
-+	if (tx || duplex) {
-+		for (unsigned w = 0; w < len; w += 4) {
-+			uint32_t v = 0;
-+			for (unsigned j = 0; j < 4 && w + j < len; ++j) {
-+				v |= (uint32_t)tx[w + j] << (8u * j);
-+			}
-+			gt_wr(gt.se, SE_TX, v);
-+		}
-+		prefilled = len;
-+	}
++	unsigned pushed = 0;
 +	gt_wr(gt.se, SE_CMD, ((duplex ? SPI_OP_DUPLEX :
 +	    (tx ? SPI_OP_TX : SPI_OP_RX)) << 27));
++	if (tx || duplex) {
++		gt_wr(gt.se, 0x80c, 1);
++	}
 +	unsigned got = 0;
 +	int err = ETIMEDOUT;
 +	for (unsigned i = 0; i < 2000; ++i) {
@@ -204,20 +202,42 @@
 +			err = EIO;
 +			goto out;
 +		}
-+		uint32_t count = gt_rd(gt.se, SE_RX_COUNT) & 0x1ffffffu;
-+		if (count > 64) {
-+			err = EIO;
-+			goto out;
++		if ((tx || duplex) && (irq & SE_TX_READY)) {
++			if (pushed < len) {
++				unsigned chunk = len - pushed;
++				if (chunk > gt.tx_chunk) {
++					chunk = gt.tx_chunk;
++				}
++				for (unsigned w = 0; w < chunk; w += 4) {
++					uint32_t v = 0;
++					for (unsigned j = 0; j < 4 && w + j < chunk; ++j) {
++						v |= (uint32_t)tx[pushed + w + j] << (8u * j);
++					}
++					gt_wr(gt.se, SE_TX, v);
++				}
++				pushed += chunk;
++				if (pushed == len) {
++					gt_wr(gt.se, 0x80c, 0); /* disarm: all data is in */
++				}
++			}
++			gt_wr(gt.se, SE_IRQ_CLR, SE_TX_READY);
 +		}
-+		while (count--) {
-+			uint32_t v = gt_rd(gt.se, SE_RX);
-+			for (unsigned j = 0; j < 4 && got < len; ++j) {
-+				rx[got++] = (uint8_t)(v >> (8u * j));
++		if (rx || duplex) {
++			uint32_t count = gt_rd(gt.se, SE_RX_COUNT) & 0x1ffffffu;
++			if (count > 64) {
++				err = EIO;
++				goto out;
++			}
++			while (count--) {
++				uint32_t v = gt_rd(gt.se, SE_RX);
++				for (unsigned j = 0; j < 4 && got < len; ++j) {
++					rx[got++] = (uint8_t)(v >> (8u * j));
++				}
 +			}
 +		}
 +		if (irq & SE_DONE) {
 +			gt_wr(gt.se, SE_IRQ_CLR, irq);
-+			if ((!(tx || duplex) || prefilled == len) &&
++			if ((!(tx || duplex) || pushed == len) &&
 +			    (!(rx || duplex) || got == len)) {
 +				return 0;
 +			}
@@ -226,10 +246,16 @@
 +		}
 +		/* Preserve the in-progress events; DONE/errors keep their bits. */
 +		gt_wr(gt.se, SE_IRQ_CLR, irq & (SE_ABORT_DONE | SE_RX_READY |
-+		    SE_RX_LAST | SE_TX_READY));
++		    SE_RX_LAST));
 +		delay(1);
 +	}
 +out:
++	if (err == ETIMEDOUT) {
++		printf("GAUGUIN TOUCH: stall len=%u pushed=%u got=%u status=%#x "
++		    "txwc=%u rxwc=%u\n", len, pushed, got, gt_rd(gt.se, SE_STATUS),
++		    gt_rd(gt.se, SE_TX_COUNT) & 0xfffffffu,
++		    gt_rd(gt.se, SE_RX_COUNT) & 0x1ffffffu);
++	}
 +	gt_wr(gt.se, SE_CTRL, 2); /* abort M command, release the bus */
 +	bool done = false;
 +	for (unsigned i = 0; i < 5000; ++i) {
@@ -250,6 +276,8 @@
 +	gt_wr(gt.se, SE_IRQ_CLR, 0xffffffffu);
 +	if (gt_rd(gt.se, SE_TX_COUNT) & 0xfffffffu) {
 +		gt.dead = true;
++		printf("GAUGUIN TOUCH: abort left %u tx words\n",
++		    gt_rd(gt.se, SE_TX_COUNT) & 0xfffffffu);
 +	}
 +	return err;
 +}
@@ -370,8 +398,15 @@
 +{
 +	uint32_t fw = gt_rd(gt.se, SE_FW);
 +	uint32_t tx = gt_rd(gt.se, 0xe24), rx = gt_rd(gt.se, 0xe28);
++	uint32_t fifo_dis = gt_rd(gt.se, 0x64);
 +	printf("GAUGUIN TOUCH: se0 fw=%#x proto=%u status=%#x tx=%#x rx=%#x\n",
 +	    fw, (fw >> 8) & 0xffu, gt_rd(gt.se, SE_STATUS), tx, rx);
++	printf("GAUGUIN TOUCH: fifo_if_disable=%u (1 = GSI-only fw, FIFO dead)\n",
++	    fifo_dis & 1u);
++	if (fifo_dis & 1u) {
++		printf("GAUGUIN TOUCH: SE0 firmware is GSI/DMA-only; stopping\n");
++		return false;
++	}
 +	/* GENI_SE_SPI = protocol 1; the ABL/aop must have loaded the SE image. */
 +	if (((fw >> 8) & 0xffu) != 1u) {
 +		printf("GAUGUIN TOUCH: GENI SPI firmware not loaded; stopping\n");
@@ -417,11 +452,28 @@
 +	 * msb_to_lsb=1): vec starts 7/15/23/31, len 7, dir 1, last |STOP.
 +	 * FIFO bits[7:0] are sent first; the prefill below stores tx[0] there.
 +	 */
++	unsigned tx_depth = (tx >> 16) & 0x3fu;
++	if (!tx_depth) {
++		tx_depth = 16;
++	}
++	printf("GAUGUIN TOUCH: fifo depth=%u width=%u bits\n",
++	    tx_depth, (tx >> 24) & 0x3fu);
++	/* (depth - wm) words per TX_READY event, like Linux handle_tx. */
++	gt.tx_chunk = (tx_depth - 1u) * 4u;
++	/*
++	 * geni_se_config_packing(bpw=8, pack=4, msb): vectors start at
++	 * bits 7/15/23/31, len=7, dir=1, STOP on the last ->
++	 * CFG0 = 0x0007F8FE, CFG1 = 0x000FFEFE. v6 wrote the 9-digit
++	 * 0x000ffeefeu (= 0xFFEEFE): vector2 became start-31/len-5/STOP and
++	 * vector3 start-7/dir-0 - a garbled unpack table that stalled M_CMD
++	 * (sweetlog24/25 err=60, only the TX watermark bit set).
++	 * The first byte sent/received is FIFO word bits [7:0].
++	 */
 +	gt_wr(gt.se, 0x260, 0x0007f8feu);
-+	gt_wr(gt.se, 0x264, 0x000ffeefeu);
++	gt_wr(gt.se, 0x264, 0x000ffefeu);
 +	gt_wr(gt.se, 0x284, 0x0007f8feu);
-+	gt_wr(gt.se, 0x288, 0x000ffeefeu);
-+	gt_wr(gt.se, 0x80c, 1);
++	gt_wr(gt.se, 0x288, 0x000ffefeu);
++	gt_wr(gt.se, 0x80c, 0); /* armed per-transfer after M_CMD (Linux) */
 +	gt_wr(gt.se, 0x810, 0);
 +	gt_wr(gt.se, 0x814, ((rx >> 16) & 0x3fu) ? (((rx >> 16) & 0x3fu) - 1u) : 0u);
 +	gt_wr(gt.se, SE_IRQ_EN, SE_EVENTS);
