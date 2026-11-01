@@ -1,4 +1,4 @@
-﻿--- a/bsd/conf/files
+--- a/bsd/conf/files
 +++ b/bsd/conf/files
 @@ -106,6 +106,8 @@
  bsd/dev/memdev.c			standard
@@ -32,16 +32,12 @@
  
 --- /dev/null
 +++ b/bsd/dev/sweet_keys.c
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,182 @@
 +/*
 + * Minimal polled SWEET keys. Call once after the scheduler is running.
-+ * See hw-report.md: volume-up is PM6150L SID 4, NOT PM6150 SID 0 (sweet).
-+ * gauguin (2026-11-01, vendor dts gpio-keys): volume-up is pm6350 SID 0
-+ * GPIO2, active low - PPID 0x0c1, NOT sweet's pm6150l 0x4c1. PON_RT:
-+ * bit0 = KPDPWR = power (pon_1, code 0x74 KEY_POWER), bit1 = RESIN =
-+ * volume-down (pon_2, code 0x72), idle reads 0x4. PMIC access is READ
-+ * ONLY: the sole MMIO write issues EXT_READL on an observer channel.
-+ * No PMIC config, IRQ acknowledge or reset writes exist.
++ * See hw-report.md: volume-up is PM6150L SID 4, NOT PM6150 SID 0.
++ * PMIC access is READ ONLY: the sole MMIO write issues EXT_READL on an
++ * observer channel. No PMIC config, IRQ acknowledge or reset writes exist.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +#include <sys/param.h>
