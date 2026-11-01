@@ -71,16 +71,16 @@
  				break;
 --- a/bsd/dev/sweet_sample.c
 +++ b/bsd/dev/sweet_sample.c
-@@ -10,7 +10,7 @@
+@@ -13,7 +13,7 @@
   * with tools/sweet-crash.py). A thread blocked in a syscall shows the
   * syscall stub in pc and its caller in lr/bt.
   *
 - * First sample 90 s after start, then every 120 s, 10 samples at most.
 + * First sample 90 s after start, then every 120 s, 40 samples at most.
-  */
- #include <sys/param.h>
- #include <sys/systm.h>
-@@ -71,7 +71,7 @@
+  * Names are matched against p_name (up to 32 chars); p_comm would
+  * truncate at MAXCOMLEN (16) and hide long names like
+  * MobileGestaltHelper / installcoordinationd / containermanagerd.
+@@ -107,7 +107,7 @@
  		return;
  	}
  	(void)tsleep(&chan, PZERO, "sweetsmp", 90 * hz);
