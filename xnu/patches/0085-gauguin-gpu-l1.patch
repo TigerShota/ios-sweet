@@ -114,7 +114,7 @@
 +static void
 +gg_thread(void *arg, wait_result_t result)
 +{
-+	unsigned delay_s = 60;
++	unsigned delay_s = 30;
 +	(void)arg;
 +	(void)result;
 +	(void)PE_parse_boot_argn("gauguingpudelay", &delay_s, sizeof(delay_s));
