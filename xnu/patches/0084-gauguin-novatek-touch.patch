@@ -30,7 +30,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,512 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -330,6 +330,8 @@
 +gt_clocks(void)
 +{
 +	gt_wr(gt.gcc, GT_VOTE, gt_rd(gt.gcc, GT_VOTE) | GT_VOTE_MASK);
++	printf("GAUGUIN TOUCH: vote=%#x (mask %#x)\n",
++	    gt_rd(gt.gcc, GT_VOTE), GT_VOTE_MASK);
 +	/* Parent 0 = XO 19.2 MHz, divider 1; M/N bypassed (N = 0). */
 +	gt_wr(gt.gcc, GT_RCG + 4u, gt_rd(gt.gcc, GT_RCG + 4u) & ~0x371fu);
 +	gt_wr(gt.gcc, GT_RCG + 8u, 0);
@@ -337,17 +339,21 @@
 +	gt_wr(gt.gcc, GT_RCG + 0x10u, 0);
 +	gt_wr(gt.gcc, GT_RCG, gt_rd(gt.gcc, GT_RCG) | 1u);
 +	if (!gt_wait_clear(gt.gcc, GT_RCG, 1u)) {
-+		printf("GAUGUIN TOUCH: RCG update timeout\n");
++		printf("GAUGUIN TOUCH: RCG update timeout cmd=%#x\n",
++		    gt_rd(gt.gcc, GT_RCG));
 +		return false;
 +	}
-+	const uint32_t branches[] = {0x21004, 0x21008, 0x21144};
-+	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
-+		if (!gt_wait_clear(gt.gcc, branches[i], 1u << 31)) {
-+			printf("GAUGUIN TOUCH: GCC branch %#x halted (%#x)\n",
-+			    branches[i], gt_rd(gt.gcc, branches[i]));
-+			return false;
-+		}
-+	}
++	printf("GAUGUIN TOUCH: rcg cmd=%#x cfg=%#x\n",
++	    gt_rd(gt.gcc, GT_RCG), gt_rd(gt.gcc, GT_RCG + 4u));
++	/*
++	 * BRANCH_HALT_VOTED + HWCG: CLK_OFF (bit 31) reads 1 while the
++	 * engine is idle - that is the hardware clock gate doing its job,
++	 * not a failed vote (Linux never waits for these when enabling).
++	 * Read-only diagnostics; the first SE access un-gates the AHB.
++	 */
++	printf("GAUGUIN TOUCH: branches m_ahb=%#x s_ahb=%#x s0=%#x\n",
++	    gt_rd(gt.gcc, 0x21004), gt_rd(gt.gcc, 0x21008),
++	    gt_rd(gt.gcc, 0x21144));
 +	return true;
 +}
 +
@@ -454,10 +460,10 @@
 +		goto out;
 +	}
 +	/* SPI pins first (mux qup00: gpio0/1 = 2, gpio2/3 = 1). */
-+	gt_pin(0, 2, 0, 2, false);  /* SCL/SCK */
-+	gt_pin(1, 2, 0, 2, false);  /* MISO   */
-+	gt_pin(2, 1, 0, 2, false);  /* MOSI   */
-+	gt_pin(3, 1, 0, 2, false);  /* CS     */
++	gt_pin(0, 2, 0, 3, false);  /* SCK, 6 mA (vendor dtsi) */
++	gt_pin(1, 2, 0, 3, false);  /* MISO */
++	gt_pin(2, 1, 0, 3, false);  /* MOSI */
++	gt_pin(3, 1, 0, 3, false);  /* CS  */
 +	gt_pin(22, 0, 3, 0, false); /* irq input, pull-up */
 +	/* Hold the IC in reset while the engine comes up. */
 +	gt_pin(21, 0, 0, 2, false); /* reset low */
