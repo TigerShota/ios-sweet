@@ -30,7 +30,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,524 @@
+@@ -0,0 +1,545 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -55,6 +55,8 @@
 +#include <pexpert/pexpert.h>
 +
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++/* Mach MIG declaration is not included by BSD's exported thread.h. */
++extern kern_return_t thread_terminate(thread_t);
 +extern void sweet_hid_touch(int finger, int down, int x, int y);
 +void gauguin_touch_init(void);
 +
@@ -195,7 +197,7 @@
 +	    (tx ? SPI_OP_TX : SPI_OP_RX)) << 27));
 +	unsigned got = 0;
 +	int err = ETIMEDOUT;
-+	for (unsigned i = 0; i < 20000; ++i) {
++	for (unsigned i = 0; i < 2000; ++i) {
 +		uint32_t irq = gt_rd(gt.se, SE_IRQ);
 +		gt.irq_status = irq;
 +		if (irq & SE_ERRORS) {
@@ -402,13 +404,23 @@
 +	 */
 +	gt_wr(gt.se, 0x250, 0);                          /* CS0 = gpio3 */
 +	gt_wr(gt.se, 0x24c, 0);                          /* CS active low */
-+	gt_wr(gt.se, SPI_TRANS_CFG, 1u);                  /* CS_TOGGLE: deassert CS after each command (Linux default) */
-+	gt_wr(gt.se, SPI_WORD_LEN, 0);                   /* 8-bit words */
-+	/* Four 8-bit bytes per 32-bit word, LSB byte first (Linux packing). */
-+	gt_wr(gt.se, 0x260, 0x0004380eu);
-+	gt_wr(gt.se, 0x264, 0x000c3e0eu);
-+	gt_wr(gt.se, 0x284, 0x0004380eu);
-+	gt_wr(gt.se, 0x288, 0x000c3e0eu);
++	gt_wr(gt.se, SPI_TRANS_CFG, 0);                  /* Linux: spi_tx_cfg &= ~CS_TOGGLE */
++	/*
++	 * SE_SPI_WORD_LEN counts MIN_WORD_LEN (4): 8-bit words -> 8-4 = 4.
++	 * (v5 wrote 0 = 4-bit words: the sequencer miscounted the transfer
++	 * length and M_CMD never completed - sweetlog21/22 err=60.)
++	 */
++	gt_wr(gt.se, SPI_WORD_LEN, 4u);
++	/*
++	 * FIFO packing: SPI is MSB-first (mode 0, no SPI_LSB_FIRST) - NOT the
++	 * I2C LSB config sweet used. geni_se_config_packing(bpw=8, pack=4,
++	 * msb_to_lsb=1): vec starts 7/15/23/31, len 7, dir 1, last |STOP.
++	 * FIFO bits[7:0] are sent first; the prefill below stores tx[0] there.
++	 */
++	gt_wr(gt.se, 0x260, 0x0007f8feu);
++	gt_wr(gt.se, 0x264, 0x000ffeefeu);
++	gt_wr(gt.se, 0x284, 0x0007f8feu);
++	gt_wr(gt.se, 0x288, 0x000ffeefeu);
 +	gt_wr(gt.se, 0x80c, 1);
 +	gt_wr(gt.se, 0x810, 0);
 +	gt_wr(gt.se, 0x814, ((rx >> 16) & 0x3fu) ? (((rx >> 16) & 0x3fu) - 1u) : 0u);
@@ -466,7 +478,7 @@
 +	(void)PE_parse_boot_argn("gauguintouchdelay", &delay_s, sizeof(delay_s));
 +	printf("GAUGUIN TOUCH: starting in %u s\n", delay_s);
 +	gt_wait(delay_s * 1000u);
-+	printf("GAUGUIN TOUCH: mapping GCC/TLMM/SE0\n");
++	printf("GAUGUIN TOUCH: step1 mapping GCC/TLMM/SE0\n");
 +	gt.gcc = ml_io_map(GT_GCC_PA, 0x60000);
 +	gt.tlmm = ml_io_map(GT_TLMM_PA, 0x5b0000);
 +	gt.se = ml_io_map(GT_SE_PA, 0x4000);
@@ -474,7 +486,7 @@
 +		printf("GAUGUIN TOUCH: MMIO mapping failed\n");
 +		goto out;
 +	}
-+	/* SPI pins first (mux qup00: gpio0/1 = 2, gpio2/3 = 1). */
++	printf("GAUGUIN TOUCH: step2 tlmm qup00 muxing\n");
 +	gt_pin(0, 2, 0, 3, false);  /* SCK, 6 mA (vendor dtsi) */
 +	gt_pin(1, 2, 0, 3, false);  /* MISO */
 +	gt_pin(2, 1, 0, 3, false);  /* MOSI */
@@ -482,14 +494,21 @@
 +	gt_pin(22, 0, 3, 0, false); /* irq input, pull-up */
 +	/* Hold the IC in reset while the engine comes up. */
 +	gt_pin(21, 0, 0, 2, false); /* reset low */
-+	if (!gt_clocks() || !gt_se_init()) {
++	printf("GAUGUIN TOUCH: step3 clocks\n");
++	if (!gt_clocks()) {
 +		goto out;
 +	}
++	printf("GAUGUIN TOUCH: step4 se init\n");
++	if (!gt_se_init()) {
++		goto out;
++	}
++	printf("GAUGUIN TOUCH: step5 releasing reset\n");
 +	gt_pin(21, 0, 0, 2, true);  /* release reset */
 +	gt_wait(10);                /* power-on reset settle */
 +	printf("GAUGUIN TOUCH: irq=%#x rst released\n",
 +	    gt_rd(gt.tlmm, GT_GPIO_IO(22)));
 +	/* Bootloader probe: reset to bootloader and read the trim id. */
++	printf("GAUGUIN TOUCH: step6 bootloader reset\n");
 +	int err = nvt_write_addr(NVT_SWRST, 0x69);
 +	if (err) {
 +		printf("GAUGUIN TOUCH: bootloader reset err=%d irq=%#x\n", err, gt.irq_status);
@@ -518,7 +537,7 @@
 +	    ev[0], ev[1], ev[2], ev[3], err, gt.irq_status);
 +	printf("GAUGUIN TOUCH: polling 1080x2400 every 20 ms\n");
 +	while (!gt.dead) {
-+		gt_wait(20);
++		gt_wait(errors > 10 ? 1000u : 20u); /* back off when the IC is silent */
 +		err = nvt_read_addr(NVT_EVENT_BUF, ev, sizeof(ev));
 +		if (err) {
 +			if ((errors++ % 50u) == 0) {
@@ -531,6 +550,8 @@
 +	}
 +out:
 +	printf("GAUGUIN TOUCH: thread exit\n");
++	/* kernel_thread_start threads must not return (continuation panic). */
++	(void)thread_terminate(current_thread());
 +}
 +
 +void
