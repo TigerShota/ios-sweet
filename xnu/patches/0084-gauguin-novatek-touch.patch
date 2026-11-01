@@ -1,0 +1,539 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -109,6 +109,7 @@
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
++bsd/dev/gauguin_touch.c			standard
+ bsd/dev/mem.c				standard
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -52,6 +52,7 @@
+ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
+ extern void sweet_usb_probe(void);
++extern void gauguin_touch_init(void);
+ 
+ #define REG_CAP         0x00
+@@ -657,8 +657,9 @@
+ 	sweet_log_start();
+ 	sweet_sample_start();
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+ 	sweet_keys_init();
+ 	sweet_touch_init();
+ 	sweet_usb_probe();
++	gauguin_touch_init();
+ 	return 0;
+ }
+--- /dev/null
++++ b/bsd/dev/gauguin_touch.c
+@@ -0,0 +1,506 @@
++/*
++ * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
++ * Zero-firmware first light: HW reset, then the IC boots its own flash
++ * firmware; the event buffer is polled and fed to sweet_hid_touch().
++ * All facts from the vendor tree (gauguin-sm6350.dtsi, pinctrl-lagoon.c,
++ * gcc-lagoon.c, geni-se.h, nt36xxx.c): SE0 0x880000 with CS gpio3 and
++ * SCK/MISO/MOSI gpio0/1/2 (qup00: gpio0/1 mux 2, gpio2/3 mux 1), reset
++ * tlmm 21 (active low), irq tlmm 22; GCC votes 0x52000 bits 6/7/10, SE0
++ * RCG 0x21148 (parent 0 = XO 19.2 MHz); SPI FIFO opcodes TX=1 RX=2
++ * DUPLEX=3 packed into M_CMD0 << 27. SCK = 19.2M/(2*2) = 4.8 MHz.
++ * Boot-args: gauguintouch=0/1 (default on), gauguintouchdelay=<seconds>.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <string.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t thread_terminate(thread_t);
++extern void sweet_hid_touch(int finger, int down, int x, int y);
++void gauguin_touch_init(void);
++
++#define GT_SE_PA       0x00880000u
++#define GT_GCC_PA      0x00100000u
++#define GT_TLMM_PA     0x0f100000u
++
++/* GCC lagoon: qupv3 wrapper0 AHB + SE0 branch votes and the SE0 RCG. */
++#define GT_VOTE        0x52000u
++#define GT_VOTE_MASK   ((1u << 6) | (1u << 7) | (1u << 10))
++#define GT_RCG         0x21148u
++
++/* GENI serial engine registers (geni-se.h) + SPI extensions (spi-geni). */
++#define SE_STATUS      0x040u
++#define SE_M_CLK_CFG   0x048u
++#define SE_FW          0x068u
++#define SE_CLK_SEL     0x07cu
++#define SE_DMA_MODE    0x258u
++#define SPI_CPHA       0x224u
++#define SPI_CPOL       0x230u
++#define SPI_TRANS_CFG  0x25cu
++#define SPI_WORD_LEN   0x268u
++#define SPI_TX_LEN     0x26cu
++#define SPI_RX_LEN     0x270u
++#define SE_CMD         0x600u
++#define SE_CTRL        0x604u
++#define SE_IRQ         0x610u
++#define SE_IRQ_EN      0x614u
++#define SE_IRQ_CLR     0x618u
++#define SE_TX          0x700u
++#define SE_RX          0x780u
++#define SE_TX_COUNT    0x800u
++#define SE_RX_COUNT    0x804u
++
++#define SPI_OP_TX      1u
++#define SPI_OP_RX      2u
++#define SPI_OP_DUPLEX  3u
++#define SE_DONE        (1u << 0)
++#define SE_ERRORS      (0x0eu | (1u << 9) | (1u << 10) | (1u << 12) | (1u << 13))
++#define SE_ABORT_DONE  (1u << 5)
++#define SE_TX_READY    (1u << 30)
++#define SE_RX_READY    (1u << 26)
++#define SE_RX_LAST     (1u << 27)
++#define SE_EVENTS      (SE_DONE | SE_ERRORS | SE_ABORT_DONE | SE_RX_READY | \
++                        SE_RX_LAST | SE_TX_READY)
++
++/* TLMM: cfg at pin*0x1000, io latch at cfg+4 (same layout as sweet). */
++#define GT_GPIO_CFG(n) ((uint32_t)(n) * 0x1000u)
++#define GT_GPIO_IO(n)  (GT_GPIO_CFG(n) + 4u)
++
++/* Novatek NT36672A (memory map + protocol from nt36xxx). */
++#define NVT_SWRST      0x3f0feu
++#define NVT_RD_FAST    0x3f310u
++#define NVT_EVENT_BUF  0x21c00u
++#define NVT_TRIM_PAGE  0x1f600u
++#define NVT_TRIM_REG   0x4eu
++#define NVT_MAX_TOUCH  10u
++
++static struct {
++	vm_offset_t se, gcc, tlmm;
++	bool started, dead;
++	int page;
++	int x[NVT_MAX_TOUCH], y[NVT_MAX_TOUCH];
++	uint32_t active, irq_status;
++} gt;
++static int gt_sleep_chan;
++
++static uint32_t
++gt_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++gt_wr(vm_offset_t base, uint32_t off, uint32_t val)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + off) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++static void
++gt_wait(unsigned ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&gt_sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static bool
++gt_wait_clear(vm_offset_t base, uint32_t off, uint32_t mask)
++{
++	for (unsigned i = 0; i < 5000; ++i) {
++		if (!(gt_rd(base, off) & mask)) {
++			return true;
++		}
++		delay(1);
++	}
++	return false;
++}
++
++/* One FIFO SPI transfer: TX-only, RX-only or full-duplex, at most 96 bytes. */
++static int
++gt_xfer(const uint8_t *tx, uint8_t *rx, unsigned len, bool duplex)
++{
++	if (gt.dead || !len || len > 96) {
++		return EIO;
++	}
++	if (!gt_wait_clear(gt.se, SE_STATUS, 1u)) {
++		gt.dead = true; /* no other SE0 owner is supported */
++		return EBUSY;
++	}
++	gt_wr(gt.se, SE_IRQ_CLR, 0xffffffffu);
++	gt_wr(gt.se, SPI_TX_LEN, tx || duplex ? len : 0u);
++	gt_wr(gt.se, SPI_RX_LEN, rx || duplex ? len : 0u);
++	gt_wr(gt.se, SE_CMD, ((duplex ? SPI_OP_DUPLEX :
++	    (tx ? SPI_OP_TX : SPI_OP_RX)) << 27));
++	unsigned sent = 0, got = 0;
++	int err = ETIMEDOUT;
++	for (unsigned i = 0; i < 20000; ++i) {
++		uint32_t irq = gt_rd(gt.se, SE_IRQ);
++		gt.irq_status = irq;
++		if (irq & SE_ERRORS) {
++			err = EIO;
++			goto out;
++		}
++		if ((tx || duplex) && !sent && (irq & SE_TX_READY)) {
++			/* Four 8-bit bytes per 32-bit word, LSB byte first. */
++			for (unsigned w = 0; w < len; w += 4) {
++				uint32_t v = 0;
++				for (unsigned j = 0; j < 4 && w + j < len; ++j) {
++					v |= (uint32_t)tx[w + j] << (8u * j);
++				}
++				gt_wr(gt.se, SE_TX, v);
++			}
++			sent = len;
++		}
++		uint32_t count = gt_rd(gt.se, SE_RX_COUNT) & 0x1ffffffu;
++		if (count > 64) {
++			err = EIO;
++			goto out;
++		}
++		while (count--) {
++			uint32_t v = gt_rd(gt.se, SE_RX);
++			for (unsigned j = 0; j < 4 && got < len; ++j) {
++				rx[got++] = (uint8_t)(v >> (8u * j));
++			}
++		}
++		if (irq & SE_DONE) {
++			gt_wr(gt.se, SE_IRQ_CLR, irq);
++			if ((!(tx || duplex) || sent == len) &&
++			    (!(rx || duplex) || got == len)) {
++				return 0;
++			}
++			err = EIO;
++			goto out;
++		}
++		/* Preserve the in-progress events; DONE/errors keep their bits. */
++		gt_wr(gt.se, SE_IRQ_CLR, irq & (SE_ABORT_DONE | SE_RX_READY |
++		    SE_RX_LAST | SE_TX_READY));
++		delay(1);
++	}
++out:
++	gt_wr(gt.se, SE_CTRL, 2); /* abort M command, release the bus */
++	bool done = false;
++	for (unsigned i = 0; i < 5000; ++i) {
++		if (gt_rd(gt.se, SE_IRQ) & SE_ABORT_DONE) {
++			done = true;
++			break;
++		}
++		delay(1);
++	}
++	if (!done || !gt_wait_clear(gt.se, SE_STATUS, 1u)) {
++		gt.dead = true;
++		printf("GAUGUIN TOUCH: abort failed status=%#x irq=%#x; stopping\n",
++		    gt_rd(gt.se, SE_STATUS), gt_rd(gt.se, SE_IRQ));
++	}
++	for (unsigned i = 0; i < 64 && (gt_rd(gt.se, SE_RX_COUNT) & 0x1ffffffu); ++i) {
++		(void)gt_rd(gt.se, SE_RX);
++	}
++	gt_wr(gt.se, SE_IRQ_CLR, 0xffffffffu);
++	if (gt_rd(gt.se, SE_TX_COUNT) & 0xfffffffu) {
++		gt.dead = true;
++	}
++	return err;
++}
++
++/* Novatek page-addressed protocol. Writes carry the 0x80 command bit. */
++static int
++nvt_write(const uint8_t *buf, unsigned len)
++{
++	uint8_t b[96];
++	memcpy(b, buf, len > 96 ? 96 : len);
++	b[0] |= 0x80u;
++	return gt_xfer(b, NULL, len, false);
++}
++
++/* Read: full-duplex reg + dummy + data (data starts at rx word offset 2). */
++static int
++nvt_read(uint8_t reg, uint8_t *out, unsigned ndata)
++{
++	uint8_t tx[96], rx[96];
++	unsigned len = ndata + 2;
++	if (len > 96) {
++		return EIO;
++	}
++	memset(tx, 0, len);
++	tx[0] = reg & 0x7fu;
++	int err = gt_xfer(tx, rx, len, true);
++	if (err) {
++		return err;
++	}
++	memcpy(out, rx + 2, ndata);
++	return 0;
++}
++
++static int
++nvt_set_page(uint32_t addr)
++{
++	int page = (int)(addr >> 7);
++	if (page == gt.page) {
++		return 0;
++	}
++	uint8_t b[3] = {0xffu, (uint8_t)(addr >> 15), (uint8_t)(addr >> 7)};
++	int err = nvt_write(b, 3);
++	if (!err) {
++		gt.page = page;
++	}
++	return err;
++}
++
++static int
++nvt_write_addr(uint32_t addr, uint8_t val)
++{
++	int err = nvt_set_page(addr);
++	if (err) {
++		return err;
++	}
++	uint8_t b[2] = {(uint8_t)(addr & 0x7fu), val};
++	return nvt_write(b, 2);
++}
++
++static int
++nvt_read_addr(uint32_t addr, uint8_t *out, unsigned ndata)
++{
++	int err = nvt_set_page(addr);
++	if (err) {
++		return err;
++	}
++	return nvt_read((uint8_t)(addr & 0x7fu), out, ndata);
++}
++
++static void
++gt_pin(unsigned pin, unsigned mux, unsigned pull, unsigned drive, bool out)
++{
++	uint32_t off = GT_GPIO_CFG(pin);
++	uint32_t cfg = gt_rd(gt.tlmm, off);
++	if (out) {
++		/* Set the output latch before enabling output, avoiding a glitch. */
++		gt_wr(gt.tlmm, GT_GPIO_IO(pin),
++		    gt_rd(gt.tlmm, GT_GPIO_IO(pin)) | 2u);
++	}
++	cfg &= ~0x3ffu;
++	cfg |= (mux << 2) | pull | (drive << 6) | (out ? 0x200u : 0u);
++	gt_wr(gt.tlmm, off, cfg);
++}
++
++static bool
++gt_clocks(void)
++{
++	gt_wr(gt.gcc, GT_VOTE, gt_rd(gt.gcc, GT_VOTE) | GT_VOTE_MASK);
++	/* Parent 0 = XO 19.2 MHz, divider 1; M/N bypassed (N = 0). */
++	gt_wr(gt.gcc, GT_RCG + 4u, gt_rd(gt.gcc, GT_RCG + 4u) & ~0x371fu);
++	gt_wr(gt.gcc, GT_RCG + 8u, 0);
++	gt_wr(gt.gcc, GT_RCG + 0xcu, 0);
++	gt_wr(gt.gcc, GT_RCG + 0x10u, 0);
++	gt_wr(gt.gcc, GT_RCG, gt_rd(gt.gcc, GT_RCG) | 1u);
++	if (!gt_wait_clear(gt.gcc, GT_RCG, 1u)) {
++		printf("GAUGUIN TOUCH: RCG update timeout\n");
++		return false;
++	}
++	const uint32_t branches[] = {0x21004, 0x21008, 0x21144};
++	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
++		if (!gt_wait_clear(gt.gcc, branches[i], 1u << 31)) {
++			printf("GAUGUIN TOUCH: GCC branch %#x halted (%#x)\n",
++			    branches[i], gt_rd(gt.gcc, branches[i]));
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool
++gt_se_init(void)
++{
++	uint32_t fw = gt_rd(gt.se, SE_FW);
++	uint32_t tx = gt_rd(gt.se, 0xe24), rx = gt_rd(gt.se, 0xe28);
++	printf("GAUGUIN TOUCH: se0 fw=%#x proto=%u status=%#x tx=%#x rx=%#x\n",
++	    fw, (fw >> 8) & 0xffu, gt_rd(gt.se, SE_STATUS), tx, rx);
++	/* GENI_SE_SPI = protocol 1; the ABL/aop must have loaded the SE image. */
++	if (((fw >> 8) & 0xffu) != 1u) {
++		printf("GAUGUIN TOUCH: GENI SPI firmware not loaded; stopping\n");
++		return false;
++	}
++	if (gt_rd(gt.se, SE_STATUS) & 0x1001u) {
++		printf("GAUGUIN TOUCH: SE0 already busy; stopping\n");
++		return false;
++	}
++	gt_wr(gt.se, 0xe18, 0); /* no GSI events */
++	gt_wr(gt.se, 0xe1c, 0); /* mask external IRQ routing; poll local status */
++	gt_wr(gt.se, 0x644, 0);
++	gt_wr(gt.se, SE_IRQ_CLR, 0xffffffffu);
++	gt_wr(gt.se, 0x648, 0xffffffffu);
++	gt_wr(gt.se, SE_DMA_MODE, 0);
++	gt_wr(gt.se, 0x28, gt_rd(gt.se, 0x28) | 0x7fu);
++	gt_wr(gt.se, 0xe30, gt_rd(gt.se, 0xe30) | 0x0fu);
++	gt_wr(gt.se, 0x24, 0x7f);
++	gt_wr(gt.se, 0x20, 1);
++	gt_wr(gt.se, SE_CLK_SEL, 0);                    /* XO */
++	gt_wr(gt.se, SE_M_CLK_CFG, (2u << 4) | 1u);      /* SCK 4.8 MHz */
++	gt_wr(gt.se, SPI_CPHA, 0);                       /* mode 0 */
++	gt_wr(gt.se, SPI_CPOL, 0);
++	gt_wr(gt.se, SPI_TRANS_CFG, 0);                  /* no CS toggling */
++	gt_wr(gt.se, SPI_WORD_LEN, 0);                   /* 8-bit words */
++	/* Four 8-bit bytes per 32-bit word, LSB byte first (Linux packing). */
++	gt_wr(gt.se, 0x260, 0x0004380eu);
++	gt_wr(gt.se, 0x264, 0x000c3e0eu);
++	gt_wr(gt.se, 0x284, 0x0004380eu);
++	gt_wr(gt.se, 0x288, 0x000c3e0eu);
++	gt_wr(gt.se, 0x80c, 1);
++	gt_wr(gt.se, 0x810, 0);
++	gt_wr(gt.se, 0x814, ((rx >> 16) & 0x3fu) ? (((rx >> 16) & 0x3fu) - 1u) : 0u);
++	gt_wr(gt.se, SE_IRQ_EN, SE_EVENTS);
++	if ((gt_rd(gt.se, SE_TX_COUNT) & 0xfffffffu) ||
++	    (gt_rd(gt.se, SE_RX_COUNT) & 0x1ffffffu)) {
++		printf("GAUGUIN TOUCH: inherited FIFO data; stopping\n");
++		return false;
++	}
++	return true;
++}
++
++/* Frame: 10 slots x 6 bytes; slot[0] = id<<3 | status, 1/2 = down. */
++static void
++gt_report(const uint8_t *frame)
++{
++	int x[NVT_MAX_TOUCH] = {0}, y[NVT_MAX_TOUCH] = {0};
++	uint32_t mask = 0;
++	for (unsigned i = 0; i < NVT_MAX_TOUCH; ++i) {
++		const uint8_t *p = frame + 6u * i;
++		unsigned id = p[0] >> 3, st = p[0] & 7u;
++		if (id == 0 || id > NVT_MAX_TOUCH || (st != 1u && st != 2u)) {
++			continue;
++		}
++		unsigned px = ((unsigned)p[1] << 4) | (p[3] >> 4);
++		unsigned py = ((unsigned)p[2] << 4) | (p[3] & 0xfu);
++		if (px > 1079u || py > 2399u) {
++			continue;
++		}
++		mask |= 1u << (id - 1);
++		x[id - 1] = (int)px;
++		y[id - 1] = (int)py;
++	}
++	for (unsigned i = 0; i < NVT_MAX_TOUCH; ++i) {
++		uint32_t bit = 1u << i;
++		if (mask & bit) {
++			if (!(gt.active & bit) || x[i] != gt.x[i] || y[i] != gt.y[i]) {
++				sweet_hid_touch((int)i, 1, x[i], y[i]);
++			}
++			gt.x[i] = x[i];
++			gt.y[i] = y[i];
++		} else if (gt.active & bit) {
++			sweet_hid_touch((int)i, 0, gt.x[i], gt.y[i]);
++		}
++	}
++	gt.active = mask;
++}
++
++static void
++gt_thread(void *arg, wait_result_t result)
++{
++	unsigned delay_s = 45, errors = 0;
++	(void)arg;
++	(void)result;
++	(void)PE_parse_boot_argn("gauguintouchdelay", &delay_s, sizeof(delay_s));
++	printf("GAUGUIN TOUCH: starting in %u s\n", delay_s);
++	gt_wait(delay_s * 1000u);
++	printf("GAUGUIN TOUCH: mapping GCC/TLMM/SE0\n");
++	gt.gcc = ml_io_map(GT_GCC_PA, 0x60000);
++	gt.tlmm = ml_io_map(GT_TLMM_PA, 0x5b0000);
++	gt.se = ml_io_map(GT_SE_PA, 0x4000);
++	if (!gt.gcc || !gt.tlmm || !gt.se) {
++		printf("GAUGUIN TOUCH: MMIO mapping failed\n");
++		goto out;
++	}
++	/* SPI pins first (mux qup00: gpio0/1 = 2, gpio2/3 = 1). */
++	gt_pin(0, 2, 0, 2, false);  /* SCL/SCK */
++	gt_pin(1, 2, 0, 2, false);  /* MISO   */
++	gt_pin(2, 1, 0, 2, false);  /* MOSI   */
++	gt_pin(3, 1, 0, 2, false);  /* CS     */
++	gt_pin(22, 0, 3, 0, false); /* irq input, pull-up */
++	/* Hold the IC in reset while the engine comes up. */
++	gt_pin(21, 0, 0, 2, false); /* reset low */
++	if (!gt_clocks() || !gt_se_init()) {
++		goto out;
++	}
++	gt_pin(21, 0, 0, 2, true);  /* release reset */
++	gt_wait(10);                /* power-on reset settle */
++	printf("GAUGUIN TOUCH: irq=%#x rst released\n",
++	    gt_rd(gt.tlmm, GT_GPIO_IO(22)));
++	/* Bootloader probe: reset to bootloader and read the trim id. */
++	int err = nvt_write_addr(NVT_SWRST, 0x69);
++	if (err) {
++		printf("GAUGUIN TOUCH: bootloader reset err=%d irq=%#x\n", err, gt.irq_status);
++		goto out;
++	}
++	gt_wait(5);
++	(void)nvt_write_addr(NVT_RD_FAST, 0);
++	uint8_t trim[6] = {0};
++	err = nvt_read_addr((NVT_TRIM_PAGE << 7) | NVT_TRIM_REG, trim, sizeof(trim));
++	printf("GAUGUIN TOUCH: trim err=%d id=%02x %02x %02x %02x %02x %02x irq=%#x\n",
++	    err, trim[0], trim[1], trim[2], trim[3], trim[4], trim[5], gt.irq_status);
++	/* NT36672A family: xx/FF/FF/72/66/03 (mask 0,0,0,1,1,1). */
++	bool known = !err && ((trim[3] == 0x72 && trim[4] == 0x66 && trim[5] == 0x03) ||
++	    (trim[0] == 0x0b && trim[3] == 0x72 && trim[4] == 0x66));
++	if (!known) {
++		printf("GAUGUIN TOUCH: unsupported/absent IC; stopping\n");
++		goto out;
++	}
++	/* Restart: with flash firmware the IC runs it; without, it stays in
++	 * the bootloader and the event buffer stays silent (needs the .bin). */
++	err = nvt_write_addr(NVT_SWRST, 0x69);
++	gt_wait(500);
++	uint8_t ev[60] = {0};
++	err = nvt_read_addr(NVT_EVENT_BUF, ev, sizeof(ev));
++	printf("GAUGUIN TOUCH: event head=%02x %02x %02x %02x err=%d irq=%#x\n",
++	    ev[0], ev[1], ev[2], ev[3], err, gt.irq_status);
++	printf("GAUGUIN TOUCH: polling 1080x2400 every 20 ms\n");
++	while (!gt.dead) {
++		gt_wait(20);
++		err = nvt_read_addr(NVT_EVENT_BUF, ev, sizeof(ev));
++		if (err) {
++			if ((errors++ % 50u) == 0) {
++				printf("GAUGUIN TOUCH: read err=%d irq=%#x\n", err, gt.irq_status);
++			}
++			continue;
++		}
++		errors = 0;
++		gt_report(ev);
++	}
++out:
++	if (!gt.dead) {
++		printf("GAUGUIN TOUCH: thread exit\n");
++	}
++	(void)thread_terminate(current_thread());
++}
++
++void
++gauguin_touch_init(void)
++{
++	int enabled = 1;
++	thread_t thread;
++	if (gt.started) {
++		return;
++	}
++	gt.started = true;
++	(void)PE_parse_boot_argn("gauguintouch", &enabled, sizeof(enabled));
++	if (!enabled) {
++		printf("GAUGUIN TOUCH: disabled (gauguintouch=0)\n");
++		return;
++	}
++	kern_return_t kr = kernel_thread_start(gt_thread, NULL, &thread);
++	if (kr == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("GAUGUIN TOUCH: kernel_thread_start failed %d\n", kr);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
