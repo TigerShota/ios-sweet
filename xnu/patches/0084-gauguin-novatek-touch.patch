@@ -30,7 +30,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,528 @@
+@@ -0,0 +1,524 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -55,7 +55,6 @@
 +#include <pexpert/pexpert.h>
 +
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
-+extern kern_return_t thread_terminate(thread_t);
 +extern void sweet_hid_touch(int finger, int down, int x, int y);
 +void gauguin_touch_init(void);
 +
@@ -403,7 +402,7 @@
 +	 */
 +	gt_wr(gt.se, 0x250, 0);                          /* CS0 = gpio3 */
 +	gt_wr(gt.se, 0x24c, 0);                          /* CS active low */
-+	gt_wr(gt.se, SPI_TRANS_CFG, 0);                  /* no CS toggling */
++	gt_wr(gt.se, SPI_TRANS_CFG, 1u);                  /* CS_TOGGLE: deassert CS after each command (Linux default) */
 +	gt_wr(gt.se, SPI_WORD_LEN, 0);                   /* 8-bit words */
 +	/* Four 8-bit bytes per 32-bit word, LSB byte first (Linux packing). */
 +	gt_wr(gt.se, 0x260, 0x0004380eu);
@@ -531,10 +530,7 @@
 +		gt_report(ev);
 +	}
 +out:
-+	if (!gt.dead) {
-+		printf("GAUGUIN TOUCH: thread exit\n");
-+	}
-+	(void)thread_terminate(current_thread());
++	printf("GAUGUIN TOUCH: thread exit\n");
 +}
 +
 +void
