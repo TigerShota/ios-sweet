@@ -9,33 +9,39 @@ import hashlib, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
-# Kernel-managed RAM: gauguin bank 1. mkpayload aligns virt_base 32 MiB below
-# the mach header and start.s maps V=P with 32 MiB L2 blocks, so phys_base
-# MUST be 32 MiB (0x2000000) aligned or execution dies the moment the MMU
-# turns on (observed: a2400000 -> dead after stage 0; c7b00000 -> no output
-# at all). b0000000 (aligned) runs to EARLY 12. 6 GB device, RAM windows per
-# Linux iomem: 9b000000-bcbfffff and c7b00000-1ffffffff.
-#   b0000000 + 4d00000 (spans removed_region hole) -> random silent resets
-#   100000000+ (upper bank)                        -> random silent resets
-#   b0000000 + cc00000 (204M, aligned, clean)      -> dies in pmap_bootstrap
-#   c7b00000 + 2a00000 (misaligned)                -> XNU does not execute
-#   a2400000 + 1a80000 (misaligned)                -> dead after start.s stage 0
-# Chosen: a4000000 + 20000000 (512M, 32M-aligned, ends bc000000, the exact
-# same top the proven-stable 384M window used). OBSERVED 2026-10-31: with
-# 9c000000+20000000 the splash framebuffer a0000000-a2300000 lies INSIDE the
-# window; once pmap starts freeing pages (after the root mounts)
-# pmap_assert_free panics on the still-mapped fbcon pages (pmap.c:2811). The
-# window must exclude the FB entirely: a4000000 is the first 32M-aligned base
-# above it.
-# OBSERVED 2026-11-01: 384M left only 22034 free pages (86MB) at
-# vm_page_bootstrap; iOS 16 first boot then wedged (all daemons alive but
-# every allocation/mach message blocked - no jetsam: the 50MB watermark opt-in
-# fails EINVAL), lsd reseed never finished, boot hung at the logo forever.
-# The original sweet ran the same image with 1.23G. OBSERVED 2026-11-02:
-# 576M (top bc800000) died before the sweetlog flush thread started - too
-# close to the bcc00000 removed_region. 512M keeps the proven top bc000000.
-PHYS_BASE = 0xa4000000
-MEM_SIZE = 0x20000000
+# Kernel-managed RAM. mkpayload aligns virt_base 32 MiB below the mach
+# header and start.s maps V=P with 32 MiB L2 blocks, so phys_base MUST be
+# 32 MiB (0x2000000) aligned or execution dies the moment the MMU turns on
+# (observed: a2400000 -> dead after stage 0; c7b00000 -> no output at all).
+# 6 GB device, RAM per Linux iomem: low bank 9b000000-bcbfffff (splash FB
+# carved at a0000000-a2300000), HOLE bcc00000-c7afffff (removed_region),
+# high bank c7b00000-1ffffffff (top carve-outs from 1_f8300000). Any window
+# that spans the hole puts the panic log (top of dram) and page allocations
+# into non-RAM and hangs the kernel:
+#   b0000000 + 4d00000 (spans hole)               -> random silent resets
+#   b0000000 + cc00000 (204M, aligned, clean)     -> dies in pmap_bootstrap
+#   a2400000 + 1a80000 (misaligned)               -> dead after start.s stage 0
+#   a4000000 + 18000000 (384M, top bc000000)      -> BOOTS to the logo, but
+#     only 22034 free pages (86MB) at vm_page_bootstrap: iOS 16 first boot
+#     wedged (all daemons alive, every allocation/mach message blocked, no
+#     jetsam - the 50MB watermark opt-in fails EINVAL), lsd reseed never
+#     finished (OBSERVED 2026-11-01). Largest valid a4000000-based window.
+#   a4000000 + 24000000 (576M, top c8000000)      -> dead before sweetlog
+#   a4000000 + 20000000 (512M, top c4000000)      -> stuck at SWEET EARLY 20
+#     (OBSERVED 2026-11-01; the earlier "512M ends bc000000" note was an
+#     arithmetic slip - 0xa4+0x20 = 0xc4. Both 576M/512M spanned the hole.)
+#   100000000+ (upper bank)                        -> random silent resets /
+#     PMIC reset when zones live at 1_00000000+ (4G boundary in the V=P L2
+#     mapping / lito XPU carve-outs; --highmem stays off)
+#   9c000000 + 20000000                            -> pmap_assert_free panic:
+#     the FB lies inside the window (pmap.c:2811)
+# Chosen: c8000000 + 38000000 (896M, 32M-aligned, entirely inside the high
+# bank BELOW 4G, no holes, FB far below; QEMU ram size adapts, see
+# qemu-sweet.py). Untested until now: the only high-bank attempts were the
+# misaligned c7b00000 and 4G+ addresses. 896M vs the 1.23G the original
+# sweet needed to reach the home screen.
+PHYS_BASE = 0xc8000000
+MEM_SIZE = 0x38000000
 # Panic log buffer, carved from the TOP of the dram range and exposed to XNU as
 # /pram + /chosen/embedded-panic-log-size. Without it, pe_init.c's
 # check_for_panic_log() leaves gPanicBase == 0, debug_log_init() bails out twice
