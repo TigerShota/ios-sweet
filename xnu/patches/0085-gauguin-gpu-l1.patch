@@ -120,12 +120,10 @@
 +	(void)PE_parse_boot_argn("gauguingpudelay", &delay_s, sizeof(delay_s));
 +	printf("GAUGUIN GPU: starting in %u s\n", delay_s);
 +	gg_wait(delay_s * 1000u);
-+	printf("GAUGUIN GPU: mapping GCC/GPUCC/GPU/GMU\n");
++	printf("GAUGUIN GPU: mapping GCC/GPUCC\n");
 +	gg.gcc = ml_io_map(GCC_PA, 0x60000);
 +	gg.gpucc = ml_io_map(GPUCC_PA, 0x9000);
-+	gg.gpu = ml_io_map(GPU_PA, GPU_SIZE);
-+	gg.gmu = ml_io_map(GMU_PA, 0x8000);
-+	if (!gg.gcc || !gg.gpucc || !gg.gpu || !gg.gmu) {
++	if (!gg.gcc || !gg.gpucc) {
 +		printf("GAUGUIN GPU: MMIO mapping failed\n");
 +		goto out;
 +	}
@@ -148,12 +146,14 @@
 +	printf("GAUGUIN GPU: gpucc xo=%#x gmu_cbcr=%#x gfx3d_src=%#x gfx3d_cbcr=%#x\n",
 +	    gg_rd(gg.gpucc, GPUCC_XO), gg_rd(gg.gpucc, GPUCC_GMU_CBCR),
 +	    gg_rd(gg.gpucc, GPUCC_GFX3D_SRC), gg_rd(gg.gpucc, GPUCC_GFX3D_CBCR));
-+	printf("GAUGUIN GPU: vbif_version=%#x rbbm_status=%#x\n",
-+	    gg_rd(gg.gpu, A6XX_VBIF_VERSION_DW * 4u),
-+	    gg_rd(gg.gpu, A6XX_RBBM_STATUS_DW * 4u));
-+	/* GMU block: A6xx GX power goes through the GMU firmware. */
-+	printf("GAUGUIN GPU: gmu[0x0]=%#x gmu[0x18]=%#x gmu[0x1c]=%#x\n",
-+	    gg_rd(gg.gmu, 0), gg_rd(gg.gmu, 0x18), gg_rd(gg.gmu, 0x1c));
++	/*
++	 * GPU-core (0x3d00000) and GMU (0x3d6a000) reads are NOT issued:
++	 * sweetlog23 showed the first such read wedges its CPU core forever
++	 * (never-retiring load), which also eats that core's timer queue -
++	 * the touch thread's 45 s deadline never fired and boot slowed to a
++	 * crawl. Those domains need the GMU firmware first; revisit in L2
++	 * behind gauguingpu=2.
++	 */
 +	if (!on) {
 +		printf("GAUGUIN GPU: CX GDSC did not power on (CX rail or parent?)\n");
 +	} else {
