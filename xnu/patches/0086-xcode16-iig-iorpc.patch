@@ -1,0 +1,70 @@
+--- a/iokit/DriverKit/IORPC.h
++++ b/iokit/DriverKit/IORPC.h
+@@ -224,6 +224,9 @@
+ 	IORPCMessageMach * reply;
+ 	uint32_t           sendSize;
+ 	uint32_t           replySize;
++#ifdef KERNEL
++	IORPCMessage     * kernelContent;
++#endif /* KERNEL */
+ };
+ typedef struct IORPC IORPC;
+ 
+--- a/iokit/IOKit/IORPC.h
++++ b/iokit/IOKit/IORPC.h
+@@ -224,6 +224,9 @@
+ 	IORPCMessageMach * reply;
+ 	uint32_t           sendSize;
+ 	uint32_t           replySize;
++#ifdef KERNEL
++	IORPCMessage     * kernelContent;
++#endif /* KERNEL */
+ };
+ typedef struct IORPC IORPC;
+ 
+--- a/iokit/Kernel/IOUserServer.cpp
++++ b/iokit/Kernel/IOUserServer.cpp
+@@ -2377,7 +2377,7 @@
+ 	IORPCMessage    * message;
+ 
+ 	assert(rpc.sendSize >= (sizeof(IORPCMessageMach) + sizeof(IORPCMessage)));
+-	message = IORPCMessageFromMach(rpc.message, false);
++	message = rpc.kernelContent ? rpc.kernelContent : IORPCMessageFromMach(rpc.message, false);
+ 	if (!message) {
+ 		return kIOReturnIPCError;
+ 	}
+@@ -3050,7 +3050,7 @@
+ 	IOReturn       ret;
+ 	IORPCMessage * message;
+ 
+-	message = IORPCMessageFromMach(rpc.message, false);
++	message = rpc.kernelContent ? rpc.kernelContent : IORPCMessageFromMach(rpc.message, false);
+ 	if (!message) {
+ 		return kIOReturnIPCError;
+ 	}
+@@ -3209,7 +3209,7 @@
+ 		msgout = (typeof(msgout))ikm_header(replykmsg);
+ 	}
+ 
+-	IORPC rpc = { .message = msgin, .reply = msgout, .sendSize = msgin->msgh.msgh_size, .replySize = replyAlloc };
++	IORPC rpc = { .message = msgin, .reply = msgout, .sendSize = msgin->msgh.msgh_size, .replySize = replyAlloc, .kernelContent = message };
+ 
+ 	if (object) {
+ 		kern_allocation_name_t prior;
+@@ -3358,6 +3358,7 @@
+ 	rpc.sendSize  = mach->msgh.msgh_size;
+ 	rpc.reply     = (IORPCMessageMach *) (p + inSize);
+ 	rpc.replySize = ((uint32_t) (sizeof(buffer.buffer) - inSize));    // inSize was checked
++	rpc.kernelContent = message;
+ 
+ 	message->objects[0] = 0;
+ 	if ((action = OSDynamicCast(OSAction, object))) {
+@@ -3450,7 +3451,7 @@
+ 
+ 	assert(sendSize >= (sizeof(IORPCMessageMach) + sizeof(IORPCMessage)));
+ 
+-	message = IORPCMessageFromMach(mach, false);
++	message = rpc.kernelContent ? rpc.kernelContent : IORPCMessageFromMach(mach, false);
+ 	if (!message) {
+ 		return kIOReturnIPCError;
+ 	}
