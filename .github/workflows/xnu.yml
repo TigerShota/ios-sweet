@@ -34,9 +34,10 @@ env:
 
 jobs:
   build:
-    # macos-14 still ships Xcode 15.x: its iig matches the xnu-8796 IORPC ABI
-    # (Xcode 16's iig emits IORPC.kernelContent, which this xnu lacks)
-    runs-on: macos-14
+    # macos-15 ships Xcode 16.x only; its iig emits IORPC.kernelContent, which
+    # stock xnu-8796 lacks -> patches/0086 back-ports the field + kernel
+    # plumbing. (macos-14 / Xcode 15 was retired by GitHub on 2026-11-02.)
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -56,12 +57,16 @@ jobs:
       - name: Deps
         run: |
           brew install jq gum bash cmake ninja
-          # build.sh only checks that xcodes exists (Xcode is preinstalled); no bottle on macOS 14
+          # build.sh only checks that the xcodes binary exists (Xcode is preinstalled)
           printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/local/bin/xcodes >/dev/null
           sudo chmod +x /usr/local/bin/xcodes
           sw_vers
           ls -d /Applications/Xcode*.app
-          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          # prefer the oldest Xcode 16 (least clang/iig drift from the Xcode 15
+          # this xnu was last green on); bare Xcode.app is the image default
+          # (newest: 16.4/26.x) and would win a plain sort|head -1
+          XC=$(ls -d /Applications/Xcode_16.1.app 2>/dev/null || true)
+          [ -n "$XC" ] || XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
           echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
           sudo xcode-select -s "$XC"
           xcodebuild -version
@@ -72,7 +77,25 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
+          # Xcode 16 clang trips warnings xnu-8796's -Weverything set never saw
+          # on Xcode 15; keep them non-fatal for this migration build (the log
+          # still shows every warning for triage). Set to 1 to restore -Werror.
+          BUILD_WERROR: "0"
         run: bash build.sh
+
+      - name: Dump iig-generated code (Xcode 16 ABI check)
+        if: always()
+        run: |
+          GEN=$(ls -d dxb/build/xnu.obj/*/iokit/DriverKit 2>/dev/null | head -1 || true)
+          if [ -z "$GEN" ]; then echo "no generated DriverKit dir (iig never ran)"; exit 0; fi
+          echo "=== iig version banners ==="
+          head -1 "$GEN"/OSObject.iig.cpp "$GEN"/IOUserServer.iig.cpp 2>/dev/null || true
+          echo "=== kernelContent refs in generated code ==="
+          grep -n -B2 -A4 'kernelContent' "$GEN"/*.iig.cpp | head -120 || echo "(none)"
+          echo "=== IORPCMessageFromMach refs in generated code ==="
+          grep -n 'IORPCMessageFromMach' "$GEN"/*.iig.cpp | head -40 || echo "(none)"
+          echo "=== OSObject invocation union layout ==="
+          grep -n -B2 -A12 'typedef union' "$GEN"/OSObject.iig.cpp | head -80 || true
 
       - name: Package build tree for local compiles
         if: always()
