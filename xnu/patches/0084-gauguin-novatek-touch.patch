@@ -30,7 +30,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,512 @@
+@@ -0,0 +1,519 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -174,9 +174,27 @@
 +	gt_wr(gt.se, SE_IRQ_CLR, 0xffffffffu);
 +	gt_wr(gt.se, SPI_TX_LEN, tx || duplex ? len : 0u);
 +	gt_wr(gt.se, SPI_RX_LEN, rx || duplex ? len : 0u);
++	/*
++	 * Pre-fill the TX FIFO before starting: with the watermark at 1 word
++	 * a 1-3 byte transfer never reaches it, TX_READY never asserts and
++	 * the sequencer completes with the payload still unsent (sweetlog20:
++	 * DONE+watermarks, err=5, zero RX). GENI accepts FIFO writes while
++	 * the engine is idle.
++	 */
++	unsigned prefilled = 0;
++	if (tx || duplex) {
++		for (unsigned w = 0; w < len; w += 4) {
++			uint32_t v = 0;
++			for (unsigned j = 0; j < 4 && w + j < len; ++j) {
++				v |= (uint32_t)tx[w + j] << (8u * j);
++			}
++			gt_wr(gt.se, SE_TX, v);
++		}
++		prefilled = len;
++	}
 +	gt_wr(gt.se, SE_CMD, ((duplex ? SPI_OP_DUPLEX :
 +	    (tx ? SPI_OP_TX : SPI_OP_RX)) << 27));
-+	unsigned sent = 0, got = 0;
++	unsigned got = 0;
 +	int err = ETIMEDOUT;
 +	for (unsigned i = 0; i < 20000; ++i) {
 +		uint32_t irq = gt_rd(gt.se, SE_IRQ);
@@ -184,17 +202,6 @@
 +		if (irq & SE_ERRORS) {
 +			err = EIO;
 +			goto out;
-+		}
-+		if ((tx || duplex) && !sent && (irq & SE_TX_READY)) {
-+			/* Four 8-bit bytes per 32-bit word, LSB byte first. */
-+			for (unsigned w = 0; w < len; w += 4) {
-+				uint32_t v = 0;
-+				for (unsigned j = 0; j < 4 && w + j < len; ++j) {
-+					v |= (uint32_t)tx[w + j] << (8u * j);
-+				}
-+				gt_wr(gt.se, SE_TX, v);
-+			}
-+			sent = len;
 +		}
 +		uint32_t count = gt_rd(gt.se, SE_RX_COUNT) & 0x1ffffffu;
 +		if (count > 64) {
@@ -209,7 +216,7 @@
 +		}
 +		if (irq & SE_DONE) {
 +			gt_wr(gt.se, SE_IRQ_CLR, irq);
-+			if ((!(tx || duplex) || sent == len) &&
++			if ((!(tx || duplex) || prefilled == len) &&
 +			    (!(rx || duplex) || got == len)) {
 +				return 0;
 +			}
