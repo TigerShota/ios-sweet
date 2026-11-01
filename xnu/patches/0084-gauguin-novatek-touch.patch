@@ -30,7 +30,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,519 @@
+@@ -0,0 +1,528 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -394,6 +394,15 @@
 +	gt_wr(gt.se, SE_M_CLK_CFG, (2u << 4) | 1u);      /* SCK 4.8 MHz */
 +	gt_wr(gt.se, SPI_CPHA, 0);                       /* mode 0 */
 +	gt_wr(gt.se, SPI_CPOL, 0);
++	gt_wr(gt.se, 0x22c, 0);                          /* no loopback */
++	/*
++	 * CS demux: selects which of the 4 CS outputs the sequencer drives
++	 * (Linux writes SE_SPI_DEMUX_SEL = chip_select in setup_fifo_params).
++	 * Without it the engine never asserts CS and M_CMD never completes
++	 * (sweetlog21: TX watermark stuck, DONE never arrives, err=60).
++	 */
++	gt_wr(gt.se, 0x250, 0);                          /* CS0 = gpio3 */
++	gt_wr(gt.se, 0x24c, 0);                          /* CS active low */
 +	gt_wr(gt.se, SPI_TRANS_CFG, 0);                  /* no CS toggling */
 +	gt_wr(gt.se, SPI_WORD_LEN, 0);                   /* 8-bit words */
 +	/* Four 8-bit bytes per 32-bit word, LSB byte first (Linux packing). */
