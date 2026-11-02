@@ -932,7 +932,7 @@
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch_fw.c
-@@ -0,0 +1,17427 @@
+@@ -0,0 +1,17428 @@
 +/*
 + * gauguin NT36675 touch firmware (novatek_ts_fw01/02.bin - tianma/
 + * csot panel variants) from the LineageOS android_kernel_xiaomi_
