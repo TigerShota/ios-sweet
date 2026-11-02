@@ -30,7 +30,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,597 @@
+@@ -0,0 +1,632 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -44,6 +44,9 @@
 + * v7: packing CFG1 0x000FFEFE (v6 typo'd F/E -> garbled unpack, the
 + * sweetlog24/25 stall) and the Linux transfer order: M_CMD first, then
 + * TX_WATERMARK=1 arms the FIFO pump; data is pushed on TX_READY.
++ * v8: trim page fix (v7 double-shifted the address: page 0x1F600 instead
++ * of 0x3EC -> blank xdata -> all-FF id) + vendor probe key (eng reset
++ * 0x5A->0x7FFF80 sent while TP_RESX is LOW) + 5x trim retries + frame dump.
 + * Boot-args: gauguintouch=0/1 (default on), gauguintouchdelay=<seconds>.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -114,9 +117,11 @@
 +/* Novatek NT36672A (memory map + protocol from nt36xxx). */
 +#define NVT_SWRST      0x3f0feu
 +#define NVT_RD_FAST    0x3f310u
++#define NVT_ENG_RST    0x7fff80u
 +#define NVT_EVENT_BUF  0x21c00u
-+#define NVT_TRIM_PAGE  0x1f600u
-+#define NVT_TRIM_REG   0x4eu
++/* mmap values are ABSOLUTE xdata addresses: page = addr>>7 (vendor
++ * nvt_set_page(0x1F600) -> page 0x3EC), reg = addr & 0x7F. */
++#define NVT_TRIM_ADDR  (0x1f600u + 0x4eu)
 +#define NVT_MAX_TOUCH  10u
 +
 +static struct {
@@ -554,27 +559,57 @@
 +	if (!gt_se_init()) {
 +		goto out;
 +	}
-+	printf("GAUGUIN TOUCH: step5 releasing reset\n");
++	/*
++	 * Vendor probe key (nt36xxx.c 1802 + fw_update.c 1021: "Keep TP_RESX
++	 * low when send eng reset cmd"): the IC latches the eng-reset command
++	 * sent during reset and enters the bootloader on release instead of
++	 * running its flash firmware (flash boot ignores SPI for 100ms+ -
++	 * the sweetlog26 all-FF trim even with a good transfer).
++	 */
++	printf("GAUGUIN TOUCH: step5 eng reset (TP_RESX low)\n");
++	{
++		int eerr = nvt_write_addr(NVT_ENG_RST, 0x5A);
++		printf("GAUGUIN TOUCH: eng reset err=%d irq=%#x\n",
++		    eerr, gt.irq_status);
++	}
 +	gt_pin(21, 0, 0, 2, true);  /* release reset */
-+	gt_wait(10);                /* power-on reset settle */
++	gt_wait(10);                /* vendor: msleep(10) after POR */
 +	printf("GAUGUIN TOUCH: irq=%#x rst released\n",
 +	    gt_rd(gt.tlmm, GT_GPIO_IO(22)));
-+	/* Bootloader probe: reset to bootloader and read the trim id. */
++	/*
++	 * Vendor check_chip_ver_trim: up to 5 tries, each one a fresh
++	 * bootloader reset (SWRST 0x69, tBRST2FR 5ms, SPI_RD_FAST off)
++	 * followed by set_page + a 7-byte read at reg 0x4E. The whole frame
++	 * is dumped: rx[0] echoes the address byte (IC alive), rx[1] is the
++	 * dummy, rx[2..7] are the id (v7 read page 0x1F600 = 128x the right
++	 * page 0x3EC - blank xdata - hence all FF).
++	 */
 +	printf("GAUGUIN TOUCH: step6 bootloader reset\n");
-+	int err = nvt_write_addr(NVT_SWRST, 0x69);
-+	if (err) {
-+		printf("GAUGUIN TOUCH: bootloader reset err=%d irq=%#x\n", err, gt.irq_status);
-+		goto out;
-+	}
-+	gt_wait(5);
-+	(void)nvt_write_addr(NVT_RD_FAST, 0);
 +	uint8_t trim[6] = {0};
-+	err = nvt_read_addr((NVT_TRIM_PAGE << 7) | NVT_TRIM_REG, trim, sizeof(trim));
-+	printf("GAUGUIN TOUCH: trim err=%d id=%02x %02x %02x %02x %02x %02x irq=%#x\n",
-+	    err, trim[0], trim[1], trim[2], trim[3], trim[4], trim[5], gt.irq_status);
-+	/* NT36672A family: xx/FF/FF/72/66/03 (mask 0,0,0,1,1,1). */
-+	bool known = !err && ((trim[3] == 0x72 && trim[4] == 0x66 && trim[5] == 0x03) ||
-+	    (trim[0] == 0x0b && trim[3] == 0x72 && trim[4] == 0x66));
++	int err = EIO;
++	bool known = false;
++	for (unsigned try = 1; try <= 5 && !known; ++try) {
++		err = nvt_write_addr(NVT_SWRST, 0x69);
++		if (err) {
++			printf("GAUGUIN TOUCH: bl reset err=%d irq=%#x (try %u)\n",
++			    err, gt.irq_status, try);
++			gt_wait(10);
++			continue;
++		}
++		gt_wait(5);  /* tBRST2FR */
++		(void)nvt_write_addr(NVT_RD_FAST, 0);
++		uint8_t frame[8] = {0};
++		err = nvt_read_addr(NVT_TRIM_ADDR, frame + 2, 6);
++		memcpy(trim, frame + 2, 6);
++		printf("GAUGUIN TOUCH: trim try%u frame=%02x %02x | id=%02x %02x %02x "
++		    "%02x %02x %02x err=%d irq=%#x\n", try, frame[0], frame[1],
++		    trim[0], trim[1], trim[2], trim[3], trim[4], trim[5],
++		    err, gt.irq_status);
++		/* NT36672A family: xx/FF/FF/72/66/03 (mask 0,0,0,1,1,1). */
++		known = !err && ((trim[3] == 0x72 && trim[4] == 0x66 &&
++		    trim[5] == 0x03) || (trim[0] == 0x0b && trim[3] == 0x72 &&
++		    trim[4] == 0x66));
++	}
 +	if (!known) {
 +		printf("GAUGUIN TOUCH: unsupported/absent IC; stopping\n");
 +		goto out;
