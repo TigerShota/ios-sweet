@@ -1,8 +1,9 @@
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -113,3 +114,4 @@
+@@ -113,4 +114,5 @@
  bsd/dev/sweet_usb.c			standard
  bsd/dev/gauguin_touch.c			standard
+ bsd/dev/gauguin_touch_fw.c		standard
 +bsd/dev/gauguin_gpu.c			standard
  bsd/dev/mem.c				standard
 --- a/bsd/dev/sweet_ufs.c
