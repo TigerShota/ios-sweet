@@ -1,12 +1,13 @@
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -109,6 +109,7 @@
+@@ -109,6 +109,8 @@
  bsd/dev/sweet_keys.c			standard
  bsd/dev/sweet_touch.c			standard
  bsd/dev/sweet_rpmh.c			standard
  bsd/dev/sweet_spmi.c			standard
  bsd/dev/sweet_usb.c			standard
 +bsd/dev/gauguin_touch.c			standard
++bsd/dev/gauguin_touch_fw.c		standard
  bsd/dev/mem.c				standard
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
@@ -72,8 +73,8 @@
 +extern kern_return_t thread_terminate(thread_t);
 +extern void sweet_hid_touch(int finger, int down, int x, int y);
 +void gauguin_touch_init(void);
-+/* NT36675 panel firmwares (generated from the LineageOS gauguin kernel
-+ * firmware/ ihex blobs; see bsd/dev/gauguin_touch_fw.h). */
++/* NT36675 panel firmwares: defined in bsd/dev/gauguin_touch_fw.c
++ * (novatek_ts_fw01/02.bin from the LineageOS gauguin kernel firmware/). */
 +extern const uint8_t nvt_fw01[], nvt_fw02[];
 +extern const unsigned nvt_fw01_len, nvt_fw02_len;
 +
@@ -930,12 +931,13 @@
 +}
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
 --- /dev/null
-+++ b/bsd/dev/gauguin_touch_fw.h
++++ b/bsd/dev/gauguin_touch_fw.c
 @@ -0,0 +1,17427 @@
 +/*
 + * gauguin NT36675 touch firmware (novatek_ts_fw01/02.bin - tianma/
 + * csot panel variants) from the LineageOS android_kernel_xiaomi_
-+ * gauguin firmware/ ihex blobs. Generated - do not edit.
++ * gauguin firmware/ ihex blobs. Compiled as its own unit so the big
++ * const arrays land in one object file. Generated - do not edit.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +#include <sys/types.h>
