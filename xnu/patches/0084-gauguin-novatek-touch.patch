@@ -30,7 +30,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,632 @@
+@@ -0,0 +1,666 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -47,6 +47,11 @@
 + * v8: trim page fix (v7 double-shifted the address: page 0x1F600 instead
 + * of 0x3EC -> blank xdata -> all-FF id) + vendor probe key (eng reset
 + * 0x5A->0x7FFF80 sent while TP_RESX is LOW) + 5x trim retries + frame dump.
++ * v9: dual-path probe. A = mainline novatek-nvt-ts.c path (reset release
++ * -> 100ms -> read fwinfo params @ event page +0x78, chip_id 0x08; flash
++ * fw running means no bootloader needed at all). B = vendor bootloader
++ * path (v8) only if A sees nothing. GPU fw (a619_gmu.bin etc.) extracted
++ * from the vendor image to D:\hackios\out\fw for the later GMU port.
 + * Boot-args: gauguintouch=0/1 (default on), gauguintouchdelay=<seconds>.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -119,6 +124,9 @@
 +#define NVT_RD_FAST    0x3f310u
 +#define NVT_ENG_RST    0x7fff80u
 +#define NVT_EVENT_BUF  0x21c00u
++/* mainline NVT_TS_PARAMETERS_START / vendor EVENT_MAP_FWINFO */
++#define NVT_FWINFO     (NVT_EVENT_BUF + 0x78u)
++#define NVT_CHIP_ID    0x08u   /* NT36672A per mainline novatek-nvt-ts */
 +/* mmap values are ABSOLUTE xdata addresses: page = addr>>7 (vendor
 + * nvt_set_page(0x1F600) -> page 0x3EC), reg = addr & 0x7F. */
 +#define NVT_TRIM_ADDR  (0x1f600u + 0x4eu)
@@ -559,23 +567,36 @@
 +	if (!gt_se_init()) {
 +		goto out;
 +	}
-+	/*
-+	 * Vendor probe key (nt36xxx.c 1802 + fw_update.c 1021: "Keep TP_RESX
-+	 * low when send eng reset cmd"): the IC latches the eng-reset command
-+	 * sent during reset and enters the bootloader on release instead of
-+	 * running its flash firmware (flash boot ignores SPI for 100ms+ -
-+	 * the sweetlog26 all-FF trim even with a good transfer).
-+	 */
-+	printf("GAUGUIN TOUCH: step5 eng reset (TP_RESX low)\n");
-+	{
-+		int eerr = nvt_write_addr(NVT_ENG_RST, 0x5A);
-+		printf("GAUGUIN TOUCH: eng reset err=%d irq=%#x\n",
-+		    eerr, gt.irq_status);
-+	}
++	printf("GAUGUIN TOUCH: step5 releasing reset (flash-boot path)\n");
 +	gt_pin(21, 0, 0, 2, true);  /* release reset */
-+	gt_wait(10);                /* vendor: msleep(10) after POR */
++	gt_wait(200);               /* mainline: msleep(100) after release */
 +	printf("GAUGUIN TOUCH: irq=%#x rst released\n",
 +	    gt_rd(gt.tlmm, GT_GPIO_IO(22)));
++	/*
++	 * Path A (mainline novatek-nvt-ts.c): with flash firmware the IC is
++	 * just... running. Read the fwinfo parameter block from the event
++	 * page and check for sane values (layout per mainline: +4 width BE16,
++	 * +6 height BE16, +9 max_touches, +0xb irq_type, +0xe chip_id).
++	 */
++	uint8_t fwinfo[15] = {0};
++	int ferr = nvt_read_addr(NVT_FWINFO, fwinfo, sizeof(fwinfo));
++	unsigned fw_w = ((unsigned)fwinfo[4] << 8) | fwinfo[5];
++	unsigned fw_h = ((unsigned)fwinfo[6] << 8) | fwinfo[7];
++	unsigned fw_max = fwinfo[9];
++	unsigned fw_irq = fwinfo[0xb];
++	unsigned fw_chip = fwinfo[0xe];
++	printf("GAUGUIN TOUCH: pathA fwinfo err=%d w=%u h=%u max=%u irq=%u "
++	    "chip=%02x | %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x "
++	    "%02x %02x %02x %02x\n", ferr, fw_w, fw_h, fw_max, fw_irq, fw_chip,
++	    fwinfo[0], fwinfo[1], fwinfo[2], fwinfo[3], fwinfo[4], fwinfo[5],
++	    fwinfo[6], fwinfo[7], fwinfo[8], fwinfo[9], fwinfo[10], fwinfo[11],
++	    fwinfo[12], fwinfo[13], fwinfo[14]);
++	bool fw_running = !ferr && (fw_chip == NVT_CHIP_ID ||
++	    (fw_w >= 300 && fw_w <= 4096 && fw_h >= 300 && fw_h <= 4096 &&
++	    fw_max >= 1 && fw_max <= 10));
++	if (fw_running) {
++		printf("GAUGUIN TOUCH: flash firmware RUNNING (mainline path)\n");
++	}
 +	/*
 +	 * Vendor check_chip_ver_trim: up to 5 tries, each one a fresh
 +	 * bootloader reset (SWRST 0x69, tBRST2FR 5ms, SPI_RD_FAST off)
@@ -584,10 +605,23 @@
 +	 * dummy, rx[2..7] are the id (v7 read page 0x1F600 = 128x the right
 +	 * page 0x3EC - blank xdata - hence all FF).
 +	 */
-+	printf("GAUGUIN TOUCH: step6 bootloader reset\n");
++	int err = 0;
++	if (!fw_running) {
++		/*
++		 * Path B (vendor fw_update.c 1021): "Keep TP_RESX low when send
++		 * eng reset cmd" - hold reset, 1 ms, eng reset write, release,
++		 * 10 ms, then the SWRST bootloader entry + trim read.
++		 */
++		printf("GAUGUIN TOUCH: pathB eng reset (TP_RESX low)\n");
++		gt_pin(21, 0, 0, 2, false); /* hold reset low */
++		gt_wait(2);
++		(void)nvt_write_addr(NVT_ENG_RST, 0x5A);
++		gt_pin(21, 0, 0, 2, true);  /* release */
++		gt_wait(10);
++	}
 +	uint8_t trim[6] = {0};
-+	int err = EIO;
-+	bool known = false;
++	bool known = fw_running;
++	printf("GAUGUIN TOUCH: step6 bootloader reset (pathB)\n");
 +	for (unsigned try = 1; try <= 5 && !known; ++try) {
 +		err = nvt_write_addr(NVT_SWRST, 0x69);
 +		if (err) {
