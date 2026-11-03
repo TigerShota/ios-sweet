@@ -31,7 +31,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,932 @@
+@@ -0,0 +1,968 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -51,10 +51,15 @@
 + * v10: the IC is NT36675 (trim id 0x0C/xx/xx/72/66/03 - vendor trim table
 + * row 1), NOT NT36672A: EVENT_BUF is 0x22D00 (v9 polled the NT36672A page
 + * 0x21C00 - wrong address all along), hw_crc=2 (CRC-bank LENGTH is 4 bytes)
-+ * and DMA_CRC_EN is 0x3F136. Firmware = novatek_ts_fw01/02.bin (NT36675
-+ * panel variants, from the LineageOS gauguin kernel firmware/ dir, ihex
-+ * -> bin), embedded as C arrays; host download per vendor
-+ * nvt_download_firmware_hw_crc. Boot-arg gauguintouchfw=1/2 (default 1).
++ * and DMA_CRC_EN is 0x3F136. Firmware = novatek_nt36672c_j17_fw01/02.bin
++ * (the panel's own flash images; the generic novatek_ts_fw01.bin passes
++ * its own golden CRC but never boots - the v11 lesson), embedded as C
++ * arrays; host download per vendor nvt_download_firmware_hw_crc with
++ * the info-12 partition (SRAM 0x27040) - verified on HW: R_ILM ==
++ * golden, fwinfo w=1080 h=2400 max=10. v13: after the final SWRST
++ * wait for reset state NORMAL_RUN (0xA3, vendor
++ * nvt_check_fw_reset_state) and dump every changing event frame while
++ * polling (v12 touch: silent). Boot-arg gauguintouchfw=1/2 (default 1).
 + * Boot-args: gauguintouch=0/1 (default on), gauguintouchdelay=<seconds>.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -918,8 +923,28 @@
 +	/* Restart: with flash firmware the IC runs it; without, it stays in
 +	 * the bootloader and the event buffer stays silent (needs the .bin). */
 +	err = nvt_write_addr(NVT_SWRST, 0x69);
-+	gt_wait(500);
-+	uint8_t ev[60] = {0};
++	gt_wait(10);
++	/* v13: vendor nvt_check_fw_reset_state - the fw walks init (0xA0)
++	 * -> rek (0xA1) -> rek_finish (0xA2) -> normal_run (0xA3); v12
++	 * entered the poll loop 500 ms after the SWRST while the fw was
++	 * still mid-init (event head ff 48 54 fa is a ReK-phase frame).
++	 * >= state and <= RESET_MAX (0xAF) also rejects 0xFF blank. */
++	unsigned rst = 0, rst_ms = 0;
++	for (unsigned i = 0; i < 200; ++i) {
++		uint8_t st[1] = {0};
++		if (!nvt_read_addr(NVT_EVENT_BUF | NVT_EVT_RESET_COMPLETE, st, 1) &&
++		    st[0] != rst) {
++			rst = st[0];
++			rst_ms = i * 10u;
++			printf("GAUGUIN TOUCH: reset state %#x (t=%u ms)\n", rst, rst_ms);
++		}
++		if (rst >= 0xa3u && rst <= 0xafu) {
++			break;
++		}
++		gt_wait(10);
++	}
++	printf("GAUGUIN TOUCH: reset wait done state=%#x at %u ms\n", rst, rst_ms);
++	uint8_t ev[60] = {0}, ev_last[12] = {0};
 +	err = nvt_read_addr(NVT_EVENT_BUF, ev, sizeof(ev));
 +	printf("GAUGUIN TOUCH: event head=%02x %02x %02x %02x err=%d irq=%#x\n",
 +	    ev[0], ev[1], ev[2], ev[3], err, gt.irq_status);
@@ -934,6 +959,17 @@
 +			continue;
 +		}
 +		errors = 0;
++		/* v13: dump any frame that differs from the last (first 12 B =
++		 * 2 slots); a finger press must show up here - total silence
++		 * means the fw never reached run state or the sensor path is
++		 * dead upstream of the SPI (0x77x6 fw / 0xFDx6 wdt recovery). */
++		if (memcmp(ev, ev_last, sizeof(ev_last)) != 0) {
++			printf("GAUGUIN TOUCH: ev %02x %02x %02x %02x %02x %02x "
++			    "%02x %02x %02x %02x %02x %02x\n",
++			    ev[0], ev[1], ev[2], ev[3], ev[4], ev[5],
++			    ev[6], ev[7], ev[8], ev[9], ev[10], ev[11]);
++			memcpy(ev_last, ev, sizeof(ev_last));
++		}
 +		gt_report(ev);
 +	}
 +out:
