@@ -46,13 +46,15 @@ jobs:
           sudo chmod +x /usr/local/bin/mkbootimg
 
       - name: iPhone X device tree (/product for MobileGestalt)
+        env:
+          GH_TOKEN: ${{ github.token }}   # api.github.com 403s unauthenticated calls from runner IPs
         run: |
           set -e
           URL=$(curl -fsSL "https://api.ipsw.me/v4/device/iPhone10,3?type=ipsw" | jq -r '.firmwares[] | select(.version=="16.7.16") | .url')
           echo "IPSW: $URL"
           mkdir -p research/ipsw-x/dt
           python3 tools/remotezip.py "$URL" DeviceTree.d22ap.im4p research/ipsw-x/dt
-          ASSET=$(curl -fsSL https://api.github.com/repos/blacktop/ipsw/releases/latest | jq -r '.assets[] | select(.name | test("^ipsw_.*_linux_x86_64\\.tar\\.gz$")) | .browser_download_url')
+          ASSET=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/blacktop/ipsw/releases/latest | jq -r '.assets[] | select(.name | test("^ipsw_.*_linux_x86_64\\.tar\\.gz$")) | .browser_download_url')
           echo "ipsw: $ASSET"
           curl -fsSL -o /tmp/ipsw.tgz "$ASSET"
           tar xf /tmp/ipsw.tgz -C /tmp
