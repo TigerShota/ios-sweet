@@ -1,0 +1,19 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -710,6 +710,16 @@
+ 	}
+ 	hfi_w = (uint32_t *)(gmem + GMEM_HFI);
+ 	hfi_build_table();
++	/*
++	 * The probe reads GR0 immediately, so the SMMU mem_iface clock must be
++	 * on FIRST. 0090 enabled it only later in the GMU clock block - after
++	 * the probe - which is why v18 still died between "GMEM pa=" and the
++	 * sCR0 banner (sweetlog35, total 126699).
++	 */
++	gg_wr(gg.gcc, GCC_GPU_SNOC_DVM, gg_rd(gg.gcc, GCC_GPU_SNOC_DVM) | 1u);
++	printf("GAUGUIN GPU: smmu_clk snoc_dvm=%#x\n",
++	    gg_rd(gg.gcc, GCC_GPU_SNOC_DVM));
++	(void)sweet_log_flush_now();
+ 	gauguin_smmu_probe();
+ 
+ 	/* GMU clocks: GPLL0 chain, memnoc, ddrss AXI. */
