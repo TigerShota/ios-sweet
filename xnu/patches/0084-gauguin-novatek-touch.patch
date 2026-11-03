@@ -56,10 +56,13 @@
 + * its own golden CRC but never boots - the v11 lesson), embedded as C
 + * arrays; host download per vendor nvt_download_firmware_hw_crc with
 + * the info-12 partition (SRAM 0x27040) - verified on HW: R_ILM ==
-+ * golden, fwinfo w=1080 h=2400 max=10. v13: after the final SWRST
-+ * wait for reset state NORMAL_RUN (0xA3, vendor
-+ * nvt_check_fw_reset_state) and dump every changing event frame while
-+ * polling (v12 touch: silent). Boot-arg gauguintouchfw=1/2 (default 1).
++ * golden, fwinfo w=1080 h=2400 max=10. v14: no SWRST after the
++ * download - vendor ends at nvt_boot_ready + check_fw_reset_state(INIT)
++ * with the fw already running and never resets again; our final SWRST
++ * 0x69 killed it (sweetlog31: 0xA1 stale 2 s, event buffer frozen).
++ * Poll the event buffer right away and watch the reset state climb
++ * 0xA1 -> 0xA2 -> 0xA3; changing frames are dumped while polling.
++ * Boot-arg gauguintouchfw=1/2 (default 1).
 + * Boot-args: gauguintouch=0/1 (default on), gauguintouchdelay=<seconds>.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -920,30 +923,14 @@
 +		fw_running = !ferr && (fw_chip == NVT_CHIP_ID ||
 +		    (fw_w >= 300 && fw_w <= 4096 && fw_h >= 300 && fw_h <= 4096));
 +	}
-+	/* Restart: with flash firmware the IC runs it; without, it stays in
-+	 * the bootloader and the event buffer stays silent (needs the .bin). */
-+	err = nvt_write_addr(NVT_SWRST, 0x69);
-+	gt_wait(10);
-+	/* v13: vendor nvt_check_fw_reset_state - the fw walks init (0xA0)
-+	 * -> rek (0xA1) -> rek_finish (0xA2) -> normal_run (0xA3); v12
-+	 * entered the poll loop 500 ms after the SWRST while the fw was
-+	 * still mid-init (event head ff 48 54 fa is a ReK-phase frame).
-+	 * >= state and <= RESET_MAX (0xAF) also rejects 0xFF blank. */
-+	unsigned rst = 0, rst_ms = 0;
-+	for (unsigned i = 0; i < 200; ++i) {
-+		uint8_t st[1] = {0};
-+		if (!nvt_read_addr(NVT_EVENT_BUF | NVT_EVT_RESET_COMPLETE, st, 1) &&
-+		    st[0] != rst) {
-+			rst = st[0];
-+			rst_ms = i * 10u;
-+			printf("GAUGUIN TOUCH: reset state %#x (t=%u ms)\n", rst, rst_ms);
-+		}
-+		if (rst >= 0xa3u && rst <= 0xafu) {
-+			break;
-+		}
-+		gt_wait(10);
-+	}
-+	printf("GAUGUIN TOUCH: reset wait done state=%#x at %u ms\n", rst, rst_ms);
++	/* v14: no SWRST after the download. vendor nvt_download_firmware_hw_crc
++	 * ends at nvt_boot_ready() + nvt_check_fw_reset_state(INIT) with the
++	 * fw already running; the probe then only waits REK (0xA1) and never
++	 * resets again - the fw finishes its own calibration. Our v12/v13
++	 * final SWRST 0x69 killed the running fw (sweetlog31: 0xA1 stale
++	 * for the whole 2 s poll, event buffer frozen). Poll the event
++	 * buffer right away and watch the reset state climb instead. */
++	unsigned rst = 0, polls = 0;
 +	uint8_t ev[60] = {0}, ev_last[12] = {0};
 +	err = nvt_read_addr(NVT_EVENT_BUF, ev, sizeof(ev));
 +	printf("GAUGUIN TOUCH: event head=%02x %02x %02x %02x err=%d irq=%#x\n",
@@ -959,6 +946,19 @@
 +			continue;
 +		}
 +		errors = 0;
++		/* v14: watch the reset state byte (event+0x60, outside the
++		 * 60-byte frame read): 0xA1 rek -> 0xA2 baseline ready ->
++		 * 0xA3 normal run. Frozen after the download means the fw
++		 * is stuck mid-calibration. */
++		if ((polls++ % 50u) == 0) {
++			uint8_t st[1] = {0};
++			if (!nvt_read_addr(NVT_EVENT_BUF | NVT_EVT_RESET_COMPLETE,
++			    st, 1) && st[0] != rst) {
++				rst = st[0];
++				printf("GAUGUIN TOUCH: reset state %#x (polling)\n",
++				    rst);
++			}
++		}
 +		/* v13: dump any frame that differs from the last (first 12 B =
 +		 * 2 slots); a finger press must show up here - total silence
 +		 * means the fw never reached run state or the sensor path is
