@@ -1,0 +1,94 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -424,30 +424,36 @@
+ 		return;
+ 	}
+ 	cb = s + SMMU_CB(GG_CB);
+-	printf("GAUGUIN SMMU: sCR0=%#x IDR0=%#x IDR1=%#x IDR2=%#x micro=%#x\n",
+-	    gg_rd(s, SMMU_sCR0), gg_rd(s, SMMU_IDR0), gg_rd(s, SMMU_IDR1),
+-	    gg_rd(s, SMMU_IDR2), gg_rd(s, SMMU_MICRO_MMU_CTRL));
+-	printf("GAUGUIN SMMU: gfsr=%#x gfsynr0=%#x gfsynr1=%#x\n",
+-	    gg_rd(s, SMMU_GFSR), gg_rd(s, SMMU_GFSYNR0), gg_rd(s, SMMU_GFSYNR1));
++	/* v23: one read per printf (back-to-back reads inside one printf's
++	 * argument evaluation deadlocked the interconnect on sm6350). */
++	printf("GAUGUIN SMMU: sCR0=%#x\n", gg_rd(s, SMMU_sCR0));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN SMMU: IDR0=%#x\n", gg_rd(s, SMMU_IDR0));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN SMMU: IDR1=%#x\n", gg_rd(s, SMMU_IDR1));
++	printf("GAUGUIN SMMU: IDR2=%#x\n", gg_rd(s, SMMU_IDR2));
++	printf("GAUGUIN SMMU: micro=%#x\n", gg_rd(s, SMMU_MICRO_MMU_CTRL));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN SMMU: gfsr=%#x\n", gg_rd(s, SMMU_GFSR));
++	printf("GAUGUIN SMMU: gfsynr0=%#x\n", gg_rd(s, SMMU_GFSYNR0));
++	printf("GAUGUIN SMMU: gfsynr1=%#x\n", gg_rd(s, SMMU_GFSYNR1));
++	(void)sweet_log_flush_now();
+ 	for (unsigned n = 0; n < 8; n += 4) {
+-		printf("GAUGUIN SMMU: SMR%u..%u %#x %#x %#x %#x S2CR %#x %#x %#x %#x\n",
+-		    n, n + 3, gg_rd(s, SMMU_SMR(n)), gg_rd(s, SMMU_SMR(n + 1)),
+-		    gg_rd(s, SMMU_SMR(n + 2)), gg_rd(s, SMMU_SMR(n + 3)),
+-		    gg_rd(s, SMMU_S2CR(n)), gg_rd(s, SMMU_S2CR(n + 1)),
+-		    gg_rd(s, SMMU_S2CR(n + 2)), gg_rd(s, SMMU_S2CR(n + 3)));
+-	}
+-	printf("GAUGUIN SMMU: cbar0=%#x cbar1=%#x cba2r0=%#x cba2r1=%#x\n",
+-	    gg_rd(s, SMMU_GR1 + SMMU_CBAR(0)), gg_rd(s, SMMU_GR1 + SMMU_CBAR(1)),
+-	    gg_rd(s, SMMU_GR1 + SMMU_CBA2R(0)), gg_rd(s, SMMU_GR1 + SMMU_CBA2R(1)));
+-	printf("GAUGUIN SMMU: cb0 sctlr=%#x actlr=%#x tcr2=%#x ttbr0=%#x%08x "
+-	    "tcr=%#x mair0=%#x mair1=%#x\n",
+-	    gg_rd(cb, SMMU_CB_SCTLR), gg_rd(cb, SMMU_CB_ACTLR),
+-	    gg_rd(cb, SMMU_CB_TTBCR2), gg_rd(cb, SMMU_CB_TTBR0 + 4u),
+-	    gg_rd(cb, SMMU_CB_TTBR0), gg_rd(cb, SMMU_CB_TCR),
++		printf("GAUGUIN SMMU: SMR%u=%#x S2CR%u=%#x\n",
++		    n, gg_rd(s, SMMU_SMR(n)), n, gg_rd(s, SMMU_S2CR(n)));
++	}
++	printf("GAUGUIN SMMU: cbar0=%#x\n", gg_rd(s, SMMU_GR1 + SMMU_CBAR(0)));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN SMMU: cba2r0=%#x\n", gg_rd(s, SMMU_GR1 + SMMU_CBA2R(0)));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN SMMU: cb0 sctlr=%#x\n", gg_rd(cb, SMMU_CB_SCTLR));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN SMMU: cb0 tcr2=%#x tcr=%#x\n",
++	    gg_rd(cb, SMMU_CB_TTBCR2), gg_rd(cb, SMMU_CB_TCR));
++	printf("GAUGUIN SMMU: cb0 mair0=%#x mair1=%#x\n",
+ 	    gg_rd(cb, SMMU_CB_MAIR0), gg_rd(cb, SMMU_CB_MAIR1));
+-	printf("GAUGUIN SMMU: cb0 fsr=%#x far=%#x%08x fsynr0=%#x\n",
+-	    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR + 4u),
+-	    gg_rd(cb, SMMU_CB_FAR), gg_rd(cb, SMMU_CB_FSYNR0));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN SMMU: cb0 fsr=%#x\n", gg_rd(cb, SMMU_CB_FSR));
+ 	(void)sweet_log_flush_now();
+ }
+ 
+@@ -462,11 +468,12 @@
+ 		return;
+ 	}
+ 	cb = s + SMMU_CB(GG_CB);
+-	printf("GAUGUIN SMMU: faults gfsr=%#x gfsynr0=%#x gfsynr1=%#x "
+-	    "cb0_fsr=%#x cb0_far=%#x%08x cb0_fsynr0=%#x\n",
+-	    gg_rd(s, SMMU_GFSR), gg_rd(s, SMMU_GFSYNR0), gg_rd(s, SMMU_GFSYNR1),
+-	    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR + 4u),
+-	    gg_rd(cb, SMMU_CB_FAR), gg_rd(cb, SMMU_CB_FSYNR0));
++	printf("GAUGUIN SMMU: faults gfsr=%#x\n", gg_rd(s, SMMU_GFSR));
++	printf("GAUGUIN SMMU: faults gfsynr0=%#x gfsynr1=%#x\n",
++	    gg_rd(s, SMMU_GFSYNR0), gg_rd(s, SMMU_GFSYNR1));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN SMMU: faults cb0_fsr=%#x cb0_fsynr0=%#x\n",
++	    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FSYNR0));
+ }
+ 
+ /*
+@@ -491,10 +498,10 @@
+ 	if (gg_rd(cb, SMMU_CB_SCTLR) != 0 ||
+ 	    (gg_rd(s, SMMU_SMR(0)) & SMR_VALID) ||
+ 	    (gg_rd(s, SMMU_SMR(1)) & SMR_VALID)) {
+-		printf("GAUGUIN SMMU: CB0/SMR0/SMR1 already in use; not touched "
+-		    "(sctlr=%#x smr0=%#x smr1=%#x)\n",
+-		    gg_rd(cb, SMMU_CB_SCTLR), gg_rd(s, SMMU_SMR(0)),
+-		    gg_rd(s, SMMU_SMR(1)));
++		printf("GAUGUIN SMMU: CB0/SMR0/SMR1 already in use; not touched\n");
++		printf("GAUGUIN SMMU: in-use sctlr=%#x\n", gg_rd(cb, SMMU_CB_SCTLR));
++		printf("GAUGUIN SMMU: in-use smr0=%#x smr1=%#x\n",
++		    gg_rd(s, SMMU_SMR(0)), gg_rd(s, SMMU_SMR(1)));
+ 		return false;
+ 	}
+ 	/* qsmmuv2_device_reset: impl-defs while the micro-MMU is halted. */
