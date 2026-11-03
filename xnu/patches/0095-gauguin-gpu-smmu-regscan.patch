@@ -1,0 +1,31 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -755,6 +755,28 @@
+ 	}
+ 	printf("GAUGUIN SMMU: reading GR0...\n");
+ 	(void)sweet_log_flush_now();
++	{
++		/* v22: all four coarse probes read fine (gr0=0x200626) yet the
++		 * bundled probe printf died. Read every register one at a time. */
++		vm_offset_t s = ml_io_map(SMMU_PA, SMMU_SIZE);
++		static const struct { uint32_t off; const char *what; } rp[] = {
++			{ 0x000u, "sCR0" }, { 0x020u, "IDR0" }, { 0x024u, "IDR1" },
++			{ 0x028u, "IDR2" }, { 0x048u, "GFSR" }, { 0x050u, "GFSYNR0" },
++			{ 0x054u, "GFSYNR1" }, { 0x800u, "SMR0" }, { 0xc00u, "S2CR0" },
++			{ 0x6000u, "MICRO_MMU" }, { 0x1000u, "GR1+0" }, { 0x1800u, "GR1+CBAR0" },
++			{ 0x8000u, "CB0+SCTLR" }, { 0x8020u, "CB0+TTBR0" }, { 0x8030u, "CB0+TCR" },
++			{ 0x8058u, "CB0+FSR" },
++		};
++		for (unsigned i = 0; i < sizeof(rp) / sizeof(rp[0]); ++i) {
++			printf("GAUGUIN RP: %s @%#x reading...\n", rp[i].what, rp[i].off);
++			(void)sweet_log_flush_now();
++			uint32_t v = gg_rd(s, rp[i].off);
++			printf("GAUGUIN RP: %s = %#x\n", rp[i].what, v);
++			(void)sweet_log_flush_now();
++		}
++		printf("GAUGUIN RP: all individual reads done\n");
++		(void)sweet_log_flush_now();
++	}
+ 	gauguin_smmu_probe();
+ 
+ 	/* GMU clocks: GPLL0 chain, memnoc, ddrss AXI. */
