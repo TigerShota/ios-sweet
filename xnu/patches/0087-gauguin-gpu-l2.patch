@@ -660,7 +660,7 @@
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -18,9 +18,12 @@
+@@ -18,9 +18,13 @@
  #include <kern/sched_prim.h>
  #include <machine/machine_routines.h>
  #include <pexpert/pexpert.h>
@@ -670,10 +670,11 @@
  extern kern_return_t thread_terminate(thread_t);
 +extern uint64_t kvtophys(uint64_t);
 +extern const unsigned int gauguin_gmu_fw[5120];
++static void gauguin_gpu_l2(void);
  void gauguin_gpu_init(void);
  
  #define GPU_PA       0x03d00000u
-@@ -49,6 +52,7 @@
+@@ -49,6 +53,7 @@
  	bool started;
  } gg;
  static int gg_sleep_chan;
@@ -681,7 +682,7 @@
  
  static uint32_t
  gg_rd(vm_offset_t base, uint32_t off)
-@@ -132,12 +136,375 @@
+@@ -132,12 +137,375 @@
  	 */
  	if (!on) {
  		printf("GAUGUIN GPU: CX GDSC did not power on (CX rail or parent?)\n");
@@ -1061,7 +1062,7 @@
  }
  
  void
-@@ -150,6 +517,7 @@
+@@ -150,6 +518,7 @@
  	}
  	gg.started = true;
  	(void)PE_parse_boot_argn("gauguingpu", &enabled, sizeof(enabled));
