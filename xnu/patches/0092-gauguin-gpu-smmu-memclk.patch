@@ -1,0 +1,22 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -717,8 +717,17 @@
+ 	 * sCR0 banner (sweetlog35, total 126699).
+ 	 */
+ 	gg_wr(gg.gcc, GCC_GPU_SNOC_DVM, gg_rd(gg.gcc, GCC_GPU_SNOC_DVM) | 1u);
+-	printf("GAUGUIN GPU: smmu_clk snoc_dvm=%#x\n",
+-	    gg_rd(gg.gcc, GCC_GPU_SNOC_DVM));
++	/*
++	 * v19 proved snoc_dvm alone is not enough: the SMMU still hung. The
++	 * vendor arm-smmu enables ALL of iface/mem/mem_iface before the first
++	 * register read; mem (gcc_gpu_memnoc_gfx 0x4500c) was still off at
++	 * probe time (it only got enabled later, in the GMU clock block).
++	 */
++	gg_wr(gg.gcc, GCC_MEMNOC_GFX, gg_rd(gg.gcc, GCC_MEMNOC_GFX) | 1u);
++	printf("GAUGUIN GPU: smmu_clk snoc_dvm=%#x memnoc=%#x\n",
++	    gg_rd(gg.gcc, GCC_GPU_SNOC_DVM), gg_rd(gg.gcc, GCC_MEMNOC_GFX));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN SMMU: reading GR0...\n");
+ 	(void)sweet_log_flush_now();
+ 	gauguin_smmu_probe();
+ 
