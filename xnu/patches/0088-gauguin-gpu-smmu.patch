@@ -1,0 +1,573 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -19,10 +19,13 @@
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
+ #include <vm/vm_kern.h>
++#include <vm/pmap.h>
++#include <arm/caches_internal.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern kern_return_t thread_terminate(thread_t);
+-extern uint64_t kvtophys(uint64_t);
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
+ extern const unsigned int gauguin_gmu_fw[5120];
+ static void gauguin_gpu_l2(void);
+ void gauguin_gpu_init(void);
+@@ -149,14 +152,18 @@
+ 	(void)thread_terminate(current_thread());
+ }
+ 
+-static int gg_level;
+-
+-/* ==================== L2: GMU firmware + HFI (gauguingpu=2) ====================
+- * Sequence mirrors Linux a6xx_gmu.c for legacy GMUs (a619 = GEN1, gmu->legacy):
+- * enable GMU clocks -> load fw (bulk ITCM) -> boot CM3 -> HFI handshake.
+- * GX rail stays OFF (no cmd-db on this platform, so no arc/sptprac votes);
+- * GPU-core registers are never touched. GMU register offsets are kgsl dword
+- * indices relative to the GPU base (0x3d00000); bytes = off*4 - 0x6a000.
++/* ==================== L2: GMU firmware + HFI via the GPU SMMU (gauguingpu=2)
++ * v15 died right after G_HFI_QTBL_ADDR: the firmware's first DMA (reading
++ * the HFI table through its own SMMU stream) found no SMR route -> global
++ * fault -> silent reset. This revision gives the GMU real memory first:
++ * a 64 KiB write-combined block with LPAE page tables maps four GMU VAs
++ * (dummy, HFI, dump, log), SMMU context bank 0 translates stream IDs 4/5
++ * through them, and every register is read back before the CM3 leaves
++ * reset - a mismatch aborts the boot and the phone stays alive.
++ * Register facts: mxtp 0083b/0085 hardware logs; SM6350 DTB kgsl_smmu
++ * (reg 0x3d40000 +0x10000, gpu-offset 0x48000 = SMMU+0x8000 = CB0,
++ * gmu stream IDs 5 (kernel) and 4 (user)). GMU register offsets are kgsl
++ * dword indices relative to the GPU base (0x3d00000); bytes = off*4-0x6a000.
+  */
+ #define GMU_WORD(off)     (((off) * 4u) - 0x6a000u)
+ #define G_ITCM            0x1b400u
+@@ -185,7 +192,8 @@
+ #define G_GENERAL_7       0x1f9ccu
+ #define G_AHB_FENCE_0     0x23b11u
+ 
+-/* GCC / GPUCC clocks needed by the GMU (gcc-lagoon.c, gpucc-lagoon.c). */
++/* GCC / GPUCC clocks needed by the GMU (gcc-lagoon.c, gpucc-lagoon.c;
++ * unchanged from 0087, hardware-proven by the v15 boot). */
+ #define GCC_GPLL0_ENA     0x52010u  /* GPLL0 PLL enable, bit 0 */
+ #define GCC_GPLL0_BRANCH  0x52008u  /* gpll0 (bit7) + gpll0_div (bit8) */
+ #define GCC_GPLL0_DIVSRC  0x4514cu  /* gpll0_out_main_div src, div bits 1:0 */
+@@ -195,18 +203,368 @@
+ #define GPUCC_GMU_SRC_CMD 0x1120u   /* gpu_cc_gmu_clk_src CMD, bit0 update */
+ #define GPUCC_GMU_SRC_CFG 0x1124u   /* CFG: src=6 (gpll0_out_main_div), div=2 (/1.5 -> 200 MHz) */
+ 
+-/* 48 KiB contiguous <4 GiB buffer: HFI table 16K + GMU log 16K + debug 16K. */
+-#define GG_BUF_SIZE   0xc000u
+-#define GG_LOG_OFF    0x4000u
+-#define GG_DBG_OFF    0x8000u
+-#define HFI_TBL_DWORDS  0x1000u  /* 16 KiB / 4 */
+-#define HFI_QHDR_OFF    6u
+-#define HFI_QHDR_SIZE   12u
+-#define HFI_QDATA(off)  ((off) * 0x400u)  /* data dword offset of queue #off */
+-
++/*
++ * GMU memory: one physically contiguous 64 KiB block whose pages are made
++ * write-combining (pmap updates every alias and flushes the lines), so the
++ * SMMU page-table walks and the GMU see exactly what the CPU writes. Four
++ * 4 KiB LPAE tables, then the buffers at fixed GMU VAs. Kept under 4 GiB:
++ * this XNU's pmap cache-attribute flush would truncate 32-bit ppnums
++ * above 4 GiB (mxtp 0082 panic), and the GMU is happy with 32-bit VAs.
++ */
++#define GMEM_SIZE         0x10000u
++#define GMEM_L1           0x0000u
++#define GMEM_L2           0x1000u
++#define GMEM_L3A          0x2000u   /* 0x60000000-0x601fffff: dummy + HFI */
++#define GMEM_L3B          0x3000u   /* 0x60200000-0x603fffff: dump + log */
++#define GMEM_DUMMY        0x4000u
++#define GMEM_HFI          0x5000u
++#define GMEM_HFI_SIZE     0x5000u   /* header page + 3 queue pages */
++#define GMEM_DUMP         0xa000u
++#define GMEM_DUMP_SIZE    0x4000u
++#define GMEM_LOG          0xe000u
++#define GMU_VA_DUMMY      0x60000000u
++#define GMU_VA_HFI        0x60100000u
++#define GMU_VA_DUMP       0x60200000u
++#define GMU_VA_LOG        0x60300000u
++
++/* GPU SMMU (qcom,smmu-v2, SM6350 DTB reg 0x3d40000+0x10000). */
++#define SMMU_PA           0x03d40000u
++#define SMMU_SIZE         0x10000u
++#define SMMU_GR1          0x1000u
++#define SMMU_CB(n)        (0x8000u + 0x1000u * (n))
++#define SMMU_MICRO_MMU_CTRL 0x6000u
++#define MICRO_MMU_HALT_REQ  (1u << 2)
++#define MICRO_MMU_IDLE      (1u << 3)
++#define SMMU_sCR0         0x000u
++#define SMMU_IDR0         0x020u
++#define SMMU_IDR1         0x024u
++#define SMMU_IDR2         0x028u
++#define SMMU_GFSR        0x048u
++#define SMMU_GFSYNR0     0x050u
++#define SMMU_GFSYNR1     0x054u
++#define SMMU_TLBIALLNSNH 0x068u
++#define SMMU_sTLBGSYNC   0x070u
++#define SMMU_sTLBGSTATUS 0x074u
++#define SMMU_SMR(n)      (0x800u + 4u * (n))    /* GR0 */
++#define SMMU_S2CR(n)     (0xc00u + 4u * (n))    /* GR0 */
++#define SMMU_CBAR(n)     (0x000u + 4u * (n))    /* GR1 space */
++#define SMMU_CBA2R(n)    (0x800u + 4u * (n))    /* GR1 space */
++#define SMMU_CB_SCTLR    0x000u
++#define SMMU_CB_ACTLR    0x004u
++#define SMMU_CB_TTBCR2   0x010u
++#define SMMU_CB_TTBR0    0x020u   /* 64-bit */
++#define SMMU_CB_TCR      0x030u
++#define SMMU_CB_MAIR0    0x038u
++#define SMMU_CB_MAIR1    0x03cu
++#define SMMU_CB_FSR      0x058u
++#define SMMU_CB_FAR      0x060u
++#define SMMU_CB_FSYNR0   0x068u
++#define SMMU_CB_TLBIALL  0x618u
++#define SMMU_CB_TLBSYNC  0x7f0u
++#define SMMU_CB_TLBSTATUS 0x7f4u
++
++/*
++ * Context bank 0 as the phone's arm-smmu.c programs a qcom,smmu-v2 stage-1
++ * domain (4 KiB granule, non-coherent walks SH_OS NC/NC, IPS 36 bit, MAIR
++ * NC/WBRWA/DEV). Every value below was read back on mxtp 0083b hardware.
++ */
++#define GG_CB             0
++#define GG_ASID           1u
++#define GG_SID_KERNEL     5u   /* gmu_kernel stream */
++#define GG_SID_USER       4u   /* gmu_user stream */
++#define CBA2R_RW64_64BIT  1u
++#define CBAR_S1_BYPASS_S2 ((1u << 16) | (3u << 8) | (0xfu << 12))
++#define TTBCR_GMU         ((2u << 12) | (1u << 23) | 32u)   /* 0x00802020 */
++#define TTBCR2_GMU        (1u | (7u << 15) | (1u << 4))     /* 0x00038011 */
++#define MAIR0_GMU         0x0004ff44u
++#define ACTLR_QCOM        ((1u << 28) | (1u << 29) | (1u << 30))
++#define SCTLR_GMU         ((1u << 0) | (1u << 1) | (1u << 2) | (1u << 5) | \
++	                   (1u << 6) | (1u << 12) | (3u << 22))  /* 0x00c01067 */
++#define S2CR_TRANS_CB0    ((3u << 8) | GG_CB)               /* 0x300 */
++#define SMR_VALID         (1u << 31)
++
++/* LPAE stage-1 descriptors (io-pgtable-arm.c). */
++#define PTE_TABLE         3ull
++#define PTE_PAGE_NC       (3ull | (1ull << 10) | (2ull << 8) | (1ull << 6) | (1ull << 11))
++
++/* DT kgsl_smmu attach-impl-defs: <offset value> pairs (qsmmuv2_device_reset). */
++static const uint32_t gg_smmu_impl_defs[][2] = {
++	{ 0x6000, 0x2378 }, { 0x6060, 0x1055 }, { 0x678c, 0x08 }, { 0x6794, 0x28 },
++	{ 0x6800, 0x06 }, { 0x6900, 0x3ff }, { 0x6924, 0x204 }, { 0x6928, 0x11000 },
++	{ 0x6930, 0x800 }, { 0x6960, 0xffffffff }, { 0x6b64, 0x1a5551 }, { 0x6b68, 0x9a82a382 },
++};
++
++/* HFI queue table (kgsl_hfi); sizes in dwords. Queue q's data lives at
++ * GMEM_HFI + (q+1)*0x1000, one page per queue, matching the iova in its
++ * queue header; the 0087 code was off by one queue on the CPU side. */
++#define HFI_QHDR_OFF      6u
++#define HFI_QHDR_SIZE     12u
++#define HFI_TBL_DWORDS    (HFI_QHDR_OFF + 3u * HFI_QHDR_SIZE)  /* 42 */
++#define HFI_QDATA(off)    (((off) + 1u) * 0x400u)  /* data dword offset of queue #off */
++
++static vm_offset_t gmem;      /* kernel VA of the WCOMB GMU memory block */
++static uint64_t gmem_pa;
++static vm_offset_t gg_smmu;   /* GPU SMMU GR0 base */
+ static uint32_t *hfi_w;
+-static uint64_t hfi_pa;
+ static unsigned hfi_seq = 1;
++
++static uint32_t
++gm_rd(uint32_t off)
++{
++	return gg_rd(gmem, off);
++}
++
++static void
++gm_wr64(uint32_t off, uint64_t v)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint64_t *)(gmem + off) = v;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++/* Map GMU VA va (4 KiB pages within 0x60000000-0x603fffff) to gmem + off. */
++static void
++gm_map(uint32_t va, uint32_t off, uint32_t size)
++{
++	for (uint32_t done = 0; done < size; done += 0x1000u) {
++		uint32_t v = va + done;
++		uint32_t l3 = ((v >> 21) & 0x1ff) == ((GMU_VA_DUMMY >> 21) & 0x1ff) ?
++		    GMEM_L3A : GMEM_L3B;
++		gm_wr64(l3 + 8u * ((v >> 12) & 0x1ff), (gmem_pa + off + done) | PTE_PAGE_NC);
++	}
++}
++
++static bool
++gauguin_gmem_alloc(void)
++{
++	vm_offset_t kva = 0;
++	kern_return_t kr;
++	ppnum_t pn;
++
++	kr = kmem_alloc_contig(kernel_map, &kva, GMEM_SIZE, 0,
++	    0xffffffffu, 0u, 0u, 1u /* VM_KERN_MEMORY_OSFMK */);
++	if (kr != KERN_SUCCESS) {
++		printf("GAUGUIN GPU: gmem alloc failed %d\n", kr);
++		return false;
++	}
++	pn = pmap_find_phys(kernel_pmap, (addr64_t)kva);
++	if (!pn) {
++		printf("GAUGUIN GPU: gmem has no phys page\n");
++		return false;
++	}
++	gmem_pa = ptoa_64(pn);
++	for (unsigned i = 0; i < GMEM_SIZE / PAGE_SIZE; i++) {
++		pmap_set_cache_attributes(pn + i, VM_WIMG_WCOMB);
++	}
++	flush_dcache64((addr64_t)gmem_pa, GMEM_SIZE, TRUE);
++	gmem = kva;
++	bzero((void *)gmem, GMEM_SIZE);
++	/* 32-bit VA, 4 KiB granule: walks start at level 1 (VA[31:30]). */
++	gm_wr64(GMEM_L1 + 8u * (GMU_VA_HFI >> 30), (gmem_pa + GMEM_L2) | PTE_TABLE);
++	gm_wr64(GMEM_L2 + 8u * ((GMU_VA_DUMMY >> 21) & 0x1ff), (gmem_pa + GMEM_L3A) | PTE_TABLE);
++	gm_wr64(GMEM_L2 + 8u * ((GMU_VA_DUMP >> 21) & 0x1ff), (gmem_pa + GMEM_L3B) | PTE_TABLE);
++	gm_map(GMU_VA_DUMMY, GMEM_DUMMY, 0x1000u);
++	gm_map(GMU_VA_HFI, GMEM_HFI, GMEM_HFI_SIZE);
++	gm_map(GMU_VA_DUMP, GMEM_DUMP, GMEM_DUMP_SIZE);
++	gm_map(GMU_VA_LOG, GMEM_LOG, 0x1000u);
++	printf("GAUGUIN SMMU: GMEM pa=%#llx dummy=%#x hfi=%#x dump=%#x log=%#x\n",
++	    gmem_pa, GMU_VA_DUMMY, GMU_VA_HFI, GMU_VA_DUMP, GMU_VA_LOG);
++	return true;
++}
++
++static bool
++gg_poll_eq(vm_offset_t base, uint32_t off, uint32_t mask, uint32_t val)
++{
++	for (unsigned i = 0; i < 10000; ++i) {
++		if ((gg_rd(base, off) & mask) == val) {
++			return true;
++		}
++		delay(10);
++	}
++	return false;
++}
++
++static bool
++gg_tlb_sync(vm_offset_t base, uint32_t sync, uint32_t status)
++{
++	gg_wr(base, sync, 0);
++	if (!gg_poll_eq(base, status, 1u, 0u)) {
++		printf("GAUGUIN SMMU: TLB sync timed out\n");
++		return false;
++	}
++	return true;
++}
++
++static vm_offset_t
++gg_smmu_base(void)
++{
++	if (!gg_smmu) {
++		gg_smmu = ml_io_map(SMMU_PA, SMMU_SIZE);
++	}
++	return gg_smmu;
++}
++
++/* Read-only probe: everything ABL left in the GPU SMMU, one shot. */
++static void
++gauguin_smmu_probe(void)
++{
++	vm_offset_t s = gg_smmu_base();
++	vm_offset_t cb;
++
++	if (!s) {
++		printf("GAUGUIN SMMU: map failed\n");
++		return;
++	}
++	cb = s + SMMU_CB(GG_CB);
++	printf("GAUGUIN SMMU: sCR0=%#x IDR0=%#x IDR1=%#x IDR2=%#x micro=%#x\n",
++	    gg_rd(s, SMMU_sCR0), gg_rd(s, SMMU_IDR0), gg_rd(s, SMMU_IDR1),
++	    gg_rd(s, SMMU_IDR2), gg_rd(s, SMMU_MICRO_MMU_CTRL));
++	printf("GAUGUIN SMMU: gfsr=%#x gfsynr0=%#x gfsynr1=%#x\n",
++	    gg_rd(s, SMMU_GFSR), gg_rd(s, SMMU_GFSYNR0), gg_rd(s, SMMU_GFSYNR1));
++	for (unsigned n = 0; n < 8; n += 4) {
++		printf("GAUGUIN SMMU: SMR%u..%u %#x %#x %#x %#x S2CR %#x %#x %#x %#x\n",
++		    n, n + 3, gg_rd(s, SMMU_SMR(n)), gg_rd(s, SMMU_SMR(n + 1)),
++		    gg_rd(s, SMMU_SMR(n + 2)), gg_rd(s, SMMU_SMR(n + 3)),
++		    gg_rd(s, SMMU_S2CR(n)), gg_rd(s, SMMU_S2CR(n + 1)),
++		    gg_rd(s, SMMU_S2CR(n + 2)), gg_rd(s, SMMU_S2CR(n + 3)));
++	}
++	printf("GAUGUIN SMMU: cbar0=%#x cbar1=%#x cba2r0=%#x cba2r1=%#x\n",
++	    gg_rd(s, SMMU_GR1 + SMMU_CBAR(0)), gg_rd(s, SMMU_GR1 + SMMU_CBAR(1)),
++	    gg_rd(s, SMMU_GR1 + SMMU_CBA2R(0)), gg_rd(s, SMMU_GR1 + SMMU_CBA2R(1)));
++	printf("GAUGUIN SMMU: cb0 sctlr=%#x actlr=%#x tcr2=%#x ttbr0=%#x%08x "
++	    "tcr=%#x mair0=%#x mair1=%#x\n",
++	    gg_rd(cb, SMMU_CB_SCTLR), gg_rd(cb, SMMU_CB_ACTLR),
++	    gg_rd(cb, SMMU_CB_TTBCR2), gg_rd(cb, SMMU_CB_TTBR0 + 4u),
++	    gg_rd(cb, SMMU_CB_TTBR0), gg_rd(cb, SMMU_CB_TCR),
++	    gg_rd(cb, SMMU_CB_MAIR0), gg_rd(cb, SMMU_CB_MAIR1));
++	printf("GAUGUIN SMMU: cb0 fsr=%#x far=%#x%08x fsynr0=%#x\n",
++	    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR + 4u),
++	    gg_rd(cb, SMMU_CB_FAR), gg_rd(cb, SMMU_CB_FSYNR0));
++}
++
++/* Global + CB0 fault registers; call after any failure. */
++static void
++gauguin_smmu_faults(void)
++{
++	vm_offset_t s = gg_smmu_base();
++	vm_offset_t cb;
++
++	if (!s) {
++		return;
++	}
++	cb = s + SMMU_CB(GG_CB);
++	printf("GAUGUIN SMMU: faults gfsr=%#x gfsynr0=%#x gfsynr1=%#x "
++	    "cb0_fsr=%#x cb0_far=%#x%08x cb0_fsynr0=%#x\n",
++	    gg_rd(s, SMMU_GFSR), gg_rd(s, SMMU_GFSYNR0), gg_rd(s, SMMU_GFSYNR1),
++	    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR + 4u),
++	    gg_rd(cb, SMMU_CB_FAR), gg_rd(cb, SMMU_CB_FSYNR0));
++}
++
++/*
++ * Program CB0, then exact mask-0 SMRs for the GMU's two streams (mxtp
++ * 0084/0085: masked SMR entries read back 0 here, exact ones stick).
++ * Everything is read back; any mismatch aborts and the GMU stays in reset.
++ */
++static bool
++gauguin_smmu_setup(void)
++{
++	vm_offset_t s = gg_smmu_base();
++	vm_offset_t cb;
++	uint64_t ttbr_want = (gmem_pa + GMEM_L1) | ((uint64_t)GG_ASID << 48);
++	uint64_t ttbr_got;
++	bool ok = true;
++
++	if (!s) {
++		printf("GAUGUIN SMMU: map failed\n");
++		return false;
++	}
++	cb = s + SMMU_CB(GG_CB);
++	if (gg_rd(cb, SMMU_CB_SCTLR) != 0 ||
++	    (gg_rd(s, SMMU_SMR(0)) & SMR_VALID) ||
++	    (gg_rd(s, SMMU_SMR(1)) & SMR_VALID)) {
++		printf("GAUGUIN SMMU: CB0/SMR0/SMR1 already in use; not touched "
++		    "(sctlr=%#x smr0=%#x smr1=%#x)\n",
++		    gg_rd(cb, SMMU_CB_SCTLR), gg_rd(s, SMMU_SMR(0)),
++		    gg_rd(s, SMMU_SMR(1)));
++		return false;
++	}
++	/* qsmmuv2_device_reset: impl-defs while the micro-MMU is halted. */
++	gg_wr(s, SMMU_MICRO_MMU_CTRL, gg_rd(s, SMMU_MICRO_MMU_CTRL) | MICRO_MMU_HALT_REQ);
++	if (!gg_poll_eq(s, SMMU_MICRO_MMU_CTRL, MICRO_MMU_IDLE, MICRO_MMU_IDLE)) {
++		printf("GAUGUIN SMMU: micro-MMU did not halt (%#x)\n",
++		    gg_rd(s, SMMU_MICRO_MMU_CTRL));
++		return false;
++	}
++	for (unsigned i = 0; i < sizeof(gg_smmu_impl_defs) / sizeof(gg_smmu_impl_defs[0]); i++) {
++		gg_wr(s, gg_smmu_impl_defs[i][0], gg_smmu_impl_defs[i][1]);
++	}
++	gg_wr(s, SMMU_MICRO_MMU_CTRL, gg_rd(s, SMMU_MICRO_MMU_CTRL) & ~MICRO_MMU_HALT_REQ);
++
++	/* arm_smmu_write_context_bank: TCR2/TCR before the TTBR. */
++	gg_wr(cb, SMMU_CB_SCTLR, 0);
++	gg_wr(s, SMMU_GR1 + SMMU_CBA2R(GG_CB), CBA2R_RW64_64BIT);
++	gg_wr(s, SMMU_GR1 + SMMU_CBAR(GG_CB), CBAR_S1_BYPASS_S2);
++	gg_wr(cb, SMMU_CB_TTBCR2, TTBCR2_GMU);
++	gg_wr(cb, SMMU_CB_TCR, TTBCR_GMU);
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint64_t *)(cb + SMMU_CB_TTBR0) = ttbr_want;
++	__asm__ volatile("dsb osh" ::: "memory");
++	gg_wr(cb, SMMU_CB_MAIR0, MAIR0_GMU);
++	gg_wr(cb, SMMU_CB_MAIR1, 0);
++	gg_wr(cb, SMMU_CB_ACTLR, ACTLR_QCOM);
++	gg_wr(cb, SMMU_CB_FSR, gg_rd(cb, SMMU_CB_FSR)); /* write 1 to clear */
++	gg_wr(cb, SMMU_CB_TLBIALL, 0);
++	if (!gg_tlb_sync(cb, SMMU_CB_TLBSYNC, SMMU_CB_TLBSTATUS)) {
++		return false;
++	}
++	gg_wr(cb, SMMU_CB_SCTLR, SCTLR_GMU);
++
++	/* arm_smmu_write_sme: the S2CRs before the SMRs become valid. */
++	gg_wr(s, SMMU_S2CR(0), S2CR_TRANS_CB0);
++	gg_wr(s, SMMU_S2CR(1), S2CR_TRANS_CB0);
++	gg_wr(s, SMMU_SMR(0), SMR_VALID | GG_SID_KERNEL);
++	gg_wr(s, SMMU_SMR(1), SMR_VALID | GG_SID_USER);
++	gg_wr(s, SMMU_TLBIALLNSNH, 0);
++	if (!gg_tlb_sync(s, SMMU_sTLBGSYNC, SMMU_sTLBGSTATUS)) {
++		return false;
++	}
++
++	/* Read everything back; one mismatch aborts the whole boot. */
++#define GG_CHK(what, got, want) do { \
++	uint32_t g_ = (uint32_t)(got); \
++	if (g_ != (uint32_t)(want)) { \
++		printf("GAUGUIN SMMU: verify FAIL %s got=%#x want=%#x\n", \
++		    what, g_, (uint32_t)(want)); \
++		ok = false; \
++	} \
++} while (0)
++	GG_CHK("SMR0", gg_rd(s, SMMU_SMR(0)), SMR_VALID | GG_SID_KERNEL);
++	GG_CHK("SMR1", gg_rd(s, SMMU_SMR(1)), SMR_VALID | GG_SID_USER);
++	GG_CHK("S2CR0", gg_rd(s, SMMU_S2CR(0)), S2CR_TRANS_CB0);
++	GG_CHK("S2CR1", gg_rd(s, SMMU_S2CR(1)), S2CR_TRANS_CB0);
++	GG_CHK("CBAR0", gg_rd(s, SMMU_GR1 + SMMU_CBAR(GG_CB)), CBAR_S1_BYPASS_S2);
++	GG_CHK("CBA2R0", gg_rd(s, SMMU_GR1 + SMMU_CBA2R(GG_CB)), CBA2R_RW64_64BIT);
++	GG_CHK("SCTLR", gg_rd(cb, SMMU_CB_SCTLR), SCTLR_GMU);
++	GG_CHK("TCR", gg_rd(cb, SMMU_CB_TCR), TTBCR_GMU);
++	GG_CHK("TCR2", gg_rd(cb, SMMU_CB_TTBCR2), TTBCR2_GMU);
++	GG_CHK("MAIR0", gg_rd(cb, SMMU_CB_MAIR0), MAIR0_GMU);
++	GG_CHK("MAIR1", gg_rd(cb, SMMU_CB_MAIR1), 0);
++	GG_CHK("ACTLR", gg_rd(cb, SMMU_CB_ACTLR), ACTLR_QCOM);
++#undef GG_CHK
++	ttbr_got = *(volatile uint64_t *)(cb + SMMU_CB_TTBR0);
++	if (ttbr_got != ttbr_want) {
++		printf("GAUGUIN SMMU: verify FAIL TTBR0 got=%#llx want=%#llx\n",
++		    ttbr_got, ttbr_want);
++		ok = false;
++	}
++	if (!ok) {
++		gauguin_smmu_faults();
++		return false;
++	}
++	printf("GAUGUIN SMMU: verified (CB0 LPAE ttbr0=%#llx SMR0=sid%u SMR1=sid%u)\n",
++	    ttbr_got, GG_SID_KERNEL, GG_SID_USER);
++	return true;
++}
+ 
+ static void
+ gauguin_gmu_wr(uint32_t off, uint32_t val)
+@@ -225,6 +583,7 @@
+ {
+ 	static const unsigned qtype[3] = { 0, 4, 5 }; /* cmd, response, debug */
+ 	uint32_t *t = hfi_w;
++
+ 	t[0] = 0;              /* version */
+ 	t[1] = HFI_TBL_DWORDS; /* table size in dwords */
+ 	t[2] = HFI_QHDR_OFF;   /* first queue header offset */
+@@ -234,7 +593,7 @@
+ 	for (unsigned q = 0; q < 3; ++q) {
+ 		uint32_t *h = t + HFI_QHDR_OFF + q * HFI_QHDR_SIZE;
+ 		h[0] = 1;                          /* status: initialized */
+-		h[1] = (uint32_t)hfi_pa + 0x1000u + q * 0x1000u; /* iova */
++		h[1] = GMU_VA_HFI + 0x1000u + q * 0x1000u; /* iova (via SMMU) */
+ 		h[2] = (10u << 8) | qtype[q];      /* type */
+ 		h[3] = 0x400u;                     /* size (dwords) */
+ 		h[4] = 0;                          /* msg_size */
+@@ -325,10 +684,8 @@
+ static void
+ gauguin_gpu_l2(void)
+ {
+-	vm_offset_t va = 0;
+-	kern_return_t kr;
+ 	uint32_t dv, val;
+-	bool ok = true;
++	bool ok;
+ 
+ 	printf("GAUGUIN GPU: L2 start\n");
+ 	gg.gmu = ml_io_map(GMU_PA, 0x31000);
+@@ -336,18 +693,12 @@
+ 		printf("GAUGUIN GPU: GMU map failed\n");
+ 		return;
+ 	}
+-	kr = kmem_alloc_contig(kernel_map, &va, GG_BUF_SIZE, 0,
+-	    0xffffffffu, 12u, 0u, 1u /* VM_KERN_MEMORY_OSFMK */);
+-	if (kr != KERN_SUCCESS) {
+-		printf("GAUGUIN GPU: contig alloc failed %d\n", kr);
++	if (!gauguin_gmem_alloc()) {
+ 		return;
+ 	}
+-	hfi_pa = kvtophys(va);
+-	hfi_w = (uint32_t *)va;
+-	bzero(hfi_w, GG_BUF_SIZE);
++	hfi_w = (uint32_t *)(gmem + GMEM_HFI);
+ 	hfi_build_table();
+-	printf("GAUGUIN GPU: buf va=%#llx pa=%#llx\n",
+-	    (uint64_t)va, hfi_pa);
++	gauguin_smmu_probe();
+ 
+ 	/* GMU clocks: GPLL0 chain, memnoc, ddrss AXI. */
+ 	gg_wr(gg.gcc, GCC_GPLL0_ENA, gg_rd(gg.gcc, GCC_GPLL0_ENA) | 1u);
+@@ -384,16 +735,27 @@
+ 	    gauguin_gmu_rd(G_ITCM), gauguin_gmu_rd(G_ITCM + 5119u),
+ 	    gauguin_gmu_rd(G_DTCM + 0xff8u));
+ 
+-	/* Boot sequence (a6xx_gmu_fw_start). */
++	/*
++	 * Give the GMU its memory BEFORE the CM3 leaves reset: the firmware
++	 * DMAs the HFI table through SMMU stream 4/5 right after boot (v15:
++	 * that access with no SMR route reset the phone silently).
++	 */
++	if (!gauguin_smmu_setup()) {
++		printf("GAUGUIN GPU: L2 abort: SMMU setup/verify failed "
++		    "(GMU not booted)\n");
++		return;
++	}
++
++	/* Boot sequence (a6xx_gmu_fw_start); HFI table and buffers by GMU VA. */
+ 	gauguin_gmu_wr(G_GENERAL_7, 1);
+ 	gauguin_gmu_wr(G_FW_INIT_RESULT, 0);
+ 	gauguin_gmu_wr(G_BOOT_CONFIG, 0x02u);
+-	gauguin_gmu_wr(G_HFI_QTBL_ADDR, (uint32_t)hfi_pa);
++	gauguin_gmu_wr(G_HFI_QTBL_ADDR, GMU_VA_HFI);
+ 	gauguin_gmu_wr(G_HFI_QTBL_INFO, 1);
+ 	gauguin_gmu_wr(G_AHB_FENCE_0, (1u << 31) | (0xau << 18) | 0xa0u);
+ 	gauguin_gmu_wr(G_CM3_CFG, 0x4052u);
+-	gauguin_gmu_wr(G_HFI_SFR_ADDR, 0x06019000u);
+-	gauguin_gmu_wr(G_PWR_COL_CP_MSG, (uint32_t)(hfi_pa + GG_LOG_OFF) | 3u);
++	gauguin_gmu_wr(G_HFI_SFR_ADDR, GMU_VA_DUMMY);
++	gauguin_gmu_wr(G_PWR_COL_CP_MSG, GMU_VA_LOG | 3u);
+ 	/* a6xx_gmu_power_config (RPMH left disabled: no cmd-db here). */
+ 	gauguin_gmu_wr(G_SYS_BUS_CFG, 1);
+ 	gauguin_gmu_wr(G_ICACHE_CFG, 1);
+@@ -418,10 +780,8 @@
+ 	}
+ 	printf("GAUGUIN GPU: fw_init=%#x booted=%d\n", val, ok);
+ 	if (!ok) {
+-		printf("GAUGUIN GPU: L2 abort after CM3 boot (dtcm_ff8=%#x "
+-		    "sptprac=%#x)\n",
+-		    gauguin_gmu_rd(G_DTCM + 0xff8u),
+-		    gauguin_gmu_rd(G_SPTPRAC_STATUS));
++		printf("GAUGUIN GPU: L2 abort after CM3 boot\n");
++		gauguin_smmu_faults();
+ 		return;
+ 	}
+ 
+@@ -442,15 +802,16 @@
+ 	printf("GAUGUIN GPU: hfi started=%d status=%#x\n", ok,
+ 	    gauguin_gmu_rd(G_HFI_STATUS));
+ 	if (!ok) {
++		gauguin_smmu_faults();
+ 		return;
+ 	}
+ 
+-	/* MSG_INIT (id 0): seg 0, debug buffer, cold boot. */
++	/* MSG_INIT (id 0): seg 0, debug buffer (GMU VA), cold boot. */
+ 	{
+ 		uint32_t f[4];
+ 		f[0] = 0;
+-		f[1] = (uint32_t)(hfi_pa + GG_DBG_OFF);
+-		f[2] = 0x4000u;
++		f[1] = GMU_VA_DUMP;
++		f[2] = GMEM_DUMP_SIZE;
+ 		f[3] = 1; /* boot_state cold */
+ 		if (hfi_send(0, f, 4) == 0) {
+ 			hfi_wait_ack(0, (hfi_seq - 1) % 0xfffu, NULL, 0);
+@@ -496,15 +857,19 @@
+ 		}
+ 	}
+ 
+-	/* Final diagnostics: queue table state + GMU log contents. */
++	/* Final diagnostics: GMU state, queue indices, log, SMMU faults. */
+ 	printf("GAUGUIN GPU: post fw_init=%#x hfi_st=%#x intr=%#x sptprac=%#x\n",
+ 	    gauguin_gmu_rd(G_FW_INIT_RESULT), gauguin_gmu_rd(G_HFI_STATUS),
+ 	    gauguin_gmu_rd(G_INTR_INFO), gauguin_gmu_rd(G_SPTPRAC_STATUS));
+ 	printf("GAUGUIN GPU: cmd hdr rw=%u/%u resp rw=%u/%u\n",
+-	    hfi_w[6 + 10], hfi_w[6 + 11], hfi_w[18 + 10], hfi_w[18 + 11]);
++	    hfi_w[HFI_QHDR_OFF + 10], hfi_w[HFI_QHDR_OFF + 11],
++	    hfi_w[HFI_QHDR_OFF + HFI_QHDR_SIZE + 10],
++	    hfi_w[HFI_QHDR_OFF + HFI_QHDR_SIZE + 11]);
+ 	printf("GAUGUIN GPU: log[0..3]=%#x %#x %#x %#x log[12..15]=%#x %#x %#x %#x\n",
+-	    hfi_w[0x1000], hfi_w[0x1001], hfi_w[0x1002], hfi_w[0x1003],
+-	    hfi_w[0x100c], hfi_w[0x100d], hfi_w[0x100e], hfi_w[0x100f]);
++	    gm_rd(GMEM_LOG), gm_rd(GMEM_LOG + 4u), gm_rd(GMEM_LOG + 8u),
++	    gm_rd(GMEM_LOG + 12u), gm_rd(GMEM_LOG + 48u), gm_rd(GMEM_LOG + 52u),
++	    gm_rd(GMEM_LOG + 56u), gm_rd(GMEM_LOG + 60u));
++	gauguin_smmu_faults();
+ 	printf("GAUGUIN GPU: L2 done\n");
+ }
+ 
