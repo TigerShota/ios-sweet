@@ -31,7 +31,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_touch.c
-@@ -0,0 +1,898 @@
+@@ -0,0 +1,900 @@
 +/*
 + * gauguin (SM6350/lagoon) touch bring-up: Novatek NT36672A on GENI SE0 SPI.
 + * Zero-firmware first light: HW reset, then the IC boots its own flash
@@ -73,8 +73,8 @@
 +extern kern_return_t thread_terminate(thread_t);
 +extern void sweet_hid_touch(int finger, int down, int x, int y);
 +void gauguin_touch_init(void);
-+/* NT36675 panel firmwares: defined in bsd/dev/gauguin_touch_fw.c
-+ * (novatek_ts_fw01/02.bin from the LineageOS gauguin kernel firmware/). */
++/* NT36675 panel firmwares (generated from the LineageOS gauguin kernel
++ * firmware/ ihex blobs; see bsd/dev/gauguin_touch_fw.h). */
 +extern const uint8_t nvt_fw01[], nvt_fw02[];
 +extern const unsigned nvt_fw01_len, nvt_fw02_len;
 +
@@ -675,12 +675,14 @@
 +		return err;
 +	}
 +	gt_wait(5);
-+	/* poll reset state (>=1) 10x10ms */
++	/* poll reset state (0xA0..0xAF = RESET_STATE_INIT..MAX) 10x10ms */
++	uint8_t st_last = 0;
 +	for (unsigned i = 0; i < 10; ++i) {
 +		uint8_t st[6] = {0};
 +		err = nvt_read_addr(NVT_EVENT_BUF | NVT_EVT_RESET_COMPLETE, st, 1);
-+		if (!err && st[0] >= 1u && st[0] <= 3u) {
-+			printf("GAUGUIN TOUCH: fw reset complete=%u (try %u)\n",
++		st_last = st[0];
++		if (!err && st[0] >= 0xA0u && st[0] <= 0xAFu) {
++			printf("GAUGUIN TOUCH: fw reset complete=%#x (try %u)\n",
 +			    st[0], i);
 +			/* checksum readback (diagnostic) */
 +			uint8_t c[4] = {0};
@@ -694,7 +696,7 @@
 +		}
 +		gt_wait(10);
 +	}
-+	printf("GAUGUIN TOUCH: fw reset state timeout err=%d\n", err);
++	printf("GAUGUIN TOUCH: fw reset state timeout err=%d last=%#x\n", err, st_last);
 +	return ETIMEDOUT;
 +}
 +
@@ -931,13 +933,12 @@
 +}
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
 --- /dev/null
-+++ b/bsd/dev/gauguin_touch_fw.c
-@@ -0,0 +1,17428 @@
++++ b/bsd/dev/gauguin_touch_fw.h
+@@ -0,0 +1,17427 @@
 +/*
 + * gauguin NT36675 touch firmware (novatek_ts_fw01/02.bin - tianma/
 + * csot panel variants) from the LineageOS android_kernel_xiaomi_
-+ * gauguin firmware/ ihex blobs. Compiled as its own unit so the big
-+ * const arrays land in one object file. Generated - do not edit.
++ * gauguin firmware/ ihex blobs. Generated - do not edit.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +#include <sys/types.h>
