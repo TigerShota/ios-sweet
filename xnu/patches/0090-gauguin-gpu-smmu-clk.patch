@@ -1,0 +1,36 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -202,6 +202,10 @@
+ #define GCC_GPLL0_DIVSRC  0x4514cu  /* gpll0_out_main_div src, div bits 1:0 */
+ #define GCC_MEMNOC_GFX    0x4500cu  /* gpu_memnoc_gfx_clk, bit 0 */
+ #define GCC_DDRSS_AXI     0x2d038u  /* ddrss_gpu_axi_clk, bit 0 */
++#define GCC_GPU_SNOC_DVM  0x45014u  /* gcc_gpu_snoc_dvm_gfx_clk = the GPU SMMU's
++                                   * mem_iface_clk (DTB clock-names iface/mem/mem_iface
++                                   * = cfg_ahb/memnoc_gfx/snoc_dvm_gfx); without it the
++                                   * first SMMU register read hangs the AHB bus */
+ #define GPUCC_CXO_CBCR    0x109cu   /* gpu_cc_cxo_clk, bit 0 */
+ #define GPUCC_GMU_SRC_CMD 0x1120u   /* gpu_cc_gmu_clk_src CMD, bit0 update */
+ #define GPUCC_GMU_SRC_CFG 0x1124u   /* CFG: src=6 (gpll0_out_main_div), div=2 (/1.5 -> 200 MHz) */
+@@ -716,6 +720,8 @@
+ 	gg_wr(gg.gcc, GCC_GPLL0_DIVSRC, val & ~3u);
+ 	gg_wr(gg.gcc, GCC_MEMNOC_GFX, gg_rd(gg.gcc, GCC_MEMNOC_GFX) | 1u);
+ 	gg_wr(gg.gcc, GCC_DDRSS_AXI, gg_rd(gg.gcc, GCC_DDRSS_AXI) | 1u);
++	/* GPU SMMU mem_iface clock - must be on before any SMMU access. */
++	gg_wr(gg.gcc, GCC_GPU_SNOC_DVM, gg_rd(gg.gcc, GCC_GPU_SNOC_DVM) | 1u);
+ 	/* GPUCC: cxo, gmu RCG 200 MHz, cx_gmu gate. */
+ 	gg_wr(gg.gpucc, GPUCC_CXO_CBCR, gg_rd(gg.gpucc, GPUCC_CXO_CBCR) | 1u);
+ 	gg_wr(gg.gpucc, GPUCC_GMU_SRC_CFG, 0x602u);
+@@ -725,10 +731,11 @@
+ 	}
+ 	gg_wr(gg.gpucc, GPUCC_GMU_CBCR, gg_rd(gg.gpucc, GPUCC_GMU_CBCR) | 1u);
+ 	printf("GAUGUIN GPU: clocks cxo=%#x src_cmd=%#x src_cfg=%#x gmu_cbcr=%#x "
+-	    "memnoc=%#x axi=%#x\n",
++	    "memnoc=%#x axi=%#x snoc_dvm=%#x\n",
+ 	    gg_rd(gg.gpucc, GPUCC_CXO_CBCR), gg_rd(gg.gpucc, GPUCC_GMU_SRC_CMD),
+ 	    gg_rd(gg.gpucc, GPUCC_GMU_SRC_CFG), gg_rd(gg.gpucc, GPUCC_GMU_CBCR),
+-	    gg_rd(gg.gcc, GCC_MEMNOC_GFX), gg_rd(gg.gcc, GCC_DDRSS_AXI));
++	    gg_rd(gg.gcc, GCC_MEMNOC_GFX), gg_rd(gg.gcc, GCC_DDRSS_AXI),
++	    gg_rd(gg.gcc, GCC_GPU_SNOC_DVM));
+ 	(void)sweet_log_flush_now();
+ 
+ 	/* Pre-boot state (CX domain is up; GMU reads are safe now). */
