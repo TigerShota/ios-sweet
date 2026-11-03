@@ -6,7 +6,7 @@
 
 本项目移植自 [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)（最初的红米 Note 10 Pro / `sweet` / SM7150 移植）。XNU 补丁序列与引导 shim 为两者共用；设备相关部分——设备树、内存映射、PMIC 按键、触摸控制器——均为 gauguin 专属。
 
-截至 **2026-11-01**，手机可**越过 Apple logo 启动进入 SpringBoard UI**。首次启动因冷 MobileGestalt 缓存下的一次性数据库重建需要较长时间（约 10 分钟）。渲染完全由 CPU 完成，没有 GPU 驱动；触摸尚未工作（Novatek 触摸驱动是当前里程碑）。
+截至 **2026-11-03**，手机可**越过 Apple logo 启动进入 SpringBoard UI**。首次启动因冷 MobileGestalt 缓存下的一次性数据库重建需要较长时间（约 10 分钟）。触摸（SPI 上的 Novatek NT36672C）已工作。渲染仍完全由 CPU 完成——GPU 内核侧 bring-up 进行中（CX 供电域 → GMU 固件加载与 HFI 握手，boot-arg `gauguingpu` 分级启用），尚未参与渲染。
 
 > 实验性 bring-up，不是可用的手机操作系统。大量功能缺失或为桩（见下文），Apple 的安全模型基本被关闭。系统安装进 `userdata` 分区，因此**会清空 Android 用户数据**。
 
@@ -15,11 +15,12 @@
 | 领域 | 状态 |
 | --- | --- |
 | 引导 | 小米原厂 bootloader → `fastboot boot` 我们的 shim → XNU。不向任何引导分区刷写内容 |
-| CPU | 经 PSCI 启动 8 核中的 6 核（`cpus=6`；ADT 携带全部 8 个 CPU 节点——2× Cortex-A76 + 6× Cortex-A55），16K 页，GICv3 中断、定时器 |
+| CPU | 经 PSCI 启动全部 8 核（`cpus=8`；ADT 携带全部 8 个 CPU 节点——2× Cortex-A76 + 6× Cortex-A55），16K 页，GICv3 中断、定时器 |
 | 内存 | 4G 以下高 bank 中的 896 MiB 窗口（`0xc8000000`）——更大或低 bank 的窗口都会撞上开机画面的 framebuffer 切割或非 RAM 空洞（见 NOTES.md） |
 | 存储 | 自研 UFS 主机驱动；iOS 根文件系统为 `userdata` 分区内的日志式 HFS+ 卷，可读写 |
 | iOS 用户态 | 真实 iPhone X 16.7.16 根文件系统与共享缓存；launchd 与系统守护进程正常运行 |
 | 显示 | 内核 IOSurface + IOMobileFramebuffer（`AppleCLCD`）服务；CoreAnimation 软件渲染；帧被拷贝进 bootloader 留下的 framebuffer。以 iPhone X 面板（1125×2436）呈现给 iOS |
+| 触摸 | SPI（GENI QUP SE0）上的 Novatek NT36672C：固件每次开机由主机从 vendor 分区加载，中断报点已上机验证（0084） |
 | GUI | backboardd 与 SpringBoard 越过 logo 正常启动 |
 | 按键 | 电源键走 PMIC PON 块（SPMI，已在真机验证）；音量下键为 PON RESIN 输入；音量上键为 PM6350 SID 0 GPIO2（PPID `0x0c1`）——已在 0060 修复、内核重建完成，开机验证待做 |
 | 设备身份 | iPhone X（`iPhone10,3` / `D22AP`）：无 Home 键，手势 UI |
@@ -28,8 +29,7 @@
 
 ## 尚未工作
 
-- **触摸。** gauguin 的触摸 IC 是 SPI 上的 Novatek NT36672C（不是 sweet 的 Goodix I²C），每次开机由主机从 vendor 分区加载固件。编写该驱动是当前里程碑。
-- **无 GPU。** 一切由 CPU 绘制（软件合成 framebuffer），与原版 sweet 移植一致。
+- **GPU 未参与渲染。** 一切仍由 CPU 软件合成（与原版 sweet 移植一致）。内核侧 bring-up 进行中：0085 点亮 Adreno 619 的 CX 供电域（`gauguingpu=1`，缺省即开），0087 把 `a619_gmu.bin` 装入 GMU 微控制器并做最小 HFI 握手（`gauguingpu=2`，上机验证待做）。
 - **无 Wi-Fi、蓝牙、蜂窝、音频、相机、传感器、GPS 及 SEP / Face ID。** `bluetoothd` 与 `fairplayd.H2` 崩溃循环。
 - **首次启动慢：** Apple logo 停留约 10 分钟。第二次启动速度尚未验证。
 - **安全关闭：** 宽松的代码签名（AMFI）与沙盒策略、桩 AppleKeyStore、无数据保护。不要存放任何个人数据。
@@ -91,7 +91,8 @@ gh run download RUN_ID -R YOU/ios-sweet -n gauguin-shim-boot -D shim/out
 | Boot-arg | 作用 |
 | --- | --- |
 | `rd=ufsroot0 ufsrw=1 rootrw=1` | 根在 `userdata` 分区，可写 |
-| `cpus=6` | 启动六核；ADT 携带全部 8 个（`cpus=1` 是安全回退） |
+| `cpus=8` | 启动八核；ADT 携带全部 8 个（`cpus=1` 是安全回退） |
+| `gauguingpu=0/1/2` | GPU bring-up 阶段：缺省 = 1（CX 供电域点亮）；`=2` 额外加载 GMU 固件并握手 HFI；`=0` 关闭 |
 | `sweettouch=0`、`sweetkeys=0` | 关闭触摸或按键驱动 |
 | `sweetfb_noconsole=1` | 不把内核文本画在 GUI 上。仍写入持久日志；panic 会画 |
 | `sweetfb_hz=30` | CPU 拷贝的面板刷新率 |
@@ -163,7 +164,7 @@ adb reboot bootloader
 | 0060 | SPMI 电源与音量键；GENI I²C 触摸（gauguin：音量上键读 PM6350 SID 0 GPIO2，PPID `0x0c1`） |
 | 0061 | 以 1125×2436 呈现显示 |
 | 0062 | RPMh 触摸供电轨投票；电池电源源 |
-| 0063 | GENI FIFO 打包与 Goodix GT9896 协议（sweet 的触摸 IC；gauguin 的 Novatek 驱动尚待编写） |
+| 0063 | GENI FIFO 打包与 Goodix GT9896 协议（sweet 的触摸 IC；gauguin 改用 0084 的 Novatek 驱动） |
 | 0064 | 授予沙盒权限（PRIV_WORK_INTERVAL、PRIV_GLOBAL_PROC_INFO 等） |
 | 0065 | SMP：经 PSCI CPU_ON 启动副核 |
 | 0066–0067 | 故障区域崩溃信息；控制台静音 |
@@ -175,6 +176,10 @@ adb reboot bootloader
 | 0078 | 8 核 SMP（全部 CPU 节点） |
 | 0079–0080 | 显示电源控制；网络路由追踪（上游 sweet） |
 | 0082-gauguin | 额外的早期 IO L2 槽位——896 MiB 窗口的早期 IO 映射需要两个 L2 槽位 |
+| 0084-gauguin | Novatek NT36672C 触摸驱动：GENI SPI 传输、vendor 分区固件主机加载、报点事件（真机闭环） |
+| 0085-gauguin | GPU L1：点亮 Adreno 619 CX 供电域并读寄存器诊断（GCC + GPUCC + GDSC；`gauguingpu`，缺省开） |
+| 0086 | 恢复内核侧 `IORPC.kernelContent` 字段——Xcode 16 iig 生成的用户客户端需要它 |
+| 0087-gauguin | GPU L2：`a619_gmu.bin` 批量装入 GMU ITCM/DTCM、GMU 启动与最小 HFI 握手（`gauguingpu=2`） |
 
 ## 关键硬件事实
 
