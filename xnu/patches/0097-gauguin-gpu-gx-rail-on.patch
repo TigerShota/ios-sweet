@@ -1,0 +1,179 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -971,6 +971,176 @@
+ 	gauguin_smmu_faults();
+ 	printf("GAUGUIN GPU: L2 done\n");
+ 	(void)sweet_log_flush_now();
++	gauguin_gx_rail_on();
++}
++
++
++/* ==================== L3: GX rail on (gauguingpu=2, after L2) ============
++ * Legacy a615-family path (vendor a6xx_gmu_gfx_rail_on + drm arc votes):
++ * ARC votes come from cmd-db (0x80860000, "gfx.lvl"/"mx.lvl" aux tables).
++ */
++#define CMDDB_PA        0x80860000u
++#define CMDDB_SIZE      0x20000u
++#define G_BOOT_SLUMBER  0x1cbf8u
++#define G_GX_VOTE_IDX   0x1cbf9u
++#define G_MX_VOTE_IDX   0x1cbfau
++#define G_SPTPRAC       0x1f8d0u
++#define GX_GDSC_POWER_OFF (1u << 6)
++#define GX_CLK_OFF        (1u << 7)
++
++static vm_offset_t cmddb;
++
++static bool
++gauguin_cmdbdb_aux(const char *id, uint16_t *out, unsigned max, unsigned *outn)
++{
++	uint16_t hdr_words[8 * 8];
++	uint8_t *base = (uint8_t *)cmddb;
++	unsigned i, j;
++
++	if (!cmddb) {
++		return false;
++	}
++	if (base[4] != 0xdb || base[5] != 0x30 || base[6] != 0x03 || base[7] != 0x0c) {
++		printf("GAUGUIN GX: cmd-db magic mismatch %02x %02x %02x %02x\n",
++		    base[4], base[5], base[6], base[7]);
++		return false;
++	}
++	memcpy(hdr_words, base + 8, sizeof(hdr_words));
++	for (i = 0; i < 8; ++i) {
++		uint16_t slv = hdr_words[i * 8];
++		uint16_t ehdr_off = hdr_words[i * 8 + 1];
++		uint16_t data_off = hdr_words[i * 8 + 2];
++		uint16_t cnt = hdr_words[i * 8 + 3];
++		uint8_t *ent;
++		if (!slv) {
++			break;
++		}
++		ent = base + 144 + ehdr_off;
++		for (j = 0; j < cnt; ++j, ent += 24) {
++			if (memcmp(ent, id, 7) == 0) {
++				uint16_t len = *(uint16_t *)(ent + 20);
++				uint16_t loff = *(uint16_t *)(ent + 22);
++				unsigned n = len / 2;
++				uint16_t *d = (uint16_t *)(base + 144 + data_off + loff);
++				if (n > max) {
++					n = max;
++				}
++				memcpy(out, d, n * 2);
++				*outn = n;
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
++static void
++gauguin_gx_rail_on(void)
++{
++	uint16_t pri[32], sec[32];
++	unsigned npri = 0, nsec = 0, pindex = 0, sindex = 0, i;
++	uint32_t val;
++	bool on = false;
++
++	cmddb = ml_io_map(CMDDB_PA, CMDDB_SIZE);
++	printf("GAUGUIN GX: cmd-db mapped=%#llx\n", (uint64_t)cmddb);
++	if (!cmddb) {
++		return;
++	}
++	(void)sweet_log_flush_now();
++	if (!gauguin_cmdbdb_aux("gfx.lvl", pri, 32, &npri) ||
++	    !gauguin_cmdbdb_aux("mx.lvl", sec, 32, &nsec)) {
++		printf("GAUGUIN GX: gfx.lvl/mx.lvl not found in cmd-db\n");
++		return;
++	}
++	printf("GAUGUIN GX: gfx.lvl n=%u:", npri);
++	for (i = 0; i < npri; ++i) {
++		printf(" %u", pri[i]);
++	}
++	printf("\n");
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN GX: mx.lvl n=%u:", nsec);
++	for (i = 0; i < nsec; ++i) {
++		printf(" %u", sec[i]);
++	}
++	printf("\n");
++	(void)sweet_log_flush_now();
++
++	/* drm a6xx_gmu_rpmh_arc_votes_init for level 416 (the one OPP). */
++	for (i = 0; i < npri; ++i) {
++		if (pri[i] >= 416u) {
++			pindex = i;
++			break;
++		}
++	}
++	if (i == npri) {
++		printf("GAUGUIN GX: level 416 not in gfx.lvl\n");
++		return;
++	}
++	for (i = 0; i < nsec; ++i) {
++		if (sec[i] >= 416u) {
++			sindex = i;
++			break;
++		}
++		if (sec[i]) {
++			sindex = i;
++		}
++	}
++	printf("GAUGUIN GX: votes pri=%u(%u) sec=%u(%u)\n",
++	    pindex, pri[pindex], sindex, nsec ? sec[sindex] : 0);
++	(void)sweet_log_flush_now();
++
++	/* gfx_rail_on: BOOT_SLUMBER_OPTION=0 + vote idxs + OOB boot_slumber. */
++	gauguin_gmu_wr(G_BOOT_SLUMBER, 0);
++	gauguin_gmu_wr(G_GX_VOTE_IDX, pindex);
++	gauguin_gmu_wr(G_MX_VOTE_IDX, sindex);
++	gauguin_gmu_wr(G_H2G_INTR_SET, 1u << 22);
++	for (i = 0; i < 5000; ++i) {
++		val = gauguin_gmu_rd(G_INTR_INFO);
++		if (val & (1u << 30)) {
++			break;
++		}
++		delay(10);
++	}
++	printf("GAUGUIN GX: oob info=%#x acked=%d\n", val, !!(val & (1u << 30)));
++	(void)sweet_log_flush_now();
++	gauguin_gmu_wr(G_INTR_CLR, 1u << 30);
++	if (!(val & (1u << 30))) {
++		printf("GAUGUIN GX: OOB boot_slumber timed out\n");
++		return;
++	}
++
++	/* Poll SPTPRAC for GX power. */
++	for (i = 0; i < 2000; ++i) {
++		val = gauguin_gmu_rd(G_SPTPRAC);
++		if (!(val & (GX_GDSC_POWER_OFF | GX_CLK_OFF))) {
++			on = true;
++			break;
++		}
++		delay(10);
++	}
++	printf("GAUGUIN GX: sptprac=%#x on=%d\n", val, on);
++	(void)sweet_log_flush_now();
++	if (!on) {
++		return;
++	}
++
++	/* The GPU core window, alive for the first time. */
++	gg.gpu = ml_io_map(GPU_PA, GPU_SIZE);
++	if (!gg.gpu) {
++		printf("GAUGUIN GX: gpu map failed\n");
++		return;
++	}
++	printf("GAUGUIN GX: reading RBBM_STATUS...\n");
++	(void)sweet_log_flush_now();
++	val = gg_rd(gg.gpu, 0x840u);
++	printf("GAUGUIN GX: rbbm_status=%#x\n", val);
++	(void)sweet_log_flush_now();
++	val = gg_rd(gg.gpu, 0x848u);
++	printf("GAUGUIN GX: rbbm_status3=%#x\n", val);
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN GX: GX ALIVE (L3 next: ringbuffer + CP_BLIT)\n");
++	(void)sweet_log_flush_now();
+ }
+ 
+ void
