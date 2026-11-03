@@ -1,0 +1,38 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -727,6 +727,35 @@
+ 	printf("GAUGUIN GPU: smmu_clk snoc_dvm=%#x memnoc=%#x\n",
+ 	    gg_rd(gg.gcc, GCC_GPU_SNOC_DVM), gg_rd(gg.gcc, GCC_MEMNOC_GFX));
+ 	(void)sweet_log_flush_now();
++	{
++		/*
++		 * v20 died on the very first GR0 read with all clocks on.
++		 * Scan the address space to find the fence; each probe is
++		 * bracketed so the last flushed line marks the dead zone.
++		 */
++		static const struct { vm_offset_t pa; const char *what; } probe[] = {
++			{ 0x03d9e000u, "gpu win3 (cx)" },
++			{ 0x03d61000u, "gpu win2 (cx)" },
++			{ 0x03d6a000u, "gmu (known-good)" },
++			{ 0x03d46000u, "smmu impl_def1" },
++			{ 0x03d48000u, "smmu cb0" },
++			{ 0x03d50000u, "past smmu" },
++			{ 0x03d40000u, "smmu gr0" },
++		};
++		for (unsigned i = 0; i < sizeof(probe) / sizeof(probe[0]); ++i) {
++			vm_offset_t m = ml_io_map(probe[i].pa, 0x1000);
++			printf("GAUGUIN SCAN: %s @%#llx reading...\n",
++			    probe[i].what, (unsigned long long)probe[i].pa);
++			(void)sweet_log_flush_now();
++			if (!m) {
++				printf("GAUGUIN SCAN: %s map failed\n", probe[i].what);
++				continue;
++			}
++			uint32_t v = gg_rd(m, 0);
++			printf("GAUGUIN SCAN: %s = %#x\n", probe[i].what, v);
++			(void)sweet_log_flush_now();
++		}
++	}
+ 	printf("GAUGUIN SMMU: reading GR0...\n");
+ 	(void)sweet_log_flush_now();
+ 	gauguin_smmu_probe();
