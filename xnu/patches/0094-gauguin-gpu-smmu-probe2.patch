@@ -1,0 +1,20 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -734,13 +734,10 @@
+ 		 * bracketed so the last flushed line marks the dead zone.
+ 		 */
+ 		static const struct { vm_offset_t pa; const char *what; } probe[] = {
+-			{ 0x03d9e000u, "gpu win3 (cx)" },
+-			{ 0x03d61000u, "gpu win2 (cx)" },
+-			{ 0x03d6a000u, "gmu (known-good)" },
+-			{ 0x03d46000u, "smmu impl_def1" },
+-			{ 0x03d48000u, "smmu cb0" },
+-			{ 0x03d50000u, "past smmu" },
+-			{ 0x03d40000u, "smmu gr0" },
++			{ 0x03d6a014u, "gmu gsa_cfg (in win2)" },
++			{ 0x03d46000u, "smmu impl_def1 +0x6000" },
++			{ 0x03d48000u, "smmu cb0 +0x8000" },
++			{ 0x03d40000u, "smmu gr0 +0x0" },
+ 		};
+ 		for (unsigned i = 0; i < sizeof(probe) / sizeof(probe[0]); ++i) {
+ 			vm_offset_t m = ml_io_map(probe[i].pa, 0x1000);
