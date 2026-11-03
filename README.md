@@ -6,7 +6,7 @@
 
 本项目移植自 [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)（最初的红米 Note 10 Pro / `sweet` / SM7150 移植）。XNU 补丁序列与引导 shim 为两者共用；设备相关部分——设备树、内存映射、PMIC 按键、触摸控制器——均为 gauguin 专属。
 
-截至 **2026-11-03**，手机可**越过 Apple logo 启动进入 SpringBoard UI**。首次启动因冷 MobileGestalt 缓存下的一次性数据库重建需要较长时间（约 10 分钟）。触摸（SPI 上的 Novatek NT36672C）已工作。渲染仍完全由 CPU 完成——GPU 内核侧 bring-up 进行中（CX 供电域 → GMU 固件加载与 HFI 握手，boot-arg `gauguingpu` 分级启用），尚未参与渲染。
+截至 **2026-11-03**，手机可**越过 Apple logo 启动进入 SpringBoard UI**。首次启动因冷 MobileGestalt 缓存下的一次性数据库重建需要较长时间（约 10 分钟）。触摸（SPI 上的 Novatek NT36672C）已工作。渲染仍完全由 CPU 完成——但 **GPU 内核侧 bring-up 已完成管理面**：CX 供电域 → GPU SMMU 页表翻译 → GMU 固件加载并启动（`fw_init=0xbabeface`）→ HFI 握手全通（boot-arg `gauguingpu` 分级启用），GX 轨上电与渲染路径（ringbuffer + CP_BLIT）进行中。
 
 > 实验性 bring-up，不是可用的手机操作系统。大量功能缺失或为桩（见下文），Apple 的安全模型基本被关闭。系统安装进 `userdata` 分区，因此**会清空 Android 用户数据**。
 
@@ -29,7 +29,7 @@
 
 ## 尚未工作
 
-- **GPU 未参与渲染。** 一切仍由 CPU 软件合成（与原版 sweet 移植一致）。内核侧 bring-up 进行中：0085 点亮 Adreno 619 的 CX 供电域（`gauguingpu=1`，缺省即开），0087 把 `a619_gmu.bin` 装入 GMU 微控制器并做最小 HFI 握手（`gauguingpu=2`，上机验证待做）。
+- **GPU 未参与渲染。** 一切仍由 CPU 软件合成（与原版 sweet 移植一致）。内核侧管理面 bring-up 已完成：0085 点亮 Adreno 619 CX 供电域（`gauguingpu=1`，缺省即开），0087+0088 把 `a619_gmu.bin` 装入 GMU 微控制器并经 GPU SMMU（CB0 LPAE 页表、SMR 流匹配）完成最小 HFI 握手（`gauguingpu=2`，**真机闭环**：`fw_init=0xbabeface`，MSG_INIT/FW_VERSION/PERF_TABLE/BW_TABLE/TEST 全部确认）。0097 经 cmd-db ARC 投票给 GX 轨上电（进行中）。ringbuffer 与 CP_BLIT 合成加速是下一步。
 - **无 Wi-Fi、蓝牙、蜂窝、音频、相机、传感器、GPS 及 SEP / Face ID。** `bluetoothd` 与 `fairplayd.H2` 崩溃循环。
 - **首次启动慢：** Apple logo 停留约 10 分钟。第二次启动速度尚未验证。
 - **安全关闭：** 宽松的代码签名（AMFI）与沙盒策略、桩 AppleKeyStore、无数据保护。不要存放任何个人数据。
@@ -180,12 +180,19 @@ adb reboot bootloader
 | 0085-gauguin | GPU L1：点亮 Adreno 619 CX 供电域并读寄存器诊断（GCC + GPUCC + GDSC；`gauguingpu`，缺省开） |
 | 0086 | 恢复内核侧 `IORPC.kernelContent` 字段——Xcode 16 iig 生成的用户客户端需要它 |
 | 0087-gauguin | GPU L2：`a619_gmu.bin` 批量装入 GMU ITCM/DTCM、GMU 启动与最小 HFI 握手（`gauguingpu=2`） |
+| 0088-gauguin | GPU L2 收尾：GMU 走 GPU SMMU——64K WCOMB GMEM + LPAE 页表，CB0/SMR0/1 精确编程带回读校验，HFI 队列 offset/iova 修复 |
+| 0089-gauguin | 死亡点保底：`sweet_log_flush_now()` 强制刷盘——静默复位不再吃掉驱动最后一口气（每条 GPU 诊断打印后落盘） |
+| 0090–0092-gauguin | GPU SMMU 三时钟（iface/mem/mem_iface = GCC 0x45004/0x4500c/0x45014）在首次访问前全部打开 |
+| 0093–0095-gauguin | SMMU 地址空间扫描与逐寄存器探测（诊断插桩；证明全部寄存器可读） |
+| 0096-gauguin | SMMU 稳定读：**所有诊断打印一读一打**——单条 printf 捆绑多个 MMIO 读会在 sm6350 互连上死锁（v17-v23 的全部"挂死"均源于此）；修复后 L2 完整闭环 |
+| 0097-gauguin | GPU L3 第一步：解析 cmd-db（0x80860000）gfx.lvl/mx.lvl ARC 表 → OOB boot_slumber 投票 GX 轨 → SPTPRAC 上电 → 首次读 GPU 核心 RBBM_STATUS |
 
 ## 关键硬件事实
 
 - 内存：6 GB 双 bank。低 bank `0x9b000000`–`0xbcbfffff`（开机画面 framebuffer 切割于 `0xa0000000`，非 RAM `removed_region` 空洞 `0xbcc00000`–`0xc7afffff`），高 bank `0xc7b00000`–`0x1ffffffff`。内核窗口：`0xc8000000` + 896 MiB——最大的干净窗口：低 bank 384 MiB 窗口饿死 iOS 16 首次启动，512/576 MiB 跨越空洞，4G 以上地址导致板卡复位。
 - GICv3（含安全扩展）：定时器走 Group 1 IRQ（虚拟定时器 INTID 19），不像 Apple 芯片那样走 FIQ。PSCI 经 `smc`，19.2 MHz 时基，ARMv8.2 无指针认证。
 - 面板：1080×2400；shim 复用 ABL 的持续 splash framebuffer 扫出。
+- GPU：Adreno 619（chipid 0x06010900，A615 家族 = legacy GMU 寄存器路径）。寄存器窗口 `0x3d00000`（核心，GX 域）/`0x3d40000`（GPU SMMU，qcom,kgsl-smmu-v2）/`0x3d61000`（GMU）/`0x3d90000`（GPUCC）/`0x3d9e000`（CX 域诊断窗口）；窗口之间存在无映射空洞（读空洞 = 总线死等，如 `0x3d61000` 起始处）。GPU SMMU 三时钟 = GCC `0x45004`（cfg_ahb）/`0x4500c`（memnoc_gfx）/`0x45014`（snoc_dvm_gfx = mem_iface）。GMU 固件 `a619_gmu.bin`（32K ITCM/DTCM 镜像，vendor 分区提取）。ARC 投票表在 cmd-db SRAM `0x80860000`（`gfx.lvl`/`mx.lvl` 条目）。**sm6350 互连对背靠背无间隔 MMIO 读敏感**：单条 printf 求值多个 MMIO 读会死锁整机——诊断打印必须一读一打。
 - 触摸：Novatek NT36672C，SPI QUP SE0（`0x880000`），CS 在 gpio3，reset tlmm 21，irq tlmm 22，最高 10 MHz；固件 `novatek_nt36672c_j17_fw*.bin` 每次开机主机加载。
 - 按键：电源（PON KPDPWR）与音量下（PON RESIN）在 PM6350 PON 块；音量上在 PM6350 SID 0 GPIO2（PPID `0x0c1`），低有效。
 
