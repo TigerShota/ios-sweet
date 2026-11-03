@@ -1,0 +1,208 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -687,6 +687,8 @@
+ static char sweet_log_ring[SWEET_LOG_SIZE];
+ static uint64_t _Atomic sweet_log_total;
+ static int sweet_log_chan;
++static bool sweet_log_ready;
++static uint64_t sweet_log_forced;
+ static uint32_t sweet_log_secs = SWEET_LOG_SECS;
+ 
+ /* Called for all console output, any context: never blocks. */
+@@ -749,6 +751,7 @@
+ 
+ 	printf("SWEET LOG: console log to the last %u KiB of the partition (block 0x%llx)\n",
+ 	    SWEET_LOG_BLOCKS * UFS_BLOCK >> 10, base);
++	sweet_log_ready = true;
+ 	for (;;) {
+ 		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
+ 		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
+@@ -790,6 +793,61 @@
+ 	}
+ }
+ 
++/*
++ * Forced flush for bring-up drivers (gauguin GPU): push every pending ring
++ * block to the partition right now, so a silent reset cannot eat the last
++ * prints. Same block/head write as the flush thread; duplicate block writes
++ * are harmless.
++ */
++void
++sweet_log_flush_now(void)
++{
++	uint64_t base, total, pos;
++	void *bounce;
++
++	if (!sweet_log_ready) {
++		return;
++	}
++	total = os_atomic_load(&sweet_log_total, relaxed);
++	if (total == sweet_log_forced) {
++		return;
++	}
++	base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	bounce = (void *)(su.dma + DMA_BOUNCE);
++	lck_mtx_lock(&sweet_ufs_lock);
++	pos = sweet_log_forced;
++	int error = 0;
++	while (pos < total && !error) {
++		uint32_t off = (uint32_t)(pos % SWEET_LOG_SIZE);
++		uint32_t blk = off / UFS_BLOCK;
++		uint64_t need = ((uint64_t)off % UFS_BLOCK + (total - pos) + UFS_BLOCK - 1) / UFS_BLOCK;
++		uint32_t n = (uint32_t)MIN(MIN(need, (uint64_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk)),
++		    (uint64_t)(BOUNCE_SIZE / UFS_BLOCK));
++		memcpy(bounce, sweet_log_ring + (uint64_t)blk * UFS_BLOCK, n * UFS_BLOCK);
++		error = ufs_write_blocks(base + 1 + blk, n);
++		pos += (uint64_t)(blk + n) * UFS_BLOCK - off;
++	}
++	if (!error) {
++		struct sweet_log_header h = {
++			.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
++			.version = 1, .size = SWEET_LOG_SIZE, .total = total,
++			.seq = 0,
++		};
++		bzero(bounce, UFS_BLOCK);
++		memcpy(bounce, &h, sizeof(h));
++		error = ufs_write_blocks(base, 1);
++	}
++	if (!error) {
++		error = ufs_sync_cache();
++	}
++	lck_mtx_unlock(&sweet_ufs_lock);
++	if (error) {
++		printf("SWEET LOG: forced flush failed (%d)\n", error);
++		return;
++	}
++	sweet_log_forced = total;
++}
++
+ static void
+ sweet_log_start(void)
+ {
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -24,6 +24,7 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern kern_return_t thread_terminate(thread_t);
++extern void sweet_log_flush_now(void);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
+ extern const unsigned int gauguin_gmu_fw[5120];
+@@ -105,6 +106,7 @@
+ 	printf("GAUGUIN GPU: starting in %u s\n", delay_s);
+ 	gg_wait(delay_s * 1000u);
+ 	printf("GAUGUIN GPU: mapping GCC/GPUCC\n");
++	(void)sweet_log_flush_now();
+ 	gg.gcc = ml_io_map(GCC_PA, 0x60000);
+ 	gg.gpucc = ml_io_map(GPUCC_PA, 0x9000);
+ 	if (!gg.gcc || !gg.gpucc) {
+@@ -126,6 +128,7 @@
+ 	bool on = gg_poll_set(gg.gpucc, GPUCC_CX_GDSC, GDSC_PWR_ON);
+ 	printf("GAUGUIN GPU: cx_gdsc=%#x powered=%d\n",
+ 	    gg_rd(gg.gpucc, GPUCC_CX_GDSC), on);
++	(void)sweet_log_flush_now();
+ 	/* 4. Diagnostics from the now-powered CX domain. */
+ 	printf("GAUGUIN GPU: gpucc xo=%#x gmu_cbcr=%#x gfx3d_src=%#x gfx3d_cbcr=%#x\n",
+ 	    gg_rd(gg.gpucc, GPUCC_XO), gg_rd(gg.gpucc, GPUCC_GMU_CBCR),
+@@ -369,6 +372,7 @@
+ 	gm_map(GMU_VA_LOG, GMEM_LOG, 0x1000u);
+ 	printf("GAUGUIN SMMU: GMEM pa=%#llx dummy=%#x hfi=%#x dump=%#x log=%#x\n",
+ 	    gmem_pa, GMU_VA_DUMMY, GMU_VA_HFI, GMU_VA_DUMP, GMU_VA_LOG);
++	(void)sweet_log_flush_now();
+ 	return true;
+ }
+ 
+@@ -440,6 +444,7 @@
+ 	printf("GAUGUIN SMMU: cb0 fsr=%#x far=%#x%08x fsynr0=%#x\n",
+ 	    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR + 4u),
+ 	    gg_rd(cb, SMMU_CB_FAR), gg_rd(cb, SMMU_CB_FSYNR0));
++	(void)sweet_log_flush_now();
+ }
+ 
+ /* Global + CB0 fault registers; call after any failure. */
+@@ -563,6 +568,7 @@
+ 	}
+ 	printf("GAUGUIN SMMU: verified (CB0 LPAE ttbr0=%#llx SMR0=sid%u SMR1=sid%u)\n",
+ 	    ttbr_got, GG_SID_KERNEL, GG_SID_USER);
++	(void)sweet_log_flush_now();
+ 	return true;
+ }
+ 
+@@ -629,6 +635,7 @@
+ 	qh[11] = (idx + 1u) % 0x400u;
+ 	gauguin_gmu_wr(G_H2G_INTR_SET, 1);
+ 	printf("GAUGUIN GPU: HFI send id=%u hdr=%#x\n", id, hdr);
++	(void)sweet_log_flush_now();
+ 	return 0;
+ }
+ 
+@@ -688,6 +695,7 @@
+ 	bool ok;
+ 
+ 	printf("GAUGUIN GPU: L2 start\n");
++	(void)sweet_log_flush_now();
+ 	gg.gmu = ml_io_map(GMU_PA, 0x31000);
+ 	if (!gg.gmu) {
+ 		printf("GAUGUIN GPU: GMU map failed\n");
+@@ -721,11 +729,13 @@
+ 	    gg_rd(gg.gpucc, GPUCC_CXO_CBCR), gg_rd(gg.gpucc, GPUCC_GMU_SRC_CMD),
+ 	    gg_rd(gg.gpucc, GPUCC_GMU_SRC_CFG), gg_rd(gg.gpucc, GPUCC_GMU_CBCR),
+ 	    gg_rd(gg.gcc, GCC_MEMNOC_GFX), gg_rd(gg.gcc, GCC_DDRSS_AXI));
++	(void)sweet_log_flush_now();
+ 
+ 	/* Pre-boot state (CX domain is up; GMU reads are safe now). */
+ 	printf("GAUGUIN GPU: pre dtcm_ff8=%#x sysreset=%#x fw_init=%#x\n",
+ 	    gauguin_gmu_rd(G_DTCM + 0xff8u), gauguin_gmu_rd(G_SYSRESET),
+ 	    gauguin_gmu_rd(G_FW_INIT_RESULT));
++	(void)sweet_log_flush_now();
+ 
+ 	/* Firmware bulk load into ITCM (legacy path). */
+ 	for (unsigned i = 0; i < 5120u; ++i) {
+@@ -734,6 +744,7 @@
+ 	printf("GAUGUIN GPU: fw loaded itcm0=%#x itcm_last=%#x dtcm_ff8=%#x\n",
+ 	    gauguin_gmu_rd(G_ITCM), gauguin_gmu_rd(G_ITCM + 5119u),
+ 	    gauguin_gmu_rd(G_DTCM + 0xff8u));
++	(void)sweet_log_flush_now();
+ 
+ 	/*
+ 	 * Give the GMU its memory BEFORE the CM3 leaves reset: the firmware
+@@ -769,9 +780,14 @@
+ 	gauguin_gmu_wr(G_PWR_COL_CP_RESP, 0);
+ 	gauguin_gmu_wr(G_SYSRESET, 0);
+ 	printf("GAUGUIN GPU: CM3 released (dtcm_ff8=%#x), polling fw_init\n", dv);
++	(void)sweet_log_flush_now();
+ 	ok = false;
+ 	for (unsigned i = 0; i < 3000; ++i) {
+ 		val = gauguin_gmu_rd(G_FW_INIT_RESULT);
++		if (i % 500u == 499u) {
++			printf("GAUGUIN GPU: fw poll %u val=%#x\n", i, val);
++			(void)sweet_log_flush_now();
++		}
+ 		if (val == 0xbabefaceu || (val & 0x1ffu) == 0x100u) {
+ 			ok = true;
+ 			break;
+@@ -779,6 +795,7 @@
+ 		gg_wait(1);
+ 	}
+ 	printf("GAUGUIN GPU: fw_init=%#x booted=%d\n", val, ok);
++	(void)sweet_log_flush_now();
+ 	if (!ok) {
+ 		printf("GAUGUIN GPU: L2 abort after CM3 boot\n");
+ 		gauguin_smmu_faults();
+@@ -801,6 +818,7 @@
+ 	}
+ 	printf("GAUGUIN GPU: hfi started=%d status=%#x\n", ok,
+ 	    gauguin_gmu_rd(G_HFI_STATUS));
++	(void)sweet_log_flush_now();
+ 	if (!ok) {
+ 		gauguin_smmu_faults();
+ 		return;
+@@ -871,6 +889,7 @@
+ 	    gm_rd(GMEM_LOG + 56u), gm_rd(GMEM_LOG + 60u));
+ 	gauguin_smmu_faults();
+ 	printf("GAUGUIN GPU: L2 done\n");
++	(void)sweet_log_flush_now();
+ }
+ 
+ void
