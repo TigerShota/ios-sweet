@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""v28 shim: xnu run 41813660692 (0107 - zap PAS argument ABI fix)."""
+"""v28 shim: xnu run 41816789702 (0107 device ABI - pas id first, x7=0,
+interrupted resume with x0=1; bearssl vendored so the build survives)."""
 import json, os, subprocess, time, zipfile
 
 GH = r'D:\hackios\tools\gh\bin\gh.exe'
 REPO = 'TigerShota/ios-sweet'
-XNU_ID = 41813660692
+XNU_ID = 41816789702
 OUT = r'D:\hackios\out\shim-v28'
 CMDLINE = ('debug=0xc serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam '
            '-noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 '
@@ -95,10 +96,10 @@ for a in items:
 pl = os.path.join(OUT, 'shim', 'out', 'payload.bin')
 data = open(pl, 'rb').read()
 marks = {
-    # 0107: the fajita argument vector + the pre-call prints
+    # 0107: the device argument vector + the pre-call prints
     'init vector fmt': b'GAUGUIN ZAP: INIT_IMAGE fn=%#x arginfo=%#x args=%#llx/%#llx',
     'mem vector fmt': b'GAUGUIN ZAP: MEM_SETUP fn=%#x arginfo=%#x args=%#llx/%#llx',
-    'auth vector fmt': b'GAUGUIN ZAP: AUTH_AND_RESET fn=%#x arginfo=%#x args=0/0',
+    'auth vector fmt': b'GAUGUIN ZAP: AUTH_AND_RESET fn=%#x arginfo=%#x args=%#llx/0',
     'init status': b'GAUGUIN ZAP: INIT_IMAGE status %lld result %llu',
     'mem status': b'GAUGUIN ZAP: MEM_SETUP status %lld result %llu',
     'auth status': b'GAUGUIN ZAP: AUTH_AND_RESET status %lld result %llu',
@@ -106,7 +107,6 @@ marks = {
     'scm interrupted': b'GAUGUIN SCM: fn=%#x interrupted x%u (cont=%#llx res1=%#llx)',
     'scm busy': b'GAUGUIN SCM: fn=%#x busy x%u',
     # surviving marks
-    'zap avail atomic': b'GAUGUIN ZAP: pas %s ATOMIC available: status %lld result %llu',
     'zap avail': b'GAUGUIN ZAP: pas %s available: status %lld result %llu',
     'zap meta copied': b'GAUGUIN ZAP: meta copied %u dwords, %u mismatch',
     'zap segment': b'GAUGUIN ZAP: segment %u bytes -> img+0',

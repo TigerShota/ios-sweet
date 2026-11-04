@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Retry loop: rerun xnu run 41743370748 until it actually builds (macOS runner
-capacity keeps rejecting jobs - 'not acquired by Runner of type hosted').
-Aborts if the failure is a real build error (annotation differs)."""
+"""Retry loop: rerun the xnu run until it actually builds. Two transients get
+rerun automatically: macOS runner capacity rejections ('not acquired by Runner
+of type hosted') and upstream fetch failures (bearssl.org / dyld / IPSW hosts
+returning 5xx out of the CI's control). Aborts on a real build error."""
 import json, os, subprocess, time
 
 GH = r"D:\hackios\tools\gh\bin\gh.exe"
 REPO = "TigerShota/ios-sweet"
-RUN = 41813660692
+RUN = 41816789702
 MAX_ATTEMPTS = 8
 ENV = dict(os.environ)
 for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
@@ -22,6 +23,11 @@ def log(msg):
     print("[%s] %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
 
 CAPACITY = "not acquired by Runner"
+TRANSIENT_FETCH = ["The requested URL returned error: 502",
+                   "The requested URL returned error: 503",
+                   "The requested URL returned error: 504",
+                   "bearssl.org",
+                   "unable to access '"]
 
 for attempt in range(1, MAX_ATTEMPTS + 1):
     run = api("repos/%s/actions/runs/%d" % (REPO, RUN))
@@ -37,11 +43,15 @@ for attempt in range(1, MAX_ATTEMPTS + 1):
         ann = api("repos/%s/check-runs/%d/annotations" % (REPO, job["id"]))
         msgs = [a.get("message", "") for a in ann]
         if not any(CAPACITY in m for m in msgs):
-            log("REAL FAILURE (not capacity) - annotations:")
-            for m in msgs:
-                log("  " + m)
-            raise SystemExit(2)
-        log("attempt %d: capacity rejection again (%s), rerun" % (attempt, job["conclusion"]))
+            if not any(t in m for m in msgs for t in TRANSIENT_FETCH):
+                log("REAL FAILURE (not capacity, not upstream) - annotations:")
+                for m in msgs:
+                    log("  " + m)
+                raise SystemExit(2)
+            log("attempt %d: upstream fetch failure, rerun" % attempt)
+        else:
+            log("attempt %d: capacity rejection again (%s), rerun"
+                % (attempt, job["conclusion"]))
         api("repos/%s/actions/runs/%d/rerun" % (REPO, RUN), "POST")
         time.sleep(30)  # let the rerun register
 
