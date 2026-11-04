@@ -1,0 +1,155 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1429,6 +1429,7 @@
+ #define ZAP_FN_AUTH      0x42000205u
+ #define ZAP_FN_SHUTDOWN  0x42000206u
+ #define ZAP_FN_AVAIL     0xC2000601u
++#define ZAP_FN_ATOMIC    0x80000000u  /* same fn, complete-now form */
+ #define ZAP_MDT_DWORDS   1715u
+ #define ZAP_B02_DWORDS   496u
+ #define ZAP_B02_BYTES    1984u
+@@ -1461,7 +1462,7 @@
+ {
+ 	int64_t status;
+ 	uint64_t cont = 0, res1 = 0;
+-	unsigned busy = 0;
++	unsigned busy = 0, intr = 0;
+ 
+ 	for (;;) {
+ 		register uint64_t x0 __asm__("x0") = fn;
+@@ -1480,9 +1481,26 @@
+ 		res1 = x1;
+ 		cont = x6;
+ 		if (status == 1) {
+-			continue;          /* interrupted: reissue */
++			/* interrupted: reissue with the continuation token.
++			 * Bounded and logged - v26 saw INIT_IMAGE vanish
++			 * silently; a spin must leave evidence. */
++			if (++intr <= 3 || (intr % 100) == 0) {
++				printf("GAUGUIN SCM: fn=%#x interrupted x%u "
++				    "(cont=%#llx res1=%#llx)\n", fn, intr,
++				    (unsigned long long)cont,
++				    (unsigned long long)res1);
++				(void)sweet_log_flush_now();
++			}
++			if (intr >= 500) {
++				break;     /* give up: caller prints status 1 */
++			}
++			continue;
+ 		}
+ 		if (status == -12 && ++busy <= 67) {
++			if (busy <= 3 || (busy % 10) == 0) {
++				printf("GAUGUIN SCM: fn=%#x busy x%u\n", fn, busy);
++				(void)sweet_log_flush_now();
++			}
+ 			delay(30000);      /* busy: 30 ms, bounded */
+ 			continue;
+ 		}
+@@ -1524,6 +1542,21 @@
+ 		    names[i], (long long)st, (unsigned long long)r1);
+ 		(void)sweet_log_flush_now();
+ 	}
++	/*
++	 * v26: the yielding INIT_IMAGE (bit 31 clear) never returned - the
++	 * first non-atomic SMC this port ever issued (PSCI CPU_ON and
++	 * IS_CALL_AVAIL both carry bit 31 and both work). Probe the atomic
++	 * forms too; the real calls below go atomic-first with a yielding
++	 * fallback so one boot answers both.
++	 */
++	for (i = 0; i < 4; ++i) {
++		st = gauguin_scm_call(ZAP_FN_AVAIL, 0x1u,
++		    fns[i] | ZAP_FN_ATOMIC, 0, 0, &r1);
++		printf("GAUGUIN ZAP: pas %s ATOMIC available: status %lld "
++		    "result %llu\n", names[i], (long long)st,
++		    (unsigned long long)r1);
++		(void)sweet_log_flush_now();
++	}
+ 
+ 	/* Metadata sanity: ELF32, phoff 52, 3 program headers, ph2 = the
+ 	 * RWE segment (dword indices: e_phoff at 28 -> dw7, e_phnum at 44
+@@ -1597,18 +1630,36 @@
+ 		return false;
+ 	}
+ 
+-	st = gauguin_scm_call(ZAP_FN_INIT, 0x82u, ZAP_PAS_ID, meta_pa, 0, &r1);
+-	printf("GAUGUIN ZAP: INIT_IMAGE status %lld result %llu\n",
++	printf("GAUGUIN ZAP: calling INIT_IMAGE (meta=%#llx)\n",
++	    (unsigned long long)meta_pa);
++	(void)sweet_log_flush_now();
++	st = gauguin_scm_call(ZAP_FN_INIT | ZAP_FN_ATOMIC, 0x82u, ZAP_PAS_ID,
++	    meta_pa, 0, &r1);
++	printf("GAUGUIN ZAP: INIT_IMAGE status %lld result %llu (atomic)\n",
+ 	    (long long)st, (unsigned long long)r1);
+ 	(void)sweet_log_flush_now();
++	if (st != 0) {
++		st = gauguin_scm_call(ZAP_FN_INIT, 0x82u, ZAP_PAS_ID,
++		    meta_pa, 0, &r1);
++		printf("GAUGUIN ZAP: INIT_IMAGE status %lld result %llu "
++		    "(yield)\n", (long long)st, (unsigned long long)r1);
++		(void)sweet_log_flush_now();
++	}
+ 	if (st != 0) {
+ 		return false;
+ 	}
+-	st = gauguin_scm_call(ZAP_FN_MEM, 0x3u, ZAP_PAS_ID, img_pa,
+-	    0x1000u, &r1);
+-	printf("GAUGUIN ZAP: MEM_SETUP status %lld result %llu\n",
++	st = gauguin_scm_call(ZAP_FN_MEM | ZAP_FN_ATOMIC, 0x3u, ZAP_PAS_ID,
++	    img_pa, 0x1000u, &r1);
++	printf("GAUGUIN ZAP: MEM_SETUP status %lld result %llu (atomic)\n",
+ 	    (long long)st, (unsigned long long)r1);
+ 	(void)sweet_log_flush_now();
++	if (st != 0) {
++		st = gauguin_scm_call(ZAP_FN_MEM, 0x3u, ZAP_PAS_ID, img_pa,
++		    0x1000u, &r1);
++		printf("GAUGUIN ZAP: MEM_SETUP status %lld result %llu "
++		    "(yield)\n", (long long)st, (unsigned long long)r1);
++		(void)sweet_log_flush_now();
++	}
+ 	if (st != 0) {
+ 		return false;
+ 	}
+@@ -1622,10 +1673,17 @@
+ 	printf("GAUGUIN ZAP: segment %u bytes -> img+0\n", ZAP_B02_BYTES);
+ 	(void)sweet_log_flush_now();
+ 
+-	st = gauguin_scm_call(ZAP_FN_AUTH, 0x1u, ZAP_PAS_ID, 0, 0, &r1);
+-	printf("GAUGUIN ZAP: AUTH_AND_RESET status %lld result %llu\n",
+-	    (long long)st, (unsigned long long)r1);
+-	(void)sweet_log_flush_now();
++	st = gauguin_scm_call(ZAP_FN_AUTH | ZAP_FN_ATOMIC, 0x1u, ZAP_PAS_ID,
++	    0, 0, &r1);
++	printf("GAUGUIN ZAP: AUTH_AND_RESET status %lld result %llu "
++	    "(atomic)\n", (long long)st, (unsigned long long)r1);
++	(void)sweet_log_flush_now();
++	if (st != 0) {
++		st = gauguin_scm_call(ZAP_FN_AUTH, 0x1u, ZAP_PAS_ID, 0, 0, &r1);
++		printf("GAUGUIN ZAP: AUTH_AND_RESET status %lld result %llu "
++		    "(yield)\n", (long long)st, (unsigned long long)r1);
++		(void)sweet_log_flush_now();
++	}
+ 	if (st != 0) {
+ 		return false;
+ 	}
+@@ -1925,10 +1983,18 @@
+ 
+ 	/* Release PAS 13 (fajita console76 shuts down after the test). */
+ 	{
+-		int64_t st = gauguin_scm_call(ZAP_FN_SHUTDOWN, 0x1u,
+-		    ZAP_PAS_ID, 0, 0, NULL);
+-		printf("GAUGUIN ZAP: SHUTDOWN status %lld\n", (long long)st);
++		int64_t st = gauguin_scm_call(ZAP_FN_SHUTDOWN | ZAP_FN_ATOMIC,
++		    0x1u, ZAP_PAS_ID, 0, 0, NULL);
++		printf("GAUGUIN ZAP: SHUTDOWN status %lld (atomic)\n",
++		    (long long)st);
+ 		(void)sweet_log_flush_now();
++		if (st != 0) {
++			st = gauguin_scm_call(ZAP_FN_SHUTDOWN, 0x1u,
++			    ZAP_PAS_ID, 0, 0, NULL);
++			printf("GAUGUIN ZAP: SHUTDOWN status %lld (yield)\n",
++			    (long long)st);
++			(void)sweet_log_flush_now();
++		}
+ 	}
+ 	if (!ok) {
+ 		printf("GAUGUIN CP: L3b abort after SEC_MODE\n");
