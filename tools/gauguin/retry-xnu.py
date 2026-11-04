@@ -6,7 +6,7 @@ import json, os, subprocess, time
 
 GH = r"D:\hackios\tools\gh\bin\gh.exe"
 REPO = "TigerShota/ios-sweet"
-RUN = 41796069750
+RUN = 41806789763
 MAX_ATTEMPTS = 8
 ENV = dict(os.environ)
 for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
