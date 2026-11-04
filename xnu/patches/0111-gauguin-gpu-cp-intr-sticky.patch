@@ -1,0 +1,121 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1395,6 +1395,12 @@
+ #define CP_ROQ_DBG_DATA_DW 0x90du
+ #define CP_SQE_UCODE_DBG_ADDR_DW 0x910u
+ #define CP_SQE_UCODE_DBG_DATA_DW 0x911u
++#define CP_CRASH_DUMP_STATUS_DW 0x903u
++#define CP_IB1_BASE_DW   0x928u  /* 64-bit at 0x928/0x929 */
++#define CP_IB1_REM_SIZE_DW 0x92au
++#define CP_IB2_BASE_DW   0x92bu  /* 64-bit at 0x92b/0x92c */
++#define CP_IB2_REM_SIZE_DW 0x92du
++#define CP_APERTURE_CNTL_HOST_DW 0xa00u
+ #define CP_ADDR_MODE_CNTL_DW 0x842u
+ #define RBBM_VBIF_CLIENT_QOS_CNTL_DW 0x010u
+ #define RBBM_GBIF_HALT_DW 0x016u
+@@ -1731,6 +1737,15 @@
+ 	    gg_rd(gg.gpu, GR(CP_RB_BASE_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_SQE_INSTR_BASE_DW)));
+ 	(void)sweet_log_flush_now();
++	printf("GAUGUIN CP: %s ib1=%#x/%#x ib2=%#x/%#x ap=%#x crash=%#x\n",
++	    tag,
++	    gg_rd(gg.gpu, GR(CP_IB1_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB2_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB2_REM_SIZE_DW)),
++	    gg_rd(gg.gpu, GR(CP_APERTURE_CNTL_HOST_DW)),
++	    gg_rd(gg.gpu, GR(CP_CRASH_DUMP_STATUS_DW)));
++	(void)sweet_log_flush_now();
+ 	for (i = 0; i < 4; ++i) {
+ 		gg_wr(gg.gpu, GR(CP_SQE_STAT_ADDR_DW), i);
+ 		printf("GAUGUIN CP: %s sqe_stat[%u]=%#x\n", tag, i,
+@@ -1760,7 +1775,7 @@
+ {
+ 	volatile uint32_t *ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
+ 	unsigned i, wptr, rptr;
+-	uint32_t val, rreg, pcval;
++	uint32_t val, rreg, pcval, icold;
+ 	bool ok = true;
+ 
+ 	printf("GAUGUIN CP: start - pre-state\n");
+@@ -1776,6 +1791,16 @@
+ 	(void)sweet_log_flush_now();
+ 	val = gg_rd(gg.gpu, GR(CP_RB_WPTR_DW));
+ 	printf("GAUGUIN CP: pre wptr=%u\n", val);
++	(void)sweet_log_flush_now();
++	/* v31 read 0x80 only *after* SQE_CNTL=1, so it could say
++	 * nothing about where the bit came from. This is the cold
++	 * baseline (the CP has not been touched yet). */
++	val = gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW));
++	icold = val;
++	printf("GAUGUIN CP: pre intr=%#x\n", val);
++	(void)sweet_log_flush_now();
++	val = gg_rd(gg.gpu, GR(CP_STATUS_1_DW));
++	printf("GAUGUIN CP: pre status1=%#x\n", val);
+ 	(void)sweet_log_flush_now();
+ 	/*
+ 	 * mxtp 0094-0098 lesson: CP registers only stick when written in
+@@ -1965,6 +1990,19 @@
+ 	printf("GAUGUIN CP: sqe base=%#x\n", val);
+ 	(void)sweet_log_flush_now();
+ 
++	/* Is 0x80 the GMU's sticky start-up error or does the release
++	 * raise it? CP_INTERRUPT_STATUS is write-1-to-clear, so clear
++	 * the cold latch, verify a zero readback, then release. If the
++	 * SQE then fetches (or at least stops faulting) the latched bit
++	 * was blocking it; if 0x80 is back immediately, the transition
++	 * itself is what faults. */
++	printf("GAUGUIN CP: intr cold=%#x\n", icold);
++	(void)sweet_log_flush_now();
++	gg_wr(gg.gpu, GR(CP_INTERRUPT_STATUS_DW), icold); /* W1C */
++	val = gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW));
++	printf("GAUGUIN CP: intr cleared=%#x\n", val);
++	(void)sweet_log_flush_now();
++
+ 	/* Release the CP from the GMU's reset: SQE_CNTL = 1. This is the
+ 	 * vendor order - kgsl a6xx_rb_start starts the SQE and sends
+ 	 * CP_ME_INIT *before* a6xx_zap_load, mainline a6xx_hw_init likewise;
+@@ -1977,6 +2015,10 @@
+ 	val = gg_rd(gg.gpu, GR(CP_STATUS_1_DW));
+ 	printf("GAUGUIN CP: cp_status1=%#x protect=%#x intr=%#x\n",
+ 	    val, pcval, gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++	(void)sweet_log_flush_now();
++	val = gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW));
++	printf("GAUGUIN CP: intr after release=%#x (cold %#x)\n",
++	    val, icold);
+ 	(void)sweet_log_flush_now();
+ 	gauguin_cp_dbg_dump("after sqe");
+ 
+@@ -2052,6 +2094,32 @@
+ 		    gg_rd(gg.gpu, GR(RBBM_INT_0_STATUS_DW)));
+ 		(void)sweet_log_flush_now();
+ 		gauguin_cp_dbg_dump("stuck1");
++		/* The SQE fetches its ucode and our ring through SMMU CB1
++		 * (gfx3d_user sid 0 via SMR2). A translation or permission
++		 * fault there hands the SQE garbage, which it reports as an
++		 * illegal instruction - so read the fault state, not just
++		 * the CP. */
++		{
++			vm_offset_t s = gg_smmu_base();
++			if (s) {
++				vm_offset_t cb = s + SMMU_CB(GG_CB1);
++				printf("GAUGUIN CP: stuck1 smmu gfsr=%#x gs0=%#x gs1=%#x\n",
++				    gg_rd(s, SMMU_GFSR),
++				    gg_rd(s, SMMU_GFSYNR0),
++				    gg_rd(s, SMMU_GFSYNR1));
++				(void)sweet_log_flush_now();
++				printf("GAUGUIN CP: stuck1 cb1 fsr=%#x far=%#x fsynr0=%#x\n",
++				    gg_rd(cb, SMMU_CB_FSR),
++				    gg_rd(cb, SMMU_CB_FAR),
++				    gg_rd(cb, SMMU_CB_FSYNR0));
++				(void)sweet_log_flush_now();
++				printf("GAUGUIN CP: stuck1 cb1 ttbr0=%#llx tcr=%#x sctlr=%#x\n",
++				    *(volatile uint64_t *)(cb + SMMU_CB_TTBR0),
++				    gg_rd(cb, SMMU_CB_TCR),
++				    gg_rd(cb, SMMU_CB_SCTLR));
++				(void)sweet_log_flush_now();
++			}
++		}
+ 	}
+ 
+ 	/* The zap (0105) in the vendor position: kgsl a6xx_rb_start sends
