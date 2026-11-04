@@ -1,0 +1,200 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -29,6 +29,7 @@
+ extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
+ extern const unsigned int gauguin_gmu_fw[5120];
+ static void gauguin_gpu_l2(void);
++static void gauguin_gx_pdc_rsc(void);
+ static void gauguin_gx_rail_on(void);
+ void gauguin_gpu_init(void);
+ 
+@@ -180,6 +181,8 @@
+ #define G_FW_INIT_RESULT  0x1f81cu
+ #define G_CM3_CFG         0x1f82du
+ #define G_PWR_COL_CTRL    0x1f8c0u
++#define G_RPMH_CTRL       0x1f8e8u  /* GMU_RPMH_CTRL */
++#define RPMH_CTRL_ENABLE  0xf11u    /* iface | LLC | DDR | MX | CX | GFX votes */
+ #define G_PWR_COL_HYST_IF 0x1f8c1u
+ #define G_PWR_COL_HYST_SP 0x1f8c2u
+ #define G_SPTPRAC_STATUS  0x1f8d0u
+@@ -839,6 +842,12 @@
+ 		return;
+ 	}
+ 
++	/*
++	 * GX rail prerequisites while the CM3 is still in reset: load the
++	 * PDC/RSC sequencers (v18: the OOB vote timed out without them).
++	 */
++	gauguin_gx_pdc_rsc();
++
+ 	/* Boot sequence (a6xx_gmu_fw_start); HFI table and buffers by GMU VA. */
+ 	gauguin_gmu_wr(G_GENERAL_7, 1);
+ 	gauguin_gmu_wr(G_FW_INIT_RESULT, 0);
+@@ -849,13 +858,19 @@
+ 	gauguin_gmu_wr(G_CM3_CFG, 0x4052u);
+ 	gauguin_gmu_wr(G_HFI_SFR_ADDR, GMU_VA_DUMMY);
+ 	gauguin_gmu_wr(G_PWR_COL_CP_MSG, GMU_VA_LOG | 3u);
+-	/* a6xx_gmu_power_config (RPMH left disabled: no cmd-db here). */
++	/* a6xx_gmu_power_config (PDC/RSC loaded by gauguin_gx_pdc_rsc). */
+ 	gauguin_gmu_wr(G_SYS_BUS_CFG, 1);
+ 	gauguin_gmu_wr(G_ICACHE_CFG, 1);
+ 	gauguin_gmu_wr(G_DCACHE_CFG, 1);
+ 	gauguin_gmu_wr(G_PWR_COL_HYST_IF, 0xa1680u);
+ 	gauguin_gmu_wr(G_PWR_COL_HYST_SP, 0xa1680u);
+ 	gauguin_gmu_wr(G_PWR_COL_CTRL, 0x9c40400u | 0x7u);
++	/* Enable the GMU RPMh client - the GX vote gate (v18 miss). */
++	val = gauguin_gmu_rd(G_RPMH_CTRL);
++	printf("GAUGUIN GPU: rpmh ctrl %#x -> %#x\n", val,
++	    val | RPMH_CTRL_ENABLE);
++	(void)sweet_log_flush_now();
++	gauguin_gmu_wr(G_RPMH_CTRL, val | RPMH_CTRL_ENABLE);
+ 	/* Start CM3. */
+ 	dv = gauguin_gmu_rd(G_DTCM + 0xff8u);
+ 	gauguin_gmu_wr(G_SYSRESET, 1);
+@@ -992,7 +1007,8 @@
+ static vm_offset_t cmddb;
+ 
+ static bool
+-gauguin_cmdbdb_aux(const char *id, uint16_t *out, unsigned max, unsigned *outn)
++gauguin_cmdbdb_aux(const char *id, uint16_t *out, unsigned max, unsigned *outn,
++    uint32_t *out_off)
+ {
+ 	uint16_t hdr_words[8 * 8];
+ 	volatile uint8_t *base = (volatile uint8_t *)cmddb;
+@@ -1037,6 +1053,9 @@
+ 				    ((uint16_t)ent[21] << 8);
+ 				uint16_t loff = (uint16_t)ent[22] |
+ 				    ((uint16_t)ent[23] << 8);
++				if (out_off) {
++					*out_off = 144u + data_off + loff;
++				}
+ 				unsigned n = len / 2;
+ 				volatile uint8_t *d = base + 144 + data_off + loff;
+ 				if (n > max) {
+@@ -1054,6 +1073,115 @@
+ 	return false;
+ }
+ 
++#define RSCC_LEGACY       0x23400u  /* RSCC lives in the GMU space on legacy GMUs */
++#define PDC_PA            0x0b290000u   /* DT gmu_pdc */
++#define PDC_SEQ_PA        0x0b490000u   /* DT gmu_pdc_seq */
++
++/*
++ * GX rail prerequisites (Linux a6xx_gmu_rpmh_init + the power_config tail),
++ * run while the CM3 is still in reset. v18 proved the OOB BOOT_SLUMBER
++ * vote never completes without them: the GMU's RPMh client is gated by
++ * GMU_RPMH_CTRL (enabled in the boot sequence below), and the PDC/RSC
++ * sequencers carry the wake/sleep TCS commands with the ARC resource
++ * addresses taken from cmd-db by id (fajita/Bergamota showed the Linux
++ * hardcodes are wrong on real phones). On legacy GMUs the RSCC register
++ * file sits inside the GMU window at dword 0x23400 (RSCC_OFFSET_LEGACY).
++ * Byte-wise access only - cmd-db is Device memory (v17 lesson).
++ */
++static void
++gauguin_gx_pdc_rsc(void)
++{
++	static const uint32_t rsc_seq[5] = {
++		0xa7a506a0, 0xa1e6a6e7, 0xa2e081e1, 0xe9a982e2, 0x0020e8a8,
++	};
++	static const uint32_t pdc_seq[5] = {
++		0xfebea1e1, 0xa5a4a3a2, 0x8382a6e0, 0xbce3e284, 0x002081fc,
++	};
++	vm_offset_t pdc, pdcseq;
++	uint16_t lvl[32];
++	unsigned n;
++	uint32_t mx_off = 0, cx_off = 0, gfx_off = 0, rb;
++
++	cmddb = ml_io_map(CMDDB_PA, CMDDB_SIZE);
++	printf("GAUGUIN GX: cmd-db mapped=%#llx\n", (uint64_t)cmddb);
++	(void)sweet_log_flush_now();
++	if (!cmddb) {
++		return;
++	}
++	if (!gauguin_cmdbdb_aux("mx.lvl", lvl, 32, &n, &mx_off) ||
++	    !gauguin_cmdbdb_aux("cx.lvl", lvl, 32, &n, &cx_off) ||
++	    !gauguin_cmdbdb_aux("gfx.lvl", lvl, 32, &n, &gfx_off)) {
++		printf("GAUGUIN GX: cmd-db ARC resources missing\n");
++		(void)sweet_log_flush_now();
++		return;
++	}
++	printf("GAUGUIN GX: pdc cmd-db offs mx=%#x cx=%#x gfx=%#x\n",
++	    mx_off, cx_off, gfx_off);
++	(void)sweet_log_flush_now();
++
++	/* RSCC (legacy GMU: dword 0x23400 inside the mapped GMU window). */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x004u, 1u << 24);    /* RSC_STATUS0_DRV0 */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x00bu, 1);           /* PDC_SLAVE_ID_DRV0 */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x00eu, 0);           /* HIDDEN_TCS_CMD0_DATA */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x00du, 0);           /* HIDDEN_TCS_CMD0_ADDR */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x010u, 0);           /* DATA + 2 */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x00fu, 0);           /* ADDR + 2 */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x012u, 0x80000000u); /* DATA + 4 */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x011u, 0);           /* ADDR + 4 */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x100u, 0);           /* OVERRIDE_START_ADDR */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x008u, 0x4520);      /* PDC_SEQ_START_ADDR */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x009u, 0x4510);      /* PDC_MATCH_VALUE_LO */
++	gauguin_gmu_wr(RSCC_LEGACY + 0x00au, 0x4514);      /* PDC_MATCH_VALUE_HI */
++	for (unsigned i = 0; i < 5; ++i) {
++		gauguin_gmu_wr(RSCC_LEGACY + 0x180u + i, rsc_seq[i]);
++	}
++	rb = gauguin_gmu_rd(RSCC_LEGACY + 0x180u);
++	printf("GAUGUIN GX: rsc sequencer written (seq0=%#x)\n", rb);
++	(void)sweet_log_flush_now();
++
++	pdc = ml_io_map(PDC_PA, 0x6000);
++	pdcseq = ml_io_map(PDC_SEQ_PA, 0x1000);
++	if (!pdc || !pdcseq) {
++		printf("GAUGUIN GX: pdc map failed\n");
++		(void)sweet_log_flush_now();
++		return;
++	}
++	for (unsigned i = 0; i < 5; ++i) {
++		gg_wr(pdcseq, 4u * i, pdc_seq[i]);
++	}
++	/* PDC TCS1 (wake): mx on, cx/gfx keep. */
++	gg_wr(pdc, 4u * 0x1573u, 7);               /* TCS1_CMD_ENABLE_BANK */
++	gg_wr(pdc, 4u * 0x1574u, 0);               /* TCS1_CMD_WAIT_FOR_CMPL */
++	gg_wr(pdc, 4u * 0x1572u, 0);               /* TCS1_CONTROL */
++	gg_wr(pdc, 4u * 0x1575u, 0x10108);         /* CMD0_MSGID */
++	gg_wr(pdc, 4u * 0x1576u, mx_off);          /* CMD0_ADDR */
++	gg_wr(pdc, 4u * 0x1577u, 1);               /* CMD0_DATA */
++	gg_wr(pdc, 4u * 0x1579u, 0x10108);
++	gg_wr(pdc, 4u * 0x157au, cx_off);
++	gg_wr(pdc, 4u * 0x157bu, 0);
++	gg_wr(pdc, 4u * 0x157du, 0x10108);
++	gg_wr(pdc, 4u * 0x157eu, gfx_off);
++	gg_wr(pdc, 4u * 0x157fu, 0);
++	/* PDC TCS3 (sleep): mx/cx low, gfx off. */
++	gg_wr(pdc, 4u * 0x15d7u, 7);
++	gg_wr(pdc, 4u * 0x15d8u, 0);
++	gg_wr(pdc, 4u * 0x15d6u, 0);
++	gg_wr(pdc, 4u * 0x15d9u, 0x10108);
++	gg_wr(pdc, 4u * 0x15dau, mx_off);
++	gg_wr(pdc, 4u * 0x15dbu, 2);
++	gg_wr(pdc, 4u * 0x15ddu, 0x10108);
++	gg_wr(pdc, 4u * 0x15deu, cx_off);
++	gg_wr(pdc, 4u * 0x15dfu, 2);               /* a619 cx sleep level */
++	gg_wr(pdc, 4u * 0x15e1u, 0x10108);
++	gg_wr(pdc, 4u * 0x15e2u, gfx_off);
++	gg_wr(pdc, 4u * 0x15e3u, 3);
++	gg_wr(pdc, 4u * 0x1148u, 0);               /* PDC_GPU_SEQ_START_ADDR */
++	gg_wr(pdc, 4u * 0x1140u, 0x80000001u);     /* PDC_GPU_ENABLE_PDC */
++	rb = gg_rd(pdc, 4u * 0x1140u);
++	printf("GAUGUIN GX: pdc sequencer + tcs written (enable=%#x)\n", rb);
++	(void)sweet_log_flush_now();
++}
++
+ static void
+ gauguin_gx_rail_on(void)
+ {
+@@ -1068,8 +1196,8 @@
+ 		return;
+ 	}
+ 	(void)sweet_log_flush_now();
+-	if (!gauguin_cmdbdb_aux("gfx.lvl", pri, 32, &npri) ||
+-	    !gauguin_cmdbdb_aux("mx.lvl", sec, 32, &nsec)) {
++	if (!gauguin_cmdbdb_aux("gfx.lvl", pri, 32, &npri, NULL) ||
++	    !gauguin_cmdbdb_aux("mx.lvl", sec, 32, &nsec, NULL)) {
+ 		printf("GAUGUIN GX: gfx.lvl/mx.lvl not found in cmd-db\n");
+ 		return;
+ 	}
