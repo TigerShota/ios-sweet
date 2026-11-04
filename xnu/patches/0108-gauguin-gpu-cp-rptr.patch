@@ -1,0 +1,115 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1896,7 +1896,15 @@
+ 
+ 	/* CP_ME_INIT: drm minimal 8 payload dwords behind a real type-7
+ 	 * header (opcode 0x48 at bits[22:16] with odd parity - the old
+-	 * 0x70080042 decoded as opcode 8 / count 66). */
++	 * 0x70080042 decoded as opcode 8 / count 66).
++	 * RPTR IS IN MEMORY ON a6xx: vendor adreno_get_rptr() reads
++	 * device->scratch (CP_RB_RPTR_ADDR); CP_RB_RPTR is a3xx only.
++	 * The CP publishes the shadow RPTR when it executes
++	 * CP_WHERE_AM_I (0x62, 2 dwords = scratch gpuaddr); vendor
++	 * adreno_ringbuffer_submit_spin() appends it to every submit on
++	 * non-APRIV parts, and a6xx_rb_start() sets CP_RB_CNTL bit 27
++	 * only when APRIV is absent - exactly our 0x800020c. v28 polled
++	 * the a3xx register, saw 0 forever and mislabelled the CP. */
+ 	ring[0] = gg_pkt7(0x48u, 8u);
+ 	ring[1] = 0x2fu;                /* MAX_CONTEXT|ERR_DET|HDR|RESET|UCODE */
+ 	ring[2] = 0x00000003;           /* MAX_CONTEXT */
+@@ -1906,52 +1914,69 @@
+ 	ring[6] = 0x00000000;           /* DEFAULT_RESET_STATE */
+ 	ring[7] = 0x00000000;           /* UCODE_WORKAROUND_MASK */
+ 	ring[8] = 0x00000000;           /* pad */
+-	printf("GAUGUIN CP: me_init hdr=%#x\n", ring[0]);
++	ring[9] = gg_pkt7(0x62u, 2u);   /* CP_WHERE_AM_I -> RPTR scratch */
++	ring[10] = (uint32_t)(CP_VA_SCRATCH & 0xffffffffu);
++	ring[11] = 0u;
++	printf("GAUGUIN CP: me_init hdr=%#x wai=%#x\n", ring[0], ring[9]);
+ 	(void)sweet_log_flush_now();
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+-	wptr = 9;
++	wptr = 12;
+ 	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wptr);
+-	printf("GAUGUIN CP: ME_INIT submitted (wptr=%u)\n", wptr);
+-	(void)sweet_log_flush_now();
+-
+-	/* Poll RPTR until ME_INIT retires (fajita: RPTR=WPTR=9). */
++	printf("GAUGUIN CP: ME_INIT+WAI submitted (wptr=%u)\n", wptr);
++	(void)sweet_log_flush_now();
++
++	/* Poll the scratch RPTR the CP publishes via WHERE_AM_I. */
+ 	ok = false;
+ 	for (i = 0; i < 2000; ++i) {
+-		rptr = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
++		rptr = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
+ 		if (rptr == wptr) {
+ 			ok = true;
+ 			break;
+ 		}
+ 		delay(1000);
+ 		if ((i % 50) == 49) {
+-			printf("GAUGUIN CP: waiting rptr=%u wptr=%u\n", rptr, wptr);
++			printf("GAUGUIN CP: waiting rptr=%u (reg %#x) wptr=%u\n",
++			    rptr, gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)), wptr);
+ 			(void)sweet_log_flush_now();
+ 		}
+ 	}
+ 	printf("GAUGUIN CP: ME_INIT %s (rptr=%u wptr=%u)\n",
+ 	    ok ? "RETIRED" : "STUCK", rptr, wptr);
+ 	(void)sweet_log_flush_now();
++	if (!ok) {
++		printf("GAUGUIN CP: gmu fence status=%#x ao_ctrl=%#x rb_wptr=%#x\n",
++		    gauguin_gmu_rd(G_FENCE_STATUS),
++		    gauguin_gmu_rd(G_AO_FENCE_CTRL),
++		    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++		(void)sweet_log_flush_now();
++	}
+ 
+ 	/* CP_SET_SECURE_MODE 0 (opcode 0x66, 1 payload dword): kgsl
+ 	 * adreno_set_unsecured_mode; fajita console76 left the ring at
+ 	 * RPTR=WPTR=11 with exactly this packet. */
+-	ring[9] = gg_pkt7(0x66u, 1u);
+-	ring[10] = 0u;
+-	printf("GAUGUIN CP: secmode hdr=%#x\n", ring[9]);
++	ring[12] = gg_pkt7(0x66u, 1u);
++	ring[13] = 0u;
++	ring[14] = gg_pkt7(0x62u, 2u);   /* CP_WHERE_AM_I -> RPTR scratch */
++	ring[15] = (uint32_t)(CP_VA_SCRATCH & 0xffffffffu);
++	ring[16] = 0u;
++	printf("GAUGUIN CP: secmode hdr=%#x wai=%#x\n", ring[12], ring[14]);
+ 	(void)sweet_log_flush_now();
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+-	wptr = 11;
++	wptr = 17;
+ 	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wptr);
+ 	printf("GAUGUIN CP: SET_SECURE_MODE submitted (wptr=%u)\n", wptr);
+ 	(void)sweet_log_flush_now();
+ 	for (i = 0; i < 2000; ++i) {
+-		rptr = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
++		rptr = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
+ 		if (rptr == wptr) {
+ 			break;
+ 		}
+ 		delay(1000);
+ 		if ((i % 50) == 49) {
+-			printf("GAUGUIN CP: waiting rptr=%u wptr=%u\n", rptr, wptr);
++			printf("GAUGUIN CP: waiting rptr=%u (reg %#x) wptr=%u\n",
++			    rptr, gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)), wptr);
+ 			(void)sweet_log_flush_now();
+ 		}
+ 	}
+@@ -1960,8 +1985,10 @@
+ 	(void)sweet_log_flush_now();
+ 	ok = ok && (rptr == wptr);
+ 
++	flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
+ 	val = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
+-	printf("GAUGUIN CP: rptr shadow=%u\n", val);
++	printf("GAUGUIN CP: rptr shadow=%u reg=%#x\n",
++	    val, gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)));
+ 	(void)sweet_log_flush_now();
+ 	val = gg_rd(gg.gpu, GR(CP_STATUS_1_DW));
+ 	printf("GAUGUIN CP: post cp_status1=%#x\n", val);
