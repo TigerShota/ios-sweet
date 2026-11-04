@@ -8,7 +8,7 @@
  void gauguin_gpu_init(void);
  
  #define GPU_PA       0x03d00000u
-@@ -971,6 +972,176 @@
+@@ -971,6 +972,195 @@
  	gauguin_smmu_faults();
  	printf("GAUGUIN GPU: L2 done\n");
  	(void)sweet_log_flush_now();
@@ -35,8 +35,8 @@
 +gauguin_cmdbdb_aux(const char *id, uint16_t *out, unsigned max, unsigned *outn)
 +{
 +	uint16_t hdr_words[8 * 8];
-+	uint8_t *base = (uint8_t *)cmddb;
-+	unsigned i, j;
++	volatile uint8_t *base = (volatile uint8_t *)cmddb;
++	unsigned i, j, k;
 +
 +	if (!cmddb) {
 +		return false;
@@ -46,27 +46,46 @@
 +		    base[4], base[5], base[6], base[7]);
 +		return false;
 +	}
-+	memcpy(hdr_words, base + 8, sizeof(hdr_words));
++	/*
++	 * cmd-db is Device memory (ml_io_map): memcpy/memcmp can become vector
++	 * or wide unaligned loads - v17 panicked at +0x48, a 16-byte SIMD load
++	 * inside the 128-byte header copy (ESR ISS 0x21 alignment fault).
++	 * Byte-wise scalar volatile reads only.
++	 */
++	for (i = 0; i < 8 * 8; ++i) {
++		hdr_words[i] = (uint16_t)base[8 + 2 * i] |
++		    ((uint16_t)base[9 + 2 * i] << 8);
++	}
 +	for (i = 0; i < 8; ++i) {
 +		uint16_t slv = hdr_words[i * 8];
 +		uint16_t ehdr_off = hdr_words[i * 8 + 1];
 +		uint16_t data_off = hdr_words[i * 8 + 2];
 +		uint16_t cnt = hdr_words[i * 8 + 3];
-+		uint8_t *ent;
++		volatile uint8_t *ent;
 +		if (!slv) {
 +			break;
 +		}
 +		ent = base + 144 + ehdr_off;
 +		for (j = 0; j < cnt; ++j, ent += 24) {
-+			if (memcmp(ent, id, 7) == 0) {
-+				uint16_t len = *(uint16_t *)(ent + 20);
-+				uint16_t loff = *(uint16_t *)(ent + 22);
++			for (k = 0; k < 7; ++k) {
++				if (ent[k] != (uint8_t)id[k]) {
++					break;
++				}
++			}
++			if (k == 7) {
++				uint16_t len = (uint16_t)ent[20] |
++				    ((uint16_t)ent[21] << 8);
++				uint16_t loff = (uint16_t)ent[22] |
++				    ((uint16_t)ent[23] << 8);
 +				unsigned n = len / 2;
-+				uint16_t *d = (uint16_t *)(base + 144 + data_off + loff);
++				volatile uint8_t *d = base + 144 + data_off + loff;
 +				if (n > max) {
 +					n = max;
 +				}
-+				memcpy(out, d, n * 2);
++				for (k = 0; k < n; ++k) {
++					out[k] = (uint16_t)d[2 * k] |
++					    ((uint16_t)d[2 * k + 1] << 8);
++				}
 +				*outn = n;
 +				return true;
 +			}
