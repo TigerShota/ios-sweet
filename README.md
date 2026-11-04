@@ -6,7 +6,7 @@
 
 本项目移植自 [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)（最初的红米 Note 10 Pro / `sweet` / SM7150 移植）。XNU 补丁序列与引导 shim 为两者共用；设备相关部分——设备树、内存映射、PMIC 按键、触摸控制器——均为 gauguin 专属。
 
-截至 **2026-11-03**，手机可**越过 Apple logo 启动进入 SpringBoard UI**。首次启动因冷 MobileGestalt 缓存下的一次性数据库重建需要较长时间（约 10 分钟）。触摸（SPI 上的 Novatek NT36672C）已工作。渲染仍完全由 CPU 完成——但 **GPU 内核侧 bring-up 已完成管理面**：CX 供电域 → GPU SMMU 页表翻译 → GMU 固件加载并启动（`fw_init=0xbabeface`）→ HFI 握手全通（boot-arg `gauguingpu` 分级启用），GX 轨上电与渲染路径（ringbuffer + CP_BLIT）进行中。
+截至 **2026-11-04**，手机可**越过 Apple logo 启动进入 SpringBoard UI**。首次启动因冷 MobileGestalt 缓存下的一次性数据库重建需要较长时间（约 10 分钟）。触摸（SPI 上的 Novatek NT36672C）已工作。渲染仍完全由 CPU 完成——但 **GPU 内核侧 bring-up 已完成 L1+L2+L3a 三级**：CX 供电域 → GPU SMMU 页表翻译 → GMU 固件加载并启动（`fw_init=0xbabeface`）→ HFI 握手全通（boot-arg `gauguingpu` 分级启用）→ **GX 轨上电 + GPU 核心寄存器首次可读**（`RBBM_STATUS=0x1`，真机闭环）。渲染路径（ringbuffer + CP_BLIT）是下一步。
 
 > 实验性 bring-up，不是可用的手机操作系统。大量功能缺失或为桩（见下文），Apple 的安全模型基本被关闭。系统安装进 `userdata` 分区，因此**会清空 Android 用户数据**。
 
@@ -29,7 +29,7 @@
 
 ## 尚未工作
 
-- **GPU 未参与渲染。** 一切仍由 CPU 软件合成（与原版 sweet 移植一致）。内核侧管理面 bring-up 已完成：0085 点亮 Adreno 619 CX 供电域（`gauguingpu=1`，缺省即开），0087+0088 把 `a619_gmu.bin` 装入 GMU 微控制器并经 GPU SMMU（CB0 LPAE 页表、SMR 流匹配）完成最小 HFI 握手（`gauguingpu=2`，**真机闭环**：`fw_init=0xbabeface`，MSG_INIT/FW_VERSION/PERF_TABLE/BW_TABLE/TEST 全部确认）。0097 经 cmd-db ARC 投票给 GX 轨上电（进行中）。ringbuffer 与 CP_BLIT 合成加速是下一步。
+- **GPU 未参与渲染。** 一切仍由 CPU 软件合成（与原版 sweet 移植一致）。内核侧 bring-up 已完成三级（均真机闭环）：0085 点亮 Adreno 619 CX 供电域（`gauguingpu=1`，缺省即开）；0087+0088 把 `a619_gmu.bin` 装入 GMU 微控制器并经 GPU SMMU（CB0 LPAE 页表、SMR 流匹配）完成最小 HFI 握手（`gauguingpu=2`：`fw_init=0xbabeface`，五条消息全部确认）；0097+0098 使能 GMU RPMh 客户端（`GMU_RPMH_CTRL |= 0xf11`）并加载 PDC/RSC 序列后，经 cmd-db ARC 投票点亮 GX 轨——OOB boot_slumber 确认、SPTPRAC=0x28、**首次读到 GPU 核心 `RBBM_STATUS=0x1`**。ringbuffer 与 CP_BLIT 合成加速（L3b）是下一步。
 - **无 Wi-Fi、蓝牙、蜂窝、音频、相机、传感器、GPS 及 SEP / Face ID。** `bluetoothd` 与 `fairplayd.H2` 崩溃循环。
 - **首次启动慢：** Apple logo 停留约 10 分钟。第二次启动速度尚未验证。
 - **安全关闭：** 宽松的代码签名（AMFI）与沙盒策略、桩 AppleKeyStore、无数据保护。不要存放任何个人数据。
@@ -185,7 +185,8 @@ adb reboot bootloader
 | 0090–0092-gauguin | GPU SMMU 三时钟（iface/mem/mem_iface = GCC 0x45004/0x4500c/0x45014）在首次访问前全部打开 |
 | 0093–0095-gauguin | SMMU 地址空间扫描与逐寄存器探测（诊断插桩；证明全部寄存器可读） |
 | 0096-gauguin | SMMU 稳定读：**所有诊断打印一读一打**——单条 printf 捆绑多个 MMIO 读会在 sm6350 互连上死锁（v17-v23 的全部"挂死"均源于此）；修复后 L2 完整闭环 |
-| 0097-gauguin | GPU L3 第一步：解析 cmd-db（0x80860000）gfx.lvl/mx.lvl ARC 表 → OOB boot_slumber 投票 GX 轨 → SPTPRAC 上电 → 首次读 GPU 核心 RBBM_STATUS |
+| 0097-gauguin | GPU L3 第一步：解析 cmd-db（0x80860000）gfx.lvl/mx.lvl ARC 表 → OOB boot_slumber 投票 GX 轨 → SPTPRAC 上电 → 首次读 GPU 核心 RBBM_STATUS（cmd-db 全部逐字节读——Device 内存上 libc 宽访问会以 SIMD 对齐错误 panic） |
+| 0098-gauguin | GX 轨前置：使能 GMU RPMh 客户端（`GMU_RPMH_CTRL 0x1f8e8 |= 0xf11`）+ 加载 PDC/RSC 序列（RSCC 经 legacy GMU dword 基址 0x23400，PDC 0xb290000 / PDC_SEQ 0xb490000，TCS 命令带 cmd-db 资源偏移）。**真机闭环：OOB ack bit30、SPTPRAC 0x28、RBBM_STATUS=0x1** |
 
 ## 关键硬件事实
 
