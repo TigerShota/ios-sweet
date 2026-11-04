@@ -1,0 +1,183 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1384,7 +1384,21 @@
+ #define CP_RB_RPTR_DW    0x806u
+ #define CP_RB_WPTR_DW    0x807u
+ #define CP_SQE_CNTL_DW   0x808u
+-#define CP_STATUS_1_DW   0x824u
++#define CP_INTERRUPT_STATUS_DW 0x823u
++#define CP_PROTECT_STATUS_DW 0x824u
++#define CP_STATUS_1_DW   0x825u
++#define CP_ROQ_RB_STAT_DW 0x939u
++#define CP_ROQ_AVAIL_RB_DW 0x948u
++#define CP_ADDR_MODE_CNTL_DW 0x842u
++#define RBBM_VBIF_CLIENT_QOS_CNTL_DW 0x010u
++#define RBBM_GBIF_HALT_DW 0x016u
++#define RBBM_GBIF_HALT_ACK_DW 0x017u
++#define GBIF_HALT_DW     0x3c45u
++#define GBIF_HALT_ACK_DW 0x3c46u
++#define RBBM_SECVID_TSB_LO_DW 0xf800u
++#define RBBM_SECVID_TSB_SZ_DW 0xf802u
++#define RBBM_SECVID_TSB_CNTL_DW 0xf803u
++#define RBBM_SECVID_TSB_ADDR_MODE_DW 0xf810u
+ #define CP_HW_FAULT_DW   0x821u
+ #define CP_SQE_INSTR_BASE_DW 0x830u /* 64-bit at 0x830/0x831 */
+ #define CP_ROQ_THRESHOLDS_1_DW 0x8c1u
+@@ -1407,7 +1421,11 @@
+ #define RB_NC_MODE_CNTL_DW 0x8e08u
+ #define SP_NC_MODE_CNTL_DW 0xae02u
+ #define TPL1_NC_MODE_CNTL_DW 0xb604u
+-#define RB_CNTL_VAL      0x800020cu  /* 32 KiB ring, half-full shadow */
++/* 32 KiB ring. Bit 27 is NO_UPDATE, which a6xx_rb_start sets
++ * for !hw_apriv so the hardware stops maintaining CP_RB_RPTR and leaves the rptr to the WHERE_AM_I shadow. v29 could not tell
++ * "CP dead" from "shadow not CPU-visible", so 0109 clears it: the register view is AHB-coherent and needs no GPU L2 flush.
++ * Both views are polled below. */
++#define RB_CNTL_VAL      0x0000020cu
+ 
+ /* ==================== L3b final: zap shader through TrustZone (0105)
+  * v25 ended with the ring/SQE configuration sticking, zero faults and
+@@ -1695,7 +1713,7 @@
+ {
+ 	volatile uint32_t *ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
+ 	unsigned i, wptr, rptr;
+-	uint32_t val;
++	uint32_t val, rreg, pcval;
+ 	bool ok = true;
+ 
+ 	printf("GAUGUIN CP: start - pre-state\n");
+@@ -1854,6 +1872,34 @@
+ 	    ok ? "verified" : "warnings");
+ 	(void)sweet_log_flush_now();
+ 
++	/* Mainline a6xx_hw_init's memory-visibility prerequisites, which
++	 * 0099..0108 skipped. The CP register path is AHB, but the SQE's
++	 * ring fetch and ucode fetch go through GBIF/UCHE: the trusted
++	 * (secure) buffer range must be empty, 64-bit addressing on,
++	 * the VBIF client QoS programmed and the GBIF halt released.
++	 * Offsets are the generated a6xx.xml dword indices. */
++	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_LO_DW), 0);
++	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_LO_DW) + 4u, 0);
++	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_SZ_DW), 0);
++	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_CNTL_DW), 0);
++	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_ADDR_MODE_DW), 1);
++	gg_wr(gg.gpu, GR(CP_ADDR_MODE_CNTL_DW), 1);  /* 64-bit CP */
++	gg_wr(gg.gpu, GR(RBBM_VBIF_CLIENT_QOS_CNTL_DW), 3);
++	gg_wr(gg.gpu, GR(GBIF_HALT_DW), 0);
++	gg_wr(gg.gpu, GR(RBBM_GBIF_HALT_DW), 0);
++	__asm__ volatile("dsb sy" ::: "memory");
++	printf("GAUGUIN CP: secvid tsb=%#x qos=%#x addr_mode=%#x\n",
++	    gg_rd(gg.gpu, GR(RBBM_SECVID_TSB_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(RBBM_VBIF_CLIENT_QOS_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(CP_ADDR_MODE_CNTL_DW)));
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN CP: gbif halt=%#x ack=%#x rbbm=%#x ack=%#x\n",
++	    gg_rd(gg.gpu, GR(GBIF_HALT_DW)),
++	    gg_rd(gg.gpu, GR(GBIF_HALT_ACK_DW)),
++	    gg_rd(gg.gpu, GR(RBBM_GBIF_HALT_DW)),
++	    gg_rd(gg.gpu, GR(RBBM_GBIF_HALT_ACK_DW)));
++	(void)sweet_log_flush_now();
++
+ 	/* rb_start: RPTR shadow in scratch, then CNTL/BASE, then the SQE. */
+ 	gg_wr(gg.gpu, GR(CP_RB_RPTR_ADDR_DW), CP_VA_SCRATCH);
+ 	gg_wr(gg.gpu, GR(CP_RB_RPTR_ADDR_DW) + 4u, 0);
+@@ -1890,8 +1936,10 @@
+ 	val = gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW));
+ 	printf("GAUGUIN CP: sqe_cntl=%#x\n", val);
+ 	(void)sweet_log_flush_now();
++	pcval = gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW));
+ 	val = gg_rd(gg.gpu, GR(CP_STATUS_1_DW));
+-	printf("GAUGUIN CP: cp_status1=%#x\n", val);
++	printf("GAUGUIN CP: cp_status1=%#x protect=%#x intr=%#x\n",
++	    val, pcval, gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
+ 	(void)sweet_log_flush_now();
+ 
+ 	/* CP_ME_INIT: drm minimal 8 payload dwords behind a real type-7
+@@ -1925,19 +1973,25 @@
+ 	printf("GAUGUIN CP: ME_INIT+WAI submitted (wptr=%u)\n", wptr);
+ 	(void)sweet_log_flush_now();
+ 
+-	/* Poll the scratch RPTR the CP publishes via WHERE_AM_I. */
++	/* Poll BOTH RPTR views: the ring register (NO_UPDATE cleared, so
++	 * the hardware maintains it and an AHB read is coherent) and the
++	 * WHERE_AM_I shadow in GPU memory. A frozen ROQ is CP-internal
++	 * evidence that does not depend on memory visibility at all. */
+ 	ok = false;
+ 	for (i = 0; i < 2000; ++i) {
+ 		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
+ 		rptr = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
+-		if (rptr == wptr) {
++		rreg = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++		if (rptr == wptr || rreg == wptr) {
+ 			ok = true;
+ 			break;
+ 		}
+ 		delay(1000);
+ 		if ((i % 50) == 49) {
+-			printf("GAUGUIN CP: waiting rptr=%u (reg %#x) wptr=%u\n",
+-			    rptr, gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)), wptr);
++			printf("GAUGUIN CP: waiting rptr=%u (reg %#x roq=%#x/%#x)"
++ " wptr=%u\n",
++			    rptr, rreg, gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
++			    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)), wptr);
+ 			(void)sweet_log_flush_now();
+ 		}
+ 	}
+@@ -1949,6 +2003,15 @@
+ 		    gauguin_gmu_rd(G_FENCE_STATUS),
+ 		    gauguin_gmu_rd(G_AO_FENCE_CTRL),
+ 		    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++		(void)sweet_log_flush_now();
++		printf("GAUGUIN CP: stuck intr=%#x protect=%#x status1=%#x"
++ " roq=%#x/%#x rbbm=%#x\n",
++		    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)),
++		    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++		    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
++		    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
++		    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
++		    gg_rd(gg.gpu, GR(RBBM_INT_0_STATUS_DW)));
+ 		(void)sweet_log_flush_now();
+ 	}
+ 
+@@ -1970,20 +2033,35 @@
+ 	for (i = 0; i < 2000; ++i) {
+ 		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
+ 		rptr = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
+-		if (rptr == wptr) {
++		rreg = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++		if (rptr == wptr || rreg == wptr) {
+ 			break;
+ 		}
+ 		delay(1000);
+ 		if ((i % 50) == 49) {
+-			printf("GAUGUIN CP: waiting rptr=%u (reg %#x) wptr=%u\n",
+-			    rptr, gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)), wptr);
++			printf("GAUGUIN CP: waiting rptr=%u (reg %#x roq=%#x/%#x)"
++ " wptr=%u\n",
++			    rptr, rreg, gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
++			    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)), wptr);
+ 			(void)sweet_log_flush_now();
+ 		}
+ 	}
+-	printf("GAUGUIN CP: SET_SECURE_MODE %s (rptr=%u wptr=%u)\n",
+-	    rptr == wptr ? "RETIRED" : "STUCK", rptr, wptr);
+-	(void)sweet_log_flush_now();
+-	ok = ok && (rptr == wptr);
++	printf("GAUGUIN CP: SET_SECURE_MODE %s (rptr=%u reg=%#x wptr=%u)\n",
++	    (rptr == wptr || rreg == wptr) ? "RETIRED" : "STUCK",
++	    rptr, rreg, wptr);
++	(void)sweet_log_flush_now();
++	ok = ok && (rptr == wptr || rreg == wptr);
++	if (!ok) {
++		printf("GAUGUIN CP: stuck2 intr=%#x protect=%#x status1=%#x"
++ " roq=%#x/%#x rbbm=%#x\n",
++		    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)),
++		    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++		    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
++		    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
++		    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
++		    gg_rd(gg.gpu, GR(RBBM_INT_0_STATUS_DW)));
++		(void)sweet_log_flush_now();
++	}
+ 
+ 	flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
+ 	val = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
