@@ -1417,19 +1417,23 @@ gauguin_cp_mem_setup(void)
  * qcom,kgsl-hyp pas-id 13, firmware-name a615_zap). mxtp 0092 proved
  * these PAS calls under XNU on sweet, fajita console75c/76 the whole
  * ladder on a630. SMC64 convention (0065 PSCI conduit, smc #0): x0 fn
- * (bit30 | bit25 | svc<<8 | cmd, bit31 only for atomic probes), x1
- * arginfo (n | type << (4+2i)), x2-x4 args, x6 continuation; x0 status
- * (0 ok, 1 interrupted -> reissue, -12 busy -> 30 ms, 67 tries), x1
- * result. Carve-out is our own 1 MiB-PA-aligned block: the DT
- * gpu_region 0x8b715400 is an orphan the vendor loader never uses.
- */
-/*
- * ZAP_PAS_ID (13) is the target this TZ's GPU loader serves by
- * default: the fajita-proven sequence carries NO peripheral id in
- * the arguments. v27 proved the old (13, meta_pa) order made the TZ
- * read physical address 13 as the metadata blob - interrupted on the
- * first call, hard hang on the reissue. The define is diagnostics
- * only from here on.
+ * (0x40000000 | 0x02000000 | svc<<8 | cmd), x1 arginfo (n | type <<
+ * (4+2i)), x2-x4 args, x6 a6, x7 = 0 (the vendor passes SMCCC a7 = 0);
+ * x0 status (0 ok, 1 interrupted, -12 busy -> 30 ms, 67 tries), x1
+ * result.
+ * ARGUMENT VECTOR - the device's own ABI, not fajita's: the gauguin
+ * kernel (Xiaomi gauguin-r-oss drivers/firmware/qcom_scm-64.c) and
+ * mainline qcom_scm.c both send the PAS id FIRST - INIT_IMAGE
+ * SCM_ARGS(2, VAL, RW) args (13, mdata_pa); MEM_SETUP SCM_ARGS(3)
+ * args (13, addr, size); AUTH_AND_RESET and SHUTDOWN SCM_ARGS(1)
+ * args (13). fajita's (mdata_pa, 0) form is a different TZ generation
+ * and leaves PAS 13 unserved here.
+ * INTERRUPTED is a resume, not a reissue: x0 == 1 means the TZ yielded;
+ * the next call enters with x0 = 1, the same x1..x5 and x6 = the a6
+ * that came back (arm64 smccc-call.S stores x6 in the QCOM_A6 quirk).
+ * v27 reissued with the original fn and the second SMC never returned.
+ * Carve-out is our own 1 MiB-PA-aligned block: the DT gpu_region
+ * 0x8b715400 is an orphan the vendor loader never uses.
  */
 #define ZAP_PAS_ID       13u
 #define ZAP_FN_INIT      0x42000201u
@@ -1437,7 +1441,6 @@ gauguin_cp_mem_setup(void)
 #define ZAP_FN_AUTH      0x42000205u
 #define ZAP_FN_SHUTDOWN  0x42000206u
 #define ZAP_FN_AVAIL     0xC2000601u
-#define ZAP_FN_ATOMIC    0x80000000u  /* same fn, complete-now form */
 #define ZAP_MDT_DWORDS   1715u
 #define ZAP_B02_DWORDS   496u
 #define ZAP_B02_BYTES    1984u
@@ -1463,52 +1466,53 @@ gg_pkt7(uint32_t opcode, uint32_t cnt)
 	    ((opcode & 0x7fu) << 16) | (gg_parity(opcode) << 23);
 }
 
-/* One SCM SMC64 call with the interrupted/busy retry rules. */
+/*
+ * One SCM SMC64 call: x0 fn, x1 arginfo, x2-x4 args, x6 a6, x7 = 0.
+ * Interrupted rules from the device's own kernel (qcom_scm-64.c) and
+ * mainline (qcom_scm-smc.c): x0 == 1 means the TZ yielded, and the
+ * resume enters with x0 = 1, the same x1..x5 and x6 = the a6 that came
+ * back. v27 reissued with the ORIGINAL fn and the second SMC never
+ * returned. -12 is busy (30 ms, at most 67 tries).
+ */
 static int64_t
 gauguin_scm_call(uint32_t fn, uint32_t arginfo, uint64_t a0, uint64_t a1,
     uint64_t a2, uint64_t *ret1)
 {
 	int64_t status;
-	uint64_t cont = 0, res1 = 0;
+	uint64_t cont = 0, res1 = 0, next = fn;
 	unsigned busy = 0, intr = 0;
 
 	for (;;) {
-		register uint64_t x0 __asm__("x0") = fn;
+		register uint64_t x0 __asm__("x0") = next;
 		register uint64_t x1 __asm__("x1") = arginfo;
 		register uint64_t x2 __asm__("x2") = a0;
 		register uint64_t x3 __asm__("x3") = a1;
 		register uint64_t x4 __asm__("x4") = a2;
 		register uint64_t x5 __asm__("x5") = 0;
 		register uint64_t x6 __asm__("x6") = cont;
+		register uint64_t x7 __asm__("x7") = 0;   /* SMCCC a7 */
 
 		__asm__ volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2),
-		    "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6) : :
-		    "x7", "x8", "x9", "x10", "x11", "x12", "x13",
-		    "x14", "x15", "x16", "x17", "cc", "memory");
+		    "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7) : :
+		    "x8", "x9", "x10", "x11", "x12", "x13", "x14",
+		    "x15", "x16", "x17", "cc", "memory");
 		status = (int64_t)x0;
 		res1 = x1;
 		cont = x6;
 		if (status == 1) {
-			/* interrupted: reissue with the continuation token.
-			 * Bounded and logged - v26 saw INIT_IMAGE vanish
-			 * silently; a spin must leave evidence. */
-			if (++intr <= 3 || (intr % 100) == 0) {
+			/* Interrupted: bounded and logged - v26 spun in this
+			 * loop silently; every beat must leave evidence. */
+			if (++intr <= 4 || (intr % 16) == 0) {
 				printf("GAUGUIN SCM: fn=%#x interrupted x%u "
 				    "(cont=%#llx res1=%#llx)\n", fn, intr,
 				    (unsigned long long)cont,
 				    (unsigned long long)res1);
 				(void)sweet_log_flush_now();
 			}
-			if (intr >= 2) {
-				/*
-				 * fajita's INIT_IMAGE returned on the FIRST
-				 * call. Two interrupted in a row with a valid
-				 * argument set means the service is wedged -
-				 * stop instead of spinning into the v26/v27
-				 * hard hang (the log just ends mid-loop).
-				 */
-				break;
+			if (intr >= 64) {
+				break;     /* give up: caller prints status 1 */
 			}
+			next = 1;      /* resume entry, NOT the original fn */
 			continue;
 		}
 		if (status == -12 && ++busy <= 67) {
@@ -1557,22 +1561,6 @@ gauguin_zap_load(void)
 		    names[i], (long long)st, (unsigned long long)r1);
 		(void)sweet_log_flush_now();
 	}
-	/*
-	 * v26: the yielding INIT_IMAGE (bit 31 clear) never returned - the
-	 * first non-atomic SMC this port ever issued (PSCI CPU_ON and
-	 * IS_CALL_AVAIL both carry bit 31 and both work). Probe the atomic
-	 * forms too; the real calls below go atomic-first with a yielding
-	 * fallback so one boot answers both.
-	 */
-	for (i = 0; i < 4; ++i) {
-		st = gauguin_scm_call(ZAP_FN_AVAIL, 0x1u,
-		    fns[i] | ZAP_FN_ATOMIC, 0, 0, &r1);
-		printf("GAUGUIN ZAP: pas %s ATOMIC available: status %lld "
-		    "result %llu\n", names[i], (long long)st,
-		    (unsigned long long)r1);
-		(void)sweet_log_flush_now();
-	}
-
 	/* Metadata sanity: ELF32, phoff 52, 3 program headers, ph2 = the
 	 * RWE segment (dword indices: e_phoff at 28 -> dw7, e_phnum at 44
 	 * -> dw11 low half, phdr i at 52 + 32*i -> dw13 + 8*i). */
@@ -1645,29 +1633,25 @@ gauguin_zap_load(void)
 		return false;
 	}
 
-	/*
-	 * fajita console75c, the only PAS sequence proven on hardware:
-	 * fn=0x42000201 arginfo=0x82 args=(metadata_pa, 0) -> status 0
-	 * result 0, on the first call. No peripheral id in the
-	 * arguments (v27's (13, meta_pa) made the TZ read PA 13).
-	 */
+	/* qcom_scm_pas_init_image(): SCM_ARGS(2, VAL, RW), (pas id, mdata). */
 	printf("GAUGUIN ZAP: INIT_IMAGE fn=%#x arginfo=%#x "
 	    "args=%#llx/%#llx\n", ZAP_FN_INIT, 0x82u,
-	    (unsigned long long)meta_pa, (unsigned long long)0);
+	    (unsigned long long)ZAP_PAS_ID, (unsigned long long)meta_pa);
 	(void)sweet_log_flush_now();
-	st = gauguin_scm_call(ZAP_FN_INIT, 0x82u, meta_pa, 0, 0, &r1);
+	st = gauguin_scm_call(ZAP_FN_INIT, 0x82u, ZAP_PAS_ID, meta_pa, 0, &r1);
 	printf("GAUGUIN ZAP: INIT_IMAGE status %lld result %llu\n",
 	    (long long)st, (unsigned long long)r1);
 	(void)sweet_log_flush_now();
 	if (st != 0) {
 		return false;
 	}
-	/* fajita form: arginfo 0x3, (image_pa, size), both VAL. */
+	/* qcom_scm_pas_mem_setup(): SCM_ARGS(3), (pas id, addr, size). */
 	printf("GAUGUIN ZAP: MEM_SETUP fn=%#x arginfo=%#x "
 	    "args=%#llx/%#llx\n", ZAP_FN_MEM, 0x3u,
-	    (unsigned long long)img_pa, (unsigned long long)0x1000);
+	    (unsigned long long)ZAP_PAS_ID, (unsigned long long)img_pa);
 	(void)sweet_log_flush_now();
-	st = gauguin_scm_call(ZAP_FN_MEM, 0x3u, img_pa, 0x1000u, 0, &r1);
+	st = gauguin_scm_call(ZAP_FN_MEM, 0x3u, ZAP_PAS_ID, img_pa, 0x1000u,
+	    &r1);
 	printf("GAUGUIN ZAP: MEM_SETUP status %lld result %llu\n",
 	    (long long)st, (unsigned long long)r1);
 	(void)sweet_log_flush_now();
@@ -1684,11 +1668,11 @@ gauguin_zap_load(void)
 	printf("GAUGUIN ZAP: segment %u bytes -> img+0\n", ZAP_B02_BYTES);
 	(void)sweet_log_flush_now();
 
-	/* fajita form: arginfo 0x1, (0). */
-	printf("GAUGUIN ZAP: AUTH_AND_RESET fn=%#x arginfo=%#x args=0/0\n",
-	    ZAP_FN_AUTH, 0x1u);
+	/* qcom_scm_pas_auth_and_reset(): SCM_ARGS(1), (pas id). */
+	printf("GAUGUIN ZAP: AUTH_AND_RESET fn=%#x arginfo=%#x args=%#llx/0\n",
+	    ZAP_FN_AUTH, 0x1u, (unsigned long long)ZAP_PAS_ID);
 	(void)sweet_log_flush_now();
-	st = gauguin_scm_call(ZAP_FN_AUTH, 0x1u, 0, 0, 0, &r1);
+	st = gauguin_scm_call(ZAP_FN_AUTH, 0x1u, ZAP_PAS_ID, 0, 0, &r1);
 	printf("GAUGUIN ZAP: AUTH_AND_RESET status %lld result %llu\n",
 	    (long long)st, (unsigned long long)r1);
 	(void)sweet_log_flush_now();
@@ -1992,7 +1976,7 @@ gauguin_cp_start(void)
 	/* Release PAS 13 (fajita console76 shuts down after the test). */
 	{
 		int64_t st = gauguin_scm_call(ZAP_FN_SHUTDOWN, 0x1u,
-		    0, 0, 0, NULL);
+		    ZAP_PAS_ID, 0, 0, NULL);
 		printf("GAUGUIN ZAP: SHUTDOWN status %lld\n", (long long)st);
 		(void)sweet_log_flush_now();
 	}

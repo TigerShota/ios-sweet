@@ -4,13 +4,19 @@ set -euo pipefail
 [[ "${MACHINE_CONFIG:-}" == SWEET ]] || exit 0
 [[ -f libkern/crypto/corecrypto_aes.c ]] || exit 1
 bearssl_sha=7bea48e5e850ab4cafbe68d3765cdaba13a86d6f
-bearssl_tmp=$(mktemp -d)
-trap 'rm -rf "$bearssl_tmp"' EXIT
-git init -q "$bearssl_tmp"
-git -C "$bearssl_tmp" fetch -q --depth 1 \
-    https://www.bearssl.org/git/BearSSL "$bearssl_sha"
-git -C "$bearssl_tmp" checkout -q FETCH_HEAD
-[[ "$(git -C "$bearssl_tmp" rev-parse HEAD)" == "$bearssl_sha" ]]
+# The upstream git host (bearssl.org) answers 502 to GitHub Actions runners
+# (two consecutive runs died on it). The exact pinned tree is vendored under
+# bearssl-vendor/ next to this script; xnu.yml copies it into dxb/patches/.
+bearssl_src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bearssl-vendor"
+[[ -d "$bearssl_src/inc" ]] || { echo "bearssl-vendor/inc missing" >&2; exit 1; }
+[[ -f "$bearssl_src/src/config.h" ]] || { echo "bearssl-vendor/src/config.h missing" >&2; exit 1; }
+for f in inner.h symcipher/aes_ct.c symcipher/aes_ct_enc.c symcipher/aes_ct_dec.c \
+         symcipher/aes_ct_cbcenc.c symcipher/aes_ct_cbcdec.c hash/md5.c hash/sha1.c \
+         hash/sha2big.c codec/dec32le.c codec/enc32le.c codec/dec32be.c codec/enc32be.c \
+         codec/dec64be.c codec/enc64be.c; do
+    [[ -f "$bearssl_src/src/$f" ]] || { echo "bearssl-vendor/src/$f missing" >&2; exit 1; }
+done
+bearssl_tmp="$bearssl_src"
 python3 - "$bearssl_tmp" <<'PY'
 from pathlib import Path
 import shutil
