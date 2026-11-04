@@ -1,0 +1,121 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1414,6 +1414,7 @@
+ {
+ 	volatile uint32_t *ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
+ 	unsigned i, wptr, rptr;
++	int zap_ok = 0;
+ 	uint32_t val;
+ 	bool ok = true;
+ 
+@@ -1430,6 +1431,27 @@
+ 	(void)sweet_log_flush_now();
+ 	val = gg_rd(gg.gpu, GR(CP_RB_WPTR_DW));
+ 	printf("GAUGUIN CP: pre wptr=%u\n", val);
++	(void)sweet_log_flush_now();
++	/*
++	 * mxtp 0094-0098 lesson: CP registers only stick when written in
++	 * the cold state (SQE_CNTL 0, no inherited pointers/faults); an
++	 * early SQE_CNTL write raises illegal-instruction IRQ 0x80 and
++	 * later writes read back 0. Refuse anything but a cold CP.
++	 */
++	if (gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)) != 0 ||
++	    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)) != 0 ||
++	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)) != 0 ||
++	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)) != 0) {
++		printf("GAUGUIN CP: not cold - abort (sqe=%#x rptr=%u wptr=%u "
++		    "hw_fault=%#x)\n",
++		    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)),
++		    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++		    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)),
++		    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)));
++		(void)sweet_log_flush_now();
++		return;
++	}
++	printf("GAUGUIN CP: cold - proceeding\n");
+ 	(void)sweet_log_flush_now();
+ 
+ 	/*
+@@ -1460,29 +1482,48 @@
+ 	printf("GAUGUIN CP: gfx3d on (cbcr=%#x)\n", val);
+ 	(void)sweet_log_flush_now();
+ 
+-	/* hw_init essentials (a619/a630 family). */
+-	gg_wr(gg.gpu, GR(UCHE_WRITE_RANGE_MAX_LO_DW), 0xffffffc0);
++	/* hw_init essentials (a619/a630 family), each write verified. */
++#define CP_WRV(dw, v) do { \
++		gg_wr(gg.gpu, GR(dw), (v)); \
++		val = gg_rd(gg.gpu, GR(dw)); \
++		if (val != (uint32_t)(v)) { \
++			printf("GAUGUIN CP: write FAIL dw=%#x got=%#x want=%#x\n", \
++			    (unsigned)(dw), val, (unsigned)(v)); \
++			(void)sweet_log_flush_now(); \
++			ok = false; \
++		} \
++	} while (0)
++	CP_WRV(UCHE_WRITE_RANGE_MAX_LO_DW, 0xffffffc0);
+ 	gg_wr(gg.gpu, GR(UCHE_WRITE_RANGE_MAX_LO_DW) + 4u, 0x0001ffff);
+-	gg_wr(gg.gpu, GR(UCHE_TRAP_BASE_LO_DW), 0xfffff000);
++	CP_WRV(UCHE_TRAP_BASE_LO_DW, 0xfffff000);
+ 	gg_wr(gg.gpu, GR(UCHE_TRAP_BASE_LO_DW) + 4u, 0x0001ffff);
+ 	gg_wr(gg.gpu, GR(UCHE_WRITE_THRU_BASE_LO_DW), 0xfffff000);
+ 	gg_wr(gg.gpu, GR(UCHE_WRITE_THRU_BASE_LO_DW) + 4u, 0x0001ffff);
+-	gg_wr(gg.gpu, GR(UCHE_FILTER_CNTL_DW), 0x804);
+-	gg_wr(gg.gpu, GR(UCHE_CACHE_WAYS_DW), 0x4);
+-	gg_wr(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW), 0x010000c0);
+-	gg_wr(gg.gpu, GR(CP_ROQ_THRESHOLDS_1_DW), 0x8040362c);
+-	gg_wr(gg.gpu, GR(CP_MEM_POOL_SIZE_DW), 128);
+-	gg_wr(gg.gpu, GR(PC_DBG_ECO_CNTL_DW), 0x00018000);
+-	gg_wr(gg.gpu, GR(CP_AHB_CNTL_DW), 0x1);
+-	gg_wr(gg.gpu, GR(RBBM_PERFCTR_CNTL_DW), 0x1);
+-	gg_wr(gg.gpu, GR(RBBM_PERFCTR_GPU_BUSY_MASKED_DW), 0xffffffff);
+-	gg_wr(gg.gpu, GR(RB_NC_MODE_CNTL_DW), 0x0);
+-	gg_wr(gg.gpu, GR(TPL1_NC_MODE_CNTL_DW), 0x0);
+-	gg_wr(gg.gpu, GR(SP_NC_MODE_CNTL_DW), 0x0);
+-	gg_wr(gg.gpu, GR(UCHE_MODE_CNTL_DW), 0x0);
+-	gg_wr(gg.gpu, GR(RBBM_INTERFACE_HANG_INT_CNTL_DW), 0x81000000);
+-	gg_wr(gg.gpu, GR(UCHE_CLIENT_PF_DW), 0x1);
+-	printf("GAUGUIN CP: hw_init written\n");
++	CP_WRV(UCHE_FILTER_CNTL_DW, 0x804);
++	CP_WRV(UCHE_CACHE_WAYS_DW, 0x4);
++	CP_WRV(CP_ROQ_THRESHOLDS_2_DW, 0x010000c0);
++	printf("GAUGUIN CP: roq2=%#x (canary)\n",
++	    gg_rd(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW)));
++	(void)sweet_log_flush_now();
++	CP_WRV(CP_ROQ_THRESHOLDS_1_DW, 0x8040362c);
++	CP_WRV(CP_MEM_POOL_SIZE_DW, 128);
++	CP_WRV(PC_DBG_ECO_CNTL_DW, 0x00018000);
++	CP_WRV(CP_AHB_CNTL_DW, 0x1);
++	CP_WRV(RBBM_PERFCTR_CNTL_DW, 0x1);
++	CP_WRV(RBBM_PERFCTR_GPU_BUSY_MASKED_DW, 0xffffffff);
++	CP_WRV(RB_NC_MODE_CNTL_DW, 0x0);
++	CP_WRV(TPL1_NC_MODE_CNTL_DW, 0x0);
++	CP_WRV(SP_NC_MODE_CNTL_DW, 0x0);
++	CP_WRV(UCHE_MODE_CNTL_DW, 0x0);
++	CP_WRV(RBBM_INTERFACE_HANG_INT_CNTL_DW, 0x81000000);
++	CP_WRV(UCHE_CLIENT_PF_DW, 0x1);
++	printf("GAUGUIN CP: hw_init %s (cold writes %s)\n",
++	    ok ? "verified" : "FAILED", ok ? "stick" : "dropped");
++	(void)sweet_log_flush_now();
++	if (!ok) {
++		printf("GAUGUIN CP: L3b abort - cold config did not stick\n");
++		return;
++	}
+ 	(void)sweet_log_flush_now();
+ 
+ 	/* rb_start: RPTR shadow in scratch, then CNTL/BASE, then the SQE. */
+@@ -1513,6 +1554,14 @@
+ 	ring[11] = 0x00000000;          /* pad to 12 dwords */
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+ 	wptr = 12;
++	(void)PE_parse_boot_argn("gauguincpzap", &zap_ok, sizeof(zap_ok));
++	if (!zap_ok) {
++		printf("GAUGUIN CP: zap pending (gauguincpzap=0) - cold config "
++		    "proven, stopping before SQE start\n");
++		(void)sweet_log_flush_now();
++		return;
++	}
++	/* zap (0103) would run here; then release and submit. */
+ 	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wptr);
+ 	printf("GAUGUIN CP: ME_INIT submitted (wptr=%u)\n", wptr);
+ 	(void)sweet_log_flush_now();
