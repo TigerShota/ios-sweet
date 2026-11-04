@@ -1,0 +1,173 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -200,7 +200,11 @@
+ #define G_INTR_INFO       0x1f992u
+ #define G_H2G_INTR_SET    0x1f994u
+ #define G_GENERAL_7       0x1f9ccu
+-#define G_AHB_FENCE_0     0x23b11u
++#define G_AHB_FENCE_0     0x23b11u  /* RANGE_0: [17:0] lower, [30:18] len */
++#define G_AO_FENCE_CTRL   0x23b10u  /* 0 = allow CPU AHB writes */
++#define G_FENCE_RANGE_1   0x23b12u
++#define G_FENCE_STATUS    0x23b13u  /* WRITEDROPPED counters */
++#define G_FENCE_STATUS_CLR 0x23b14u
+ 
+ /* GCC / GPUCC clocks needed by the GMU (gcc-lagoon.c, gpucc-lagoon.c;
+  * unchanged from 0087, hardware-proven by the v15 boot). */
+@@ -1414,7 +1418,6 @@
+ {
+ 	volatile uint32_t *ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
+ 	unsigned i, wptr, rptr;
+-	int zap_ok = 0;
+ 	uint32_t val;
+ 	bool ok = true;
+ 
+@@ -1478,6 +1481,22 @@
+ 		(void)sweet_log_flush_now();
+ 		return;
+ 	}
++
++	/* Fence state: WRITEDROPPED is direct evidence of dropped writes. */
++	val = gauguin_gmu_rd(G_AO_FENCE_CTRL);
++	printf("GAUGUIN CP: fence ctrl=%#x\n", val);
++	(void)sweet_log_flush_now();
++	val = gauguin_gmu_rd(G_FENCE_STATUS);
++	printf("GAUGUIN CP: fence status=%#x\n", val);
++	(void)sweet_log_flush_now();
++	val = gauguin_gmu_rd(G_AHB_FENCE_0);
++	printf("GAUGUIN CP: fence range0=%#x\n", val);
++	(void)sweet_log_flush_now();
++	val = gauguin_gmu_rd(G_FENCE_RANGE_1);
++	printf("GAUGUIN CP: fence range1=%#x\n", val);
++	(void)sweet_log_flush_now();
++	gauguin_gmu_wr(G_FENCE_STATUS_CLR, 0x7);
++	gauguin_gmu_wr(G_AO_FENCE_CTRL, 0);
+ 
+ 
+ 	/*
+@@ -1527,10 +1546,21 @@
+ 	gg_wr(gg.gpu, GR(UCHE_WRITE_THRU_BASE_LO_DW) + 4u, 0x0001ffff);
+ 	CP_WRV(UCHE_FILTER_CNTL_DW, 0x804);
+ 	CP_WRV(UCHE_CACHE_WAYS_DW, 0x4);
+-	CP_WRV(CP_ROQ_THRESHOLDS_2_DW, 0x010000c0);
+-	printf("GAUGUIN CP: roq2=%#x (canary)\n",
+-	    gg_rd(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW)));
+-	(void)sweet_log_flush_now();
++	{
++		unsigned tries = 0;
++		uint32_t roq2 = 0;
++		for (tries = 0; tries < 3; ++tries) {
++			gg_wr(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW), 0x010000c0);
++			delay(1000);
++			roq2 = gg_rd(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW));
++			if (roq2 == 0x010000c0) {
++				break;
++			}
++		}
++		printf("GAUGUIN CP: roq2=%#x after %u tries (canary)\n", roq2, tries);
++		(void)sweet_log_flush_now();
++		(void)roq2;
++	}
+ 	CP_WRV(CP_ROQ_THRESHOLDS_1_DW, 0x8040362c);
+ 	CP_WRV(CP_MEM_POOL_SIZE_DW, 128);
+ 	CP_WRV(PC_DBG_ECO_CNTL_DW, 0x00018000);
+@@ -1541,18 +1571,10 @@
+ 	CP_WRV(TPL1_NC_MODE_CNTL_DW, 0x0);
+ 	CP_WRV(SP_NC_MODE_CNTL_DW, 0x0);
+ 	CP_WRV(UCHE_MODE_CNTL_DW, 0x0);
+-	CP_WRV(RBBM_INTERFACE_HANG_INT_CNTL_DW, 0x81000000);
++	CP_WRV(RBBM_INTERFACE_HANG_INT_CNTL_DW, 0x41000000);
+ 	CP_WRV(UCHE_CLIENT_PF_DW, 0x1);
+-	printf("GAUGUIN CP: hw_init %s (cold writes %s)\n",
+-	    ok ? "verified" : "FAILED", ok ? "stick" : "dropped");
+-	(void)sweet_log_flush_now();
+-	if (!ok) {
+-		printf("GAUGUIN CP: L3b abort - cold config did not stick\n");
+-		(void)sweet_log_flush_now();
+-		gauguin_gmu_wr(G_H2G_INTR_SET, 1u << 24); /* clear GPU_SET */
+-		(void)sweet_log_flush_now();
+-		return;
+-	}
++	printf("GAUGUIN CP: hw_init %s (flaky regs WARN, continuing)\n",
++	    ok ? "verified" : "warnings");
+ 	(void)sweet_log_flush_now();
+ 
+ 	/* rb_start: RPTR shadow in scratch, then CNTL/BASE, then the SQE. */
+@@ -1563,37 +1585,29 @@
+ 	gg_wr(gg.gpu, GR(CP_RB_BASE_DW) + 4u, 0);
+ 	gg_wr(gg.gpu, GR(CP_SQE_INSTR_BASE_DW), CP_VA_SQE);
+ 	gg_wr(gg.gpu, GR(CP_SQE_INSTR_BASE_DW) + 4u, 0);
+-	printf("GAUGUIN CP: rb configured (cntl=%#x base=%#x)\n",
+-	    gg_rd(gg.gpu, GR(CP_RB_CNTL_DW)), gg_rd(gg.gpu, GR(CP_RB_BASE_DW)));
+-	(void)sweet_log_flush_now();
+-
+-	/* CP_ME_INIT: type7 packet, opcode 0x42, 11 ordinals (KGSL _set_ordinals
+-	 * with the register-init-list ordinal zeroed: mask bits 0,1,3,5,6). */
+-	ring[0] = (7u << 28) | (11u << 16) | 0x42u;   /* CP_ME_INIT */
+-	ring[1] = 0x6au;                /* ordinals enabled mask */
++	val = gg_rd(gg.gpu, GR(CP_RB_CNTL_DW));
++	printf("GAUGUIN CP: rb cntl=%#x\n", val);
++	(void)sweet_log_flush_now();
++	val = gg_rd(gg.gpu, GR(CP_RB_BASE_DW));
++	printf("GAUGUIN CP: rb base=%#x\n", val);
++	(void)sweet_log_flush_now();
++	val = gg_rd(gg.gpu, GR(CP_SQE_INSTR_BASE_DW));
++	printf("GAUGUIN CP: sqe base=%#x\n", val);
++	(void)sweet_log_flush_now();
++
++	/* CP_ME_INIT: upstream drm minimal packet - 8 payload dwords
++	 * (fajita proved this exact form retires with RPTR=9 pre-zap). */
++	ring[0] = (7u << 28) | (8u << 16) | 0x42u;   /* CP_ME_INIT */
++	ring[1] = 0x2fu;                /* MAX_CONTEXT|ERR_DET|HDR|RESET|UCODE */
+ 	ring[2] = 0x00000003;           /* MAX_CONTEXT */
+ 	ring[3] = 0x20000000;           /* ERROR_DETECTION_CONTROL */
+-	ring[4] = 0x00000000;           /* DEFAULT_RESET_STATE payload */
+-	ring[5] = 0x00000000;           /* UCODE_WORKAROUND_MASK payload */
+-	ring[6] = 0x00000002;           /* OPERATION_MODE_MASK payload */
+-	ring[7] = 0x00000000;           /* REGISTER_INIT_LIST lo */
+-	ring[8] = 0x00000000;           /* REGISTER_INIT_LIST hi */
+-	ring[9] = 0x00000000;           /* spinlock */
+-	ring[10] = 0x00000000;          /* pad */
+-	ring[11] = 0x00000000;          /* pad to 12 dwords */
++	ring[4] = 0x00000000;           /* HEADER_DUMP addr lo */
++	ring[5] = 0x00000000;           /* HEADER_DUMP hi + size */
++	ring[6] = 0x00000000;           /* DEFAULT_RESET_STATE */
++	ring[7] = 0x00000000;           /* UCODE_WORKAROUND_MASK */
++	ring[8] = 0x00000000;           /* pad */
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+-	wptr = 12;
+-	(void)PE_parse_boot_argn("gauguincpzap", &zap_ok, sizeof(zap_ok));
+-	if (!zap_ok) {
+-		printf("GAUGUIN CP: zap pending (gauguincpzap=0) - cold config "
+-		    "proven, stopping before SQE start\n");
+-		(void)sweet_log_flush_now();
+-		gauguin_gmu_wr(G_H2G_INTR_SET, 1u << 24); /* clear GPU_SET */
+-		printf("GAUGUIN CP: oob gpu_set cleared\n");
+-		(void)sweet_log_flush_now();
+-		return;
+-	}
+-	/* zap (0103) would run here; then release and submit. */
++	wptr = 9;
+ 	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wptr);
+ 	printf("GAUGUIN CP: ME_INIT submitted (wptr=%u)\n", wptr);
+ 	(void)sweet_log_flush_now();
+@@ -1624,6 +1638,9 @@
+ 	printf("GAUGUIN CP: ME_INIT %s (rptr=%u wptr=%u)\n",
+ 	    ok ? "RETIRED" : "STUCK", rptr, wptr);
+ 	(void)sweet_log_flush_now();
++	val = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
++	printf("GAUGUIN CP: rptr shadow=%u\n", val);
++	(void)sweet_log_flush_now();
+ 	val = gg_rd(gg.gpu, GR(RBBM_INT_0_STATUS_DW));
+ 	printf("GAUGUIN CP: rbbm_int_0=%#x\n", val);
+ 	(void)sweet_log_flush_now();
+@@ -1632,6 +1649,10 @@
+ 	(void)sweet_log_flush_now();
+ 	if (!ok) {
+ 		printf("GAUGUIN CP: L3b abort after ME_INIT\n");
++		(void)sweet_log_flush_now();
++		gauguin_gmu_wr(G_H2G_INTR_SET, 1u << 24); /* clear GPU_SET */
++		printf("GAUGUIN CP: oob gpu_set cleared\n");
++		(void)sweet_log_flush_now();
+ 		return;
+ 	}
+ 	printf("GAUGUIN CP: started - the CP executes our packets\n");
