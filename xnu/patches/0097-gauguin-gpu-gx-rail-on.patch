@@ -1,6 +1,14 @@
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -971,6 +971,176 @@
+@@ -29,6 +29,7 @@
+ extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
+ extern const unsigned int gauguin_gmu_fw[5120];
+ static void gauguin_gpu_l2(void);
++static void gauguin_gx_rail_on(void);
+ void gauguin_gpu_init(void);
+ 
+ #define GPU_PA       0x03d00000u
+@@ -971,6 +972,176 @@
  	gauguin_smmu_faults();
  	printf("GAUGUIN GPU: L2 done\n");
  	(void)sweet_log_flush_now();
