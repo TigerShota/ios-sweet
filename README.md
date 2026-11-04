@@ -29,7 +29,7 @@
 
 ## 尚未工作
 
-- **GPU 未参与渲染。** 一切仍由 CPU 软件合成（与原版 sweet 移植一致）。内核侧 bring-up 已完成三级（均真机闭环）：0085 点亮 Adreno 619 CX 供电域（`gauguingpu=1`，缺省即开）；0087+0088 把 `a619_gmu.bin` 装入 GMU 微控制器并经 GPU SMMU（CB0 LPAE 页表、SMR 流匹配）完成最小 HFI 握手（`gauguingpu=2`：`fw_init=0xbabeface`，五条消息全部确认）；0097+0098 使能 GMU RPMh 客户端（`GMU_RPMH_CTRL |= 0xf11`）并加载 PDC/RSC 序列后，经 cmd-db ARC 投票点亮 GX 轨——OOB boot_slumber 确认、SPTPRAC=0x28、**首次读到 GPU 核心 `RBBM_STATUS=0x1`**。ringbuffer 与 CP_BLIT 合成加速（L3b）是下一步。
+- **GPU 未参与渲染。** 一切仍由 CPU 软件合成（与原版 sweet 移植一致）。内核侧 bring-up：0085 点亮 Adreno 619 CX 供电域（`gauguingpu=1`，缺省即开）；0087+0088 把 `a619_gmu.bin` 装入 GMU 微控制器并经 GPU SMMU（CB0 LPAE 页表、SMR 流匹配）完成最小 HFI 握手（`gauguingpu=2`：`fw_init=0xbabeface`，五条消息全部确认）；0097+0098 经 cmd-db ARC 投票点亮 GX 轨（OOB boot_slumber 确认、SPTPRAC=0x28、首次读到 GPU 核心 `RBBM_STATUS=0x1`）；0099–0104 搭好 CP 内存（ring/SQE/scratch 走 CB1 第二 SMMU 上下文）并五轮收敛冷态写纪律；**0105 = zap shader 过 TrustZone PAS 13 + 修正 type-7 包头编码（opcode 在 bits[22:16]、奇校验位 23/15——此前包头一直是错的）**，v26 镜像已构建待上机验证 ME_INIT retire。之后的 L4 = CP_BLIT 合成加速。
 - **无 Wi-Fi、蓝牙、蜂窝、音频、相机、传感器、GPS 及 SEP / Face ID。** `bluetoothd` 与 `fairplayd.H2` 崩溃循环。
 - **首次启动慢：** Apple logo 停留约 10 分钟。第二次启动速度尚未验证。
 - **安全关闭：** 宽松的代码签名（AMFI）与沙盒策略、桩 AppleKeyStore、无数据保护。不要存放任何个人数据。
@@ -92,7 +92,7 @@ gh run download RUN_ID -R YOU/ios-sweet -n gauguin-shim-boot -D shim/out
 | --- | --- |
 | `rd=ufsroot0 ufsrw=1 rootrw=1` | 根在 `userdata` 分区，可写 |
 | `cpus=8` | 启动八核；ADT 携带全部 8 个（`cpus=1` 是安全回退） |
-| `gauguingpu=0/1/2` | GPU bring-up 阶段：缺省 = 1（CX 供电域点亮）；`=2` 额外加载 GMU 固件并握手 HFI；`=0` 关闭 |
+| `gauguingpu=0/1/2` | GPU bring-up 阶段：缺省 = 1（CX 供电域点亮）；`=2` 完整阶梯（GMU 固件 + HFI + GX 轨 + CP 内存 + zap PAS + CP 启动）；`=0` 关闭 |
 | `sweettouch=0`、`sweetkeys=0` | 关闭触摸或按键驱动 |
 | `sweetfb_noconsole=1` | 不把内核文本画在 GUI 上。仍写入持久日志；panic 会画 |
 | `sweetfb_hz=30` | CPU 拷贝的面板刷新率 |
@@ -187,6 +187,13 @@ adb reboot bootloader
 | 0096-gauguin | SMMU 稳定读：**所有诊断打印一读一打**——单条 printf 捆绑多个 MMIO 读会在 sm6350 互连上死锁（v17-v23 的全部"挂死"均源于此）；修复后 L2 完整闭环 |
 | 0097-gauguin | GPU L3 第一步：解析 cmd-db（0x80860000）gfx.lvl/mx.lvl ARC 表 → OOB boot_slumber 投票 GX 轨 → SPTPRAC 上电 → 首次读 GPU 核心 RBBM_STATUS（cmd-db 全部逐字节读——Device 内存上 libc 宽访问会以 SIMD 对齐错误 panic） |
 | 0098-gauguin | GX 轨前置：使能 GMU RPMh 客户端（`GMU_RPMH_CTRL 0x1f8e8 |= 0xf11`）+ 加载 PDC/RSC 序列（RSCC 经 legacy GMU dword 基址 0x23400，PDC 0xb290000 / PDC_SEQ 0xb490000，TCS 命令带 cmd-db 资源偏移）。**真机闭环：OOB ack bit30、SPTPRAC 0x28、RBBM_STATUS=0x1** |
+| 0099-gauguin | GPU L3b 第一步：CP 内存——128K WCOMB 块 + LPAE 页表，ring `0x40000000` / SQE 只读 `0x40010000` / scratch `0x40020000`，CB1/ASID2/SMR2=sid0 全部回读校验，`a630_sqe.fw` 8065 dwords 嵌入拷贝 0 mismatch |
+| 0100-gauguin | CP 启动：hw_init 写集（a6xx_start 写序）+ rb_start（RPTR shadow → CNTL/BASE → SQE base）+ 首个 CP_ME_INIT 提交（v21 判读：rptr 卡 0，SQE 未取指——启动五轮收敛的起点） |
+| 0101-gauguin | gfx3d 核心时钟：GPLL0 经 RCG（CFG 0x501）路由 + CBCR 0x1054 开闸（v21 证明 GX 域不会自动开 gfx3d；后证实 cbcr 本已在跑） |
+| 0102-gauguin | 冷态纪律：CP 寄存器只在冷态（SQE_CNTL/RPTR/WPTR/HW_FAULT 全 0）才 stick——SQE_CNTL≠0 时写会触发 illegal-instr IRQ 且后续写读回 0（mxtp 0094 教训复现） |
+| 0103-gauguin | OOB GPU_SET（set bit16 / ack bit24）握住整个 CP 配置段（Linux a6xx_hw_init 第一步）；v24 真机 acked=1，电源仲裁排除 |
+| 0104-gauguin | 诊断收尾：AHB fence 证据（ctrl=0 放行 / status=0 零 WRITEDROPPED → 排除 fence 丢写）；HANG_INT 编码修正（bit30）；三个只读寄存器降级为 WARN；v25 判读收敛根因 = CP secure 模式 + 包头编码错 |
+| 0105-gauguin | **L3b 收官**：zap shader 过 TrustZone——SMC64 PAS 13（INIT_IMAGE→MEM_SETUP→拷 b02→AUTH_AND_RESET→测试后 SHUTDOWN），`a615_zap` mdt+b02 嵌入，自有 1 MiB PA 对齐块（pnum_mask 63）；**type-7 包头修正**（vendor adreno_pm4types.h：opcode bits[22:16] + 奇校验 23/15，CP_ME_INIT=0x48→`0x70C80008`）；zap 后 SQE_CNTL=1 → ME_INIT → CP_SET_SECURE_MODE 0（`0x70E60001`） |
 
 ## 关键硬件事实
 
