@@ -1,0 +1,37 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1432,6 +1432,34 @@
+ 	printf("GAUGUIN CP: pre wptr=%u\n", val);
+ 	(void)sweet_log_flush_now();
+ 
++	/*
++	 * The CP's core clock. v21 proved the SQE never fetches (ME_INIT stuck
++	 * at rptr=0, zero faults) and the L1 log showed gx_gfx3d gated: on this
++	 * SoC the GX domain does not auto-enable it. Route GPLL0_OUT_MAIN (600
++	 * MHz; both GCC branches already voted on for the GMU) through the RCG
++	 * and open the branch (mainline gpucc-sm6350: cmd_rcgr 0x101c, CFG +4,
++	 * parent_map_1 GPLL0=5, CBCR 0x1054 bit 0).
++	 */
++	val = gg_rd(gg.gpucc, GPUCC_GFX3D_SRC);
++	printf("GAUGUIN CP: gfx3d src_cmd=%#x\n", val);
++	(void)sweet_log_flush_now();
++	val = gg_rd(gg.gpucc, GPUCC_GFX3D_SRC + 4u);
++	printf("GAUGUIN CP: gfx3d src_cfg=%#x\n", val);
++	(void)sweet_log_flush_now();
++	val = gg_rd(gg.gpucc, GPUCC_GFX3D_CBCR);
++	printf("GAUGUIN CP: gfx3d cbcr=%#x\n", val);
++	(void)sweet_log_flush_now();
++	gg_wr(gg.gpucc, GPUCC_GFX3D_SRC + 4u, 0x501u); /* src=5 gpll0, /1 */
++	gg_wr(gg.gpucc, GPUCC_GFX3D_SRC, 1u);          /* update */
++	for (i = 0; i < 1000 && (gg_rd(gg.gpucc, GPUCC_GFX3D_SRC) & 1u); ++i) {
++		delay(10);
++	}
++	gg_wr(gg.gpucc, GPUCC_GFX3D_CBCR,
++	    gg_rd(gg.gpucc, GPUCC_GFX3D_CBCR) | 1u);
++	val = gg_rd(gg.gpucc, GPUCC_GFX3D_CBCR);
++	printf("GAUGUIN CP: gfx3d on (cbcr=%#x)\n", val);
++	(void)sweet_log_flush_now();
++
+ 	/* hw_init essentials (a619/a630 family). */
+ 	gg_wr(gg.gpu, GR(UCHE_WRITE_RANGE_MAX_LO_DW), 0xffffffc0);
+ 	gg_wr(gg.gpu, GR(UCHE_WRITE_RANGE_MAX_LO_DW) + 4u, 0x0001ffff);
