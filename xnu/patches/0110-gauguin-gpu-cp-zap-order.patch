@@ -1,0 +1,133 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1389,6 +1389,12 @@
+ #define CP_STATUS_1_DW   0x825u
+ #define CP_ROQ_RB_STAT_DW 0x939u
+ #define CP_ROQ_AVAIL_RB_DW 0x948u
++#define CP_SQE_STAT_ADDR_DW 0x908u
++#define CP_SQE_STAT_DATA_DW 0x909u
++#define CP_ROQ_DBG_ADDR_DW 0x90cu
++#define CP_ROQ_DBG_DATA_DW 0x90du
++#define CP_SQE_UCODE_DBG_ADDR_DW 0x910u
++#define CP_SQE_UCODE_DBG_DATA_DW 0x911u
+ #define CP_ADDR_MODE_CNTL_DW 0x842u
+ #define RBBM_VBIF_CLIENT_QOS_CNTL_DW 0x010u
+ #define RBBM_GBIF_HALT_DW 0x016u
+@@ -1703,6 +1709,47 @@
+ }
+ 
+ /*
++ * The SQE's own view. v30's CP_INTERRUPT_STATUS latched
++ * A6XX_CP_INT_CP_ILLEGAL_INSTR_ERROR (0x80) with no fetch at all, so the
++ * ring and the SMMU are the wrong places to look. These are the
++ * registers mainline's opcode-error path reads (a6xx_cp_hw_err_irq
++ * writes CP_SQE_STAT_ADDR=1 and reads CP_SQE_STAT_DATA for the opcode);
++ * the ucode port reports the SQE's own PC/state and the ROQ port the
++ * queue counters - all AHB reads, no memory visibility involved.
++ */
++static void
++gauguin_cp_dbg_dump(const char *tag)
++{
++	unsigned i;
++
++	printf("GAUGUIN CP: %s status1=%#x intr=%#x rbbm=%#x\n", tag,
++	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
++	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(A6XX_RBBM_STATUS_DW)));
++	printf("GAUGUIN CP: %s rb cntl=%#x base=%#x sqe=%#x\n", tag,
++	    gg_rd(gg.gpu, GR(CP_RB_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_SQE_INSTR_BASE_DW)));
++	(void)sweet_log_flush_now();
++	for (i = 0; i < 4; ++i) {
++		gg_wr(gg.gpu, GR(CP_SQE_STAT_ADDR_DW), i);
++		printf("GAUGUIN CP: %s sqe_stat[%u]=%#x\n", tag, i,
++		    gg_rd(gg.gpu, GR(CP_SQE_STAT_DATA_DW)));
++	}
++	for (i = 0; i < 4; ++i) {
++		gg_wr(gg.gpu, GR(CP_SQE_UCODE_DBG_ADDR_DW), i);
++		printf("GAUGUIN CP: %s ucode[%u]=%#x\n", tag, i,
++		    gg_rd(gg.gpu, GR(CP_SQE_UCODE_DBG_DATA_DW)));
++	}
++	for (i = 0; i < 4; ++i) {
++		gg_wr(gg.gpu, GR(CP_ROQ_DBG_ADDR_DW), i);
++		printf("GAUGUIN CP: %s roq_dbg[%u]=%#x\n", tag, i,
++		    gg_rd(gg.gpu, GR(CP_ROQ_DBG_DATA_DW)));
++	}
++	(void)sweet_log_flush_now();
++}
++
++/*
+  * Configure and start the CP (Linux a6xx_start + a6xx_rb_start order, the
+  * fajita/Bergamota write set). Every write is read back; CP_ME_INIT is the
+  * first packet the CP ever fetches - RPTR catching up with WPTR means the
+@@ -1918,20 +1965,10 @@
+ 	printf("GAUGUIN CP: sqe base=%#x\n", val);
+ 	(void)sweet_log_flush_now();
+ 
+-	/* The zap (0105): the a6xx SQE boots secure, so load the signed
+-	 * shader through TrustZone PAS 13 before touching SQE_CNTL (vendor
+-	 * kgsl microcode_load order; mxtp 0092 + fajita console75c). */
+-	if (!gauguin_zap_load()) {
+-		printf("GAUGUIN CP: L3b abort - zap failed\n");
+-		(void)sweet_log_flush_now();
+-		gauguin_gmu_wr(G_H2G_INTR_SET, 1u << 24); /* clear GPU_SET */
+-		printf("GAUGUIN CP: oob gpu_set cleared\n");
+-		(void)sweet_log_flush_now();
+-		return;
+-	}
+-
+-	/* Release the CP from the GMU's reset: SQE_CNTL = 1 (after the zap,
+-	 * before the first packet - kgsl a6xx_rb_start order). */
++	/* Release the CP from the GMU's reset: SQE_CNTL = 1. This is the
++	 * vendor order - kgsl a6xx_rb_start starts the SQE and sends
++	 * CP_ME_INIT *before* a6xx_zap_load, mainline a6xx_hw_init likewise;
++	 * the zap is moved below the ME_INIT poll. */
+ 	gg_wr(gg.gpu, GR(CP_SQE_CNTL_DW), 1);
+ 	val = gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW));
+ 	printf("GAUGUIN CP: sqe_cntl=%#x\n", val);
+@@ -1941,6 +1978,7 @@
+ 	printf("GAUGUIN CP: cp_status1=%#x protect=%#x intr=%#x\n",
+ 	    val, pcval, gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
+ 	(void)sweet_log_flush_now();
++	gauguin_cp_dbg_dump("after sqe");
+ 
+ 	/* CP_ME_INIT: drm minimal 8 payload dwords behind a real type-7
+ 	 * header (opcode 0x48 at bits[22:16] with odd parity - the old
+@@ -2013,7 +2051,35 @@
+ 		    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
+ 		    gg_rd(gg.gpu, GR(RBBM_INT_0_STATUS_DW)));
+ 		(void)sweet_log_flush_now();
+-	}
++		gauguin_cp_dbg_dump("stuck1");
++	}
++
++	/* The zap (0105) in the vendor position: kgsl a6xx_rb_start sends
++	 * CP_ME_INIT first and only then runs PAS 13, and mainline does the
++	 * same (a6xx_cp_init, a6xx_zap_shader_init, CP_SET_SECURE_MODE).
++	 * SCM_PAS_AUTH_AND_RESET authenticates *and resets* the CP into the
++	 * secure world: zapping first made v30's first ucode fetch happen in
++	 * the secure domain, which cannot read the non-secure CB1 window -
++	 * CP_ILLEGAL_INSTR_ERROR (0x80) at SQE_CNTL=1, ROQ 0/0, zero fetch. */
++	if (!gauguin_zap_load()) {
++		printf("GAUGUIN CP: L3b abort - zap failed\n");
++		(void)sweet_log_flush_now();
++		gauguin_gmu_wr(G_H2G_INTR_SET, 1u << 24); /* clear GPU_SET */
++		printf("GAUGUIN CP: oob gpu_set cleared\n");
++		(void)sweet_log_flush_now();
++		return;
++	}
++
++	/* Did the reset keep our rb_start state? A zero CP_RB_CNTL/BASE or
++	 * CP_SQE_INSTR_BASE here would leave the SQE fetching from VA 0. */
++	printf("GAUGUIN CP: post-zap cntl=%#x base=%#x sqe=%#x rptr=%u wptr=%u\n",
++	    gg_rd(gg.gpu, GR(CP_RB_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_SQE_INSTR_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++	(void)sweet_log_flush_now();
++	gauguin_cp_dbg_dump("post-zap");
+ 
+ 	/* CP_SET_SECURE_MODE 0 (opcode 0x66, 1 payload dword): kgsl
+ 	 * adreno_set_unsecured_mode; fajita console76 left the ring at
