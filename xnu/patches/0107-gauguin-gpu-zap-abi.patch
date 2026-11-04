@@ -1,0 +1,139 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1423,6 +1423,14 @@
+  * result. Carve-out is our own 1 MiB-PA-aligned block: the DT
+  * gpu_region 0x8b715400 is an orphan the vendor loader never uses.
+  */
++/*
++ * ZAP_PAS_ID (13) is the target this TZ's GPU loader serves by
++ * default: the fajita-proven sequence carries NO peripheral id in
++ * the arguments. v27 proved the old (13, meta_pa) order made the TZ
++ * read physical address 13 as the metadata blob - interrupted on the
++ * first call, hard hang on the reissue. The define is diagnostics
++ * only from here on.
++ */
+ #define ZAP_PAS_ID       13u
+ #define ZAP_FN_INIT      0x42000201u
+ #define ZAP_FN_MEM       0x42000202u
+@@ -1491,8 +1499,15 @@
+ 				    (unsigned long long)res1);
+ 				(void)sweet_log_flush_now();
+ 			}
+-			if (intr >= 500) {
+-				break;     /* give up: caller prints status 1 */
++			if (intr >= 2) {
++				/*
++				 * fajita's INIT_IMAGE returned on the FIRST
++				 * call. Two interrupted in a row with a valid
++				 * argument set means the service is wedged -
++				 * stop instead of spinning into the v26/v27
++				 * hard hang (the log just ends mid-loop).
++				 */
++				break;
+ 			}
+ 			continue;
+ 		}
+@@ -1630,36 +1645,32 @@
+ 		return false;
+ 	}
+ 
+-	printf("GAUGUIN ZAP: calling INIT_IMAGE (meta=%#llx)\n",
+-	    (unsigned long long)meta_pa);
+-	(void)sweet_log_flush_now();
+-	st = gauguin_scm_call(ZAP_FN_INIT | ZAP_FN_ATOMIC, 0x82u, ZAP_PAS_ID,
+-	    meta_pa, 0, &r1);
+-	printf("GAUGUIN ZAP: INIT_IMAGE status %lld result %llu (atomic)\n",
++	/*
++	 * fajita console75c, the only PAS sequence proven on hardware:
++	 * fn=0x42000201 arginfo=0x82 args=(metadata_pa, 0) -> status 0
++	 * result 0, on the first call. No peripheral id in the
++	 * arguments (v27's (13, meta_pa) made the TZ read PA 13).
++	 */
++	printf("GAUGUIN ZAP: INIT_IMAGE fn=%#x arginfo=%#x "
++	    "args=%#llx/%#llx\n", ZAP_FN_INIT, 0x82u,
++	    (unsigned long long)meta_pa, (unsigned long long)0);
++	(void)sweet_log_flush_now();
++	st = gauguin_scm_call(ZAP_FN_INIT, 0x82u, meta_pa, 0, 0, &r1);
++	printf("GAUGUIN ZAP: INIT_IMAGE status %lld result %llu\n",
+ 	    (long long)st, (unsigned long long)r1);
+ 	(void)sweet_log_flush_now();
+-	if (st != 0) {
+-		st = gauguin_scm_call(ZAP_FN_INIT, 0x82u, ZAP_PAS_ID,
+-		    meta_pa, 0, &r1);
+-		printf("GAUGUIN ZAP: INIT_IMAGE status %lld result %llu "
+-		    "(yield)\n", (long long)st, (unsigned long long)r1);
+-		(void)sweet_log_flush_now();
+-	}
+ 	if (st != 0) {
+ 		return false;
+ 	}
+-	st = gauguin_scm_call(ZAP_FN_MEM | ZAP_FN_ATOMIC, 0x3u, ZAP_PAS_ID,
+-	    img_pa, 0x1000u, &r1);
+-	printf("GAUGUIN ZAP: MEM_SETUP status %lld result %llu (atomic)\n",
++	/* fajita form: arginfo 0x3, (image_pa, size), both VAL. */
++	printf("GAUGUIN ZAP: MEM_SETUP fn=%#x arginfo=%#x "
++	    "args=%#llx/%#llx\n", ZAP_FN_MEM, 0x3u,
++	    (unsigned long long)img_pa, (unsigned long long)0x1000);
++	(void)sweet_log_flush_now();
++	st = gauguin_scm_call(ZAP_FN_MEM, 0x3u, img_pa, 0x1000u, 0, &r1);
++	printf("GAUGUIN ZAP: MEM_SETUP status %lld result %llu\n",
+ 	    (long long)st, (unsigned long long)r1);
+ 	(void)sweet_log_flush_now();
+-	if (st != 0) {
+-		st = gauguin_scm_call(ZAP_FN_MEM, 0x3u, ZAP_PAS_ID, img_pa,
+-		    0x1000u, &r1);
+-		printf("GAUGUIN ZAP: MEM_SETUP status %lld result %llu "
+-		    "(yield)\n", (long long)st, (unsigned long long)r1);
+-		(void)sweet_log_flush_now();
+-	}
+ 	if (st != 0) {
+ 		return false;
+ 	}
+@@ -1673,17 +1684,14 @@
+ 	printf("GAUGUIN ZAP: segment %u bytes -> img+0\n", ZAP_B02_BYTES);
+ 	(void)sweet_log_flush_now();
+ 
+-	st = gauguin_scm_call(ZAP_FN_AUTH | ZAP_FN_ATOMIC, 0x1u, ZAP_PAS_ID,
+-	    0, 0, &r1);
+-	printf("GAUGUIN ZAP: AUTH_AND_RESET status %lld result %llu "
+-	    "(atomic)\n", (long long)st, (unsigned long long)r1);
+-	(void)sweet_log_flush_now();
+-	if (st != 0) {
+-		st = gauguin_scm_call(ZAP_FN_AUTH, 0x1u, ZAP_PAS_ID, 0, 0, &r1);
+-		printf("GAUGUIN ZAP: AUTH_AND_RESET status %lld result %llu "
+-		    "(yield)\n", (long long)st, (unsigned long long)r1);
+-		(void)sweet_log_flush_now();
+-	}
++	/* fajita form: arginfo 0x1, (0). */
++	printf("GAUGUIN ZAP: AUTH_AND_RESET fn=%#x arginfo=%#x args=0/0\n",
++	    ZAP_FN_AUTH, 0x1u);
++	(void)sweet_log_flush_now();
++	st = gauguin_scm_call(ZAP_FN_AUTH, 0x1u, 0, 0, 0, &r1);
++	printf("GAUGUIN ZAP: AUTH_AND_RESET status %lld result %llu\n",
++	    (long long)st, (unsigned long long)r1);
++	(void)sweet_log_flush_now();
+ 	if (st != 0) {
+ 		return false;
+ 	}
+@@ -1983,18 +1991,10 @@
+ 
+ 	/* Release PAS 13 (fajita console76 shuts down after the test). */
+ 	{
+-		int64_t st = gauguin_scm_call(ZAP_FN_SHUTDOWN | ZAP_FN_ATOMIC,
+-		    0x1u, ZAP_PAS_ID, 0, 0, NULL);
+-		printf("GAUGUIN ZAP: SHUTDOWN status %lld (atomic)\n",
+-		    (long long)st);
++		int64_t st = gauguin_scm_call(ZAP_FN_SHUTDOWN, 0x1u,
++		    0, 0, 0, NULL);
++		printf("GAUGUIN ZAP: SHUTDOWN status %lld\n", (long long)st);
+ 		(void)sweet_log_flush_now();
+-		if (st != 0) {
+-			st = gauguin_scm_call(ZAP_FN_SHUTDOWN, 0x1u,
+-			    ZAP_PAS_ID, 0, 0, NULL);
+-			printf("GAUGUIN ZAP: SHUTDOWN status %lld (yield)\n",
+-			    (long long)st);
+-			(void)sweet_log_flush_now();
+-		}
+ 	}
+ 	if (!ok) {
+ 		printf("GAUGUIN CP: L3b abort after SEC_MODE\n");
