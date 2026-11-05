@@ -1,27 +1,22 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
-index cafebabe..deadbeef 100644
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -2348,8 +2348,50 @@ gauguin_cp_start(void)
- 	val = gg_rd(gg.gpu, GR(CP_HW_FAULT_DW));
- 	printf("GAUGUIN CP: hw_fault=%#x\n", val);
+@@ -2356,6 +2356,39 @@
  	(void)sweet_log_flush_now();
  
--	/*
--	 * ---- step 22: submit a small BLIT to prove the CP *performs*
--	 * packets with real memory access, not just consumes the ring.
--	 * ...
-+	/*
+ 	/*
 +	 * Linux _a6xx_check_idle style firmware-level idle check after
 +	 * SET_SECURE_MODE. RPTR advancing only means the ring was read - the
 +	 * firmware may still sit in the secure domain and silently swallow
-+	 * memory operations. Linux checks RBBM_STATUS (dw 0x210, byte 0x840)
-+	 * for the CX master idle bit and RBBM_INT_0_STATUS (dw 0x212, byte
-+	 * 0x848) for HANG_DETECT; we also sweep CP_SMMU and status0 to capture
-+	 * any secure-mode flag.
++	 * memory operations. Check RBBM_STATUS (dw 0x210) for the CX master
++	 * idle bit and RBBM_INT_0_STATUS (dw 0x212) for HANG_DETECT, dump
++	 * CP_STATUS_0 (dw 0x208) and CP_SMMU (dw 0x232), then sweep the
++	 * RBBM and GP windows to capture any secure-mode indicator.
 +	 */
 +	{
 +		uint32_t rbbm_st, rbbm_int0, smmu, status0;
++		unsigned dw;
++
 +		rbbm_st = gg_rd(gg.gpu, GR(0x210u));
 +		rbbm_int0 = gg_rd(gg.gpu, GR(0x212u));
 +		smmu = gg_rd(gg.gpu, GR(0x232u));
@@ -30,27 +25,19 @@ index cafebabe..deadbeef 100644
 +		    " status0=%#x cp_smmu=%#x\n",
 +		    rbbm_st, rbbm_int0, status0, smmu);
 +		(void)sweet_log_flush_now();
-+		/* sweep RBBM dw 0x200..0x215 and CP dw 0x200..0x20b */
-+		{
-+			unsigned dw;
-+			for (dw = 0x200u; dw <= 0x215u; dw++) {
-+				printf("GAUGUIN CP: 0x%03x = %#x\n",
-+				    dw, gg_rd(gg.gpu, GR(dw)));
-+			}
++		for (dw = 0x200u; dw <= 0x215u; dw++) {
++			printf("GAUGUIN CP: rbbm+0x%03x = %#x\n",
++			    dw, gg_rd(gg.gpu, GR(dw)));
 +		}
 +		(void)sweet_log_flush_now();
-+		/* GP registers around CP_SECURE_MODE / CP_SMMU */
-+		{
-+			unsigned dw;
-+			for (dw = 0x207u; dw <= 0x20cu; dw++) {
-+				printf("GAUGUIN CP: gp+0x%03x = %#x\n",
-+				    dw, gg_rd(gg.gpu, GR(dw)));
-+			}
++		for (dw = 0x207u; dw <= 0x20cu; dw++) {
++			printf("GAUGUIN CP: gp+0x%03x = %#x\n",
++			    dw, gg_rd(gg.gpu, GR(dw)));
 +		}
 +		(void)sweet_log_flush_now();
 +	}
 +
 +	/*
-+	 * ---- step 22: submit a small BLIT to prove the CP *performs*
-+	 * packets with real memory access, not just consumes the ring.
-+	 * ...
+ 	 * ---- step 22 (redwood reference): the 2D pipe paints three bands
+ 	 * into the target buffer, then flushes its caches. This is the first
+ 	 * packet stream in this port that makes the core *draw* something.
