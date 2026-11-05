@@ -308,7 +308,7 @@
  static void gauguin_gpu_l2(void);
  static void gauguin_gx_pdc_rsc(void);
  static void gauguin_gx_rail_on(void);
-@@ -1407,6 +1409,233 @@
+@@ -1407,6 +1409,234 @@
  #define TPL1_NC_MODE_CNTL_DW 0xb604u
  #define RB_CNTL_VAL      0x800020cu  /* 32 KiB ring, half-full shadow */
  
@@ -543,7 +543,7 @@
  /*
   * Configure and start the CP (Linux a6xx_start + a6xx_rb_start order, the
   * fajita/Bergamota write set). Every write is read back; CP_ME_INIT is the
-@@ -1595,9 +1824,32 @@
+@@ -1595,9 +1825,32 @@
  	printf("GAUGUIN CP: sqe base=%#x\n", val);
  	(void)sweet_log_flush_now();
  
@@ -579,7 +579,7 @@
  	ring[1] = 0x2fu;                /* MAX_CONTEXT|ERR_DET|HDR|RESET|UCODE */
  	ring[2] = 0x00000003;           /* MAX_CONTEXT */
  	ring[3] = 0x20000000;           /* ERROR_DETECTION_CONTROL */
-@@ -1606,22 +1858,15 @@
+@@ -1606,22 +1859,15 @@
  	ring[6] = 0x00000000;           /* DEFAULT_RESET_STATE */
  	ring[7] = 0x00000000;           /* UCODE_WORKAROUND_MASK */
  	ring[8] = 0x00000000;           /* pad */
@@ -605,7 +605,7 @@
  	ok = false;
  	for (i = 0; i < 2000; ++i) {
  		rptr = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
-@@ -1638,17 +1883,57 @@
+@@ -1638,17 +1884,57 @@
  	printf("GAUGUIN CP: ME_INIT %s (rptr=%u wptr=%u)\n",
  	    ok ? "RETIRED" : "STUCK", rptr, wptr);
  	(void)sweet_log_flush_now();
