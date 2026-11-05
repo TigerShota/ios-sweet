@@ -22,7 +22,7 @@
  }
 --- /dev/null
 +++ b/bsd/dev/gauguin_bt.c
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,393 @@
 +/*
 + * gauguin (SM7150/sweet) Bluetooth step 1: look at QUPv3_0 SE1, the GENI
 + * UART the WCN3990 is wired to, and at the GCC branch votes and TLMM pins
@@ -46,6 +46,12 @@
 + * cold GCC state is printed first and the five QUPv3_0 branches are voted
 + * only when needed (gauguinbtclk=0 disables even that). No SE register is
 + * written: this patch only measures.
++ *
++ * Every read is published and flushed on its own (bt_rd_log): the first
++ * v36 boot stopped right after the mappings, with no cold line on disk,
++ * which means one of the GCC accesses aborted. Reading them one at a time
++ * makes the next boot name the register that cannot be reached from the
++ * APPS instead of losing the whole dump.
 + *
 + * Boot-args: gauguinbt=0/1 (default 1), gauguinbtdelay=<seconds> (default
 + * 45, after the GPU thread's 30), gauguinbtclk=0/1 (default 1).
@@ -160,6 +166,22 @@
 +	__asm__ volatile("dsb osh" ::: "memory");
 +}
 +
++/*
++ * Read one register and put it on disk before touching the next one. If a
++ * register is not reachable from the APPS (a secure-only or powered-off
++ * block aborts the access and panics), the last line written names the
++ * culprit instead of losing the whole cold dump in the ring buffer.
++ */
++static uint32_t
++bt_rd_log(const char *what, vm_offset_t base, uint32_t off)
++{
++	uint32_t v = bt_rd(base, off);
++
++	printf("GAUGUIN BT: read %s @%#x = %#x\n", what, off, v);
++	(void)sweet_log_flush_now();
++	return v;
++}
++
 +static void
 +bt_wait(unsigned ms)
 +{
@@ -205,6 +227,7 @@
 +	    pin, cfg, (cfg & TLMM_FUNC_MASK) >> TLMM_FUNC_SHIFT, cfg & TLMM_PULL_MASK,
 +	    (cfg & TLMM_DRV_MASK) >> TLMM_DRV_SHIFT, (cfg & TLMM_OE_BIT) ? 1u : 0u, io,
 +	    (io & TLMM_IN_BIT) ? 1u : 0u, (io & TLMM_OUT_BIT) ? 1u : 0u);
++	(void)sweet_log_flush_now();
 +}
 +
 +static void
@@ -217,7 +240,8 @@
 +		bt.qup = ml_io_map(BT_QUP0_PA, BT_QUP0_SIZE);
 +	}
 +	if (bt.qup) {
-+		printf("GAUGUIN BT: qup0 QUPV3_HW_VER=%#x\n", bt_rd(bt.qup, QUPV3_HW_VER));
++		printf("GAUGUIN BT: qup0 QUPV3_HW_VER=%#x\n",
++		    bt_rd_log("qup0_hw_ver", bt.qup, QUPV3_HW_VER));
 +	} else {
 +		printf("GAUGUIN BT: qup0 wrapper map failed\n");
 +	}
@@ -229,23 +253,23 @@
 +		return;
 +	}
 +
-+	status = bt_rd(bt.se, SE_GENI_STATUS);
-+	fw = bt_rd(bt.se, GENI_FW_REVISION_RO);
-+	mclk = bt_rd(bt.se, GENI_SER_M_CLK_CFG);
-+	sclk = bt_rd(bt.se, GENI_SER_S_CLK_CFG);
-+	ifdis = bt_rd(bt.se, GENI_IF_DISABLE_RO);
-+	dma = bt_rd(bt.se, SE_GENI_DMA_MODE_EN);
-+	mcmd = bt_rd(bt.se, SE_GENI_M_CMD0);
-+	mirq = bt_rd(bt.se, SE_GENI_M_IRQ_STATUS);
-+	men = bt_rd(bt.se, SE_GENI_M_IRQ_EN);
-+	scmd = bt_rd(bt.se, SE_GENI_S_CMD0);
-+	sirq = bt_rd(bt.se, SE_GENI_S_IRQ_STATUS);
-+	sen = bt_rd(bt.se, SE_GENI_S_IRQ_EN);
-+	txf = bt_rd(bt.se, SE_GENI_TX_FIFO_STATUS);
-+	rxf = bt_rd(bt.se, SE_GENI_RX_FIFO_STATUS);
-+	irqen = bt_rd(bt.se, SE_IRQ_EN);
-+	hw0 = bt_rd(bt.se, SE_HW_PARAM_0);
-+	hw1 = bt_rd(bt.se, SE_HW_PARAM_1);
++	status = bt_rd_log("se1_status", bt.se, SE_GENI_STATUS);
++	fw = bt_rd_log("se1_fw_rev", bt.se, GENI_FW_REVISION_RO);
++	mclk = bt_rd_log("se1_ser_m_clk_cfg", bt.se, GENI_SER_M_CLK_CFG);
++	sclk = bt_rd_log("se1_ser_s_clk_cfg", bt.se, GENI_SER_S_CLK_CFG);
++	ifdis = bt_rd_log("se1_if_disable", bt.se, GENI_IF_DISABLE_RO);
++	dma = bt_rd_log("se1_dma_mode", bt.se, SE_GENI_DMA_MODE_EN);
++	mcmd = bt_rd_log("se1_m_cmd0", bt.se, SE_GENI_M_CMD0);
++	mirq = bt_rd_log("se1_m_irq_status", bt.se, SE_GENI_M_IRQ_STATUS);
++	men = bt_rd_log("se1_m_irq_en", bt.se, SE_GENI_M_IRQ_EN);
++	scmd = bt_rd_log("se1_s_cmd0", bt.se, SE_GENI_S_CMD0);
++	sirq = bt_rd_log("se1_s_irq_status", bt.se, SE_GENI_S_IRQ_STATUS);
++	sen = bt_rd_log("se1_s_irq_en", bt.se, SE_GENI_S_IRQ_EN);
++	txf = bt_rd_log("se1_tx_fifo_status", bt.se, SE_GENI_TX_FIFO_STATUS);
++	rxf = bt_rd_log("se1_rx_fifo_status", bt.se, SE_GENI_RX_FIFO_STATUS);
++	irqen = bt_rd_log("se1_irq_en", bt.se, SE_IRQ_EN);
++	hw0 = bt_rd_log("se1_hw_param_0", bt.se, SE_HW_PARAM_0);
++	hw1 = bt_rd_log("se1_hw_param_1", bt.se, SE_HW_PARAM_1);
 +
 +	printf("GAUGUIN BT: se1 fw=%#x (protocol %u = %s, version %#x) status=%#x"
 +	    " (m_active=%u s_active=%u)\n", fw,
@@ -287,13 +311,14 @@
 +		return;
 +	}
 +
-+	/* Cold state: the vote word and every branch that gates the SE. */
-+	vote = bt_rd(bt.gcc, GCC_QUPV3_WRAP0_VOTE);
-+	m_ahb = bt_rd(bt.gcc, GCC_WRAP0_M_AHB);
-+	s_ahb = bt_rd(bt.gcc, GCC_WRAP0_S_AHB);
-+	core = bt_rd(bt.gcc, GCC_WRAP0_CORE);
-+	core2x = bt_rd(bt.gcc, GCC_WRAP0_CORE_2X);
-+	se1 = bt_rd(bt.gcc, GCC_WRAP0_SE1);
++	/* Cold state, one register at a time so that an abort on a protected
++	 * register is attributable (see bt_rd_log). */
++	vote = bt_rd_log("qupv3_wrap0_vote", bt.gcc, GCC_QUPV3_WRAP0_VOTE);
++	m_ahb = bt_rd_log("wrap0_m_ahb_cbcr", bt.gcc, GCC_WRAP0_M_AHB);
++	s_ahb = bt_rd_log("wrap0_s_ahb_cbcr", bt.gcc, GCC_WRAP0_S_AHB);
++	core = bt_rd_log("wrap0_core_cbcr", bt.gcc, GCC_WRAP0_CORE);
++	core2x = bt_rd_log("wrap0_core_2x_cbcr", bt.gcc, GCC_WRAP0_CORE_2X);
++	se1 = bt_rd_log("wrap0_se1_cbcr", bt.gcc, GCC_WRAP0_SE1);
 +	printf("GAUGUIN BT: cold vote=%#x (m_ahb=%u s_ahb=%u core=%u core2x=%u se1=%u)\n",
 +	    vote, (vote & GCC_VOTE_M_AHB) ? 1u : 0u, (vote & GCC_VOTE_S_AHB) ? 1u : 0u,
 +	    (vote & GCC_VOTE_CORE) ? 1u : 0u, (vote & GCC_VOTE_CORE_2X) ? 1u : 0u,
@@ -302,11 +327,11 @@
 +	    m_ahb, bt_branch_on(m_ahb) ? 1u : 0u, s_ahb, bt_branch_on_gated(s_ahb) ? 1u : 0u,
 +	    core, bt_branch_on(core) ? 1u : 0u, core2x, bt_branch_on(core2x) ? 1u : 0u,
 +	    se1, bt_branch_on(se1) ? 1u : 0u);
-+	cmd = bt_rd(bt.gcc, GCC_WRAP0_SE1_RCG);
-+	cfg = bt_rd(bt.gcc, GCC_WRAP0_SE1_RCG + 0x4u);
-+	m = bt_rd(bt.gcc, GCC_WRAP0_SE1_RCG + 0x8u);
-+	n = bt_rd(bt.gcc, GCC_WRAP0_SE1_RCG + 0xcu);
-+	d = bt_rd(bt.gcc, GCC_WRAP0_SE1_RCG + 0x10u);
++	cmd = bt_rd_log("se1_rcg_cmd", bt.gcc, GCC_WRAP0_SE1_RCG);
++	cfg = bt_rd_log("se1_rcg_cfg", bt.gcc, GCC_WRAP0_SE1_RCG + 0x4u);
++	m = bt_rd_log("se1_rcg_m", bt.gcc, GCC_WRAP0_SE1_RCG + 0x8u);
++	n = bt_rd_log("se1_rcg_n", bt.gcc, GCC_WRAP0_SE1_RCG + 0xcu);
++	d = bt_rd_log("se1_rcg_d", bt.gcc, GCC_WRAP0_SE1_RCG + 0x10u);
 +	printf("GAUGUIN BT: cold se1 rcg cmd=%#x (%s) cfg=%#x src=%u div=%u m=%#x n=%#x d=%#x\n",
 +	    cmd, (cmd & GCC_CMD_ROOT_OFF) ? "root off" : "root on", cfg,
 +	    (cfg & GCC_CFG_SRC_MASK) >> GCC_CFG_SRC_SHIFT, cfg & GCC_CFG_DIV_MASK, m, n, d);
