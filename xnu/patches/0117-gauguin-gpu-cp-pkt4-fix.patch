@@ -35,7 +35,7 @@ index fce350b..cafebabe 100644
  			}
  			delay(1000);
  		}
-+		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x120u), 4, FALSE);
++		invalidate_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x120u), 4);
  		mw = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x120u);
  		printf("GAUGUIN CP: memwrite=%#x (want 0x600dc0de) reg=%#x"
  		    " protect=%#x roq=%#x/%#x wptr=%u\n", mw, rreg,
