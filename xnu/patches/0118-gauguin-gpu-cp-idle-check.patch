@@ -2,11 +2,15 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 index cafebabe..deadbeef 100644
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -2348,6 +2348,48 @@ gauguin_cp_start(void)
+@@ -2348,8 +2348,50 @@ gauguin_cp_start(void)
  	val = gg_rd(gg.gpu, GR(CP_HW_FAULT_DW));
  	printf("GAUGUIN CP: hw_fault=%#x\n", val);
  	(void)sweet_log_flush_now();
  
+-	/*
+-	 * ---- step 22: submit a small BLIT to prove the CP *performs*
+-	 * packets with real memory access, not just consumes the ring.
+-	 * ...
 +	/*
 +	 * Linux _a6xx_check_idle style firmware-level idle check after
 +	 * SET_SECURE_MODE. RPTR advancing only means the ring was read - the
@@ -46,6 +50,7 @@ index cafebabe..deadbeef 100644
 +		(void)sweet_log_flush_now();
 +	}
 +
- 	/*
- 	 * ---- proof that the core *performs* packets after the secure-mode
- 	 * switch. SET_SECURE_MODE's RPTR only says the ring was read: on a
++	/*
++	 * ---- step 22: submit a small BLIT to prove the CP *performs*
++	 * packets with real memory access, not just consumes the ring.
++	 * ...
