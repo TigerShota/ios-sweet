@@ -12,7 +12,7 @@ on:
         default: "kernel.development.sweet"
       cmdline:
         description: "boot-args (first bring-up: cpus=1, console visible)"
-        default: "debug=0xc serial=3 cpus=6 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 wdt=-1 sweetusb=0 sweettouch=0 sweetfb_noconsole=1 sweetfb_hz=30 ufslogsecs=5 sweetsample=SpringBoard,backboardd,lsd,MobileGestaltHelper,securityd,installd,misagent,misd,installcoordinationd,containermanagerd,launchd,logd sweetiolog=MobileGestaltHelper,securityd,lsd,backboardd"
+        default: "debug=0xc serial=3 cpus=6 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 wdt=-1 sweetusb=0 sweettouch=0 sweetfb_noconsole=1 sweetfb_hz=30 ufslogsecs=5 sweetsample=SpringBoard,backboardd,lsd,MobileGestaltHelper,securityd,installd,misagent,misd,installcoordinationd,containermanagerd,launchd,logd sweetiolog=MobileGestaltHelper,securityd,lsd,backboardd gauguingpu=2 gauguinbt=0 gauguinbtclk=1"
       highmem:
         description: "1 = DDR above 4G (unstable on gauguin), 0 = high bank below 4G 0xc8000000/896M (default)"
         default: "0"
