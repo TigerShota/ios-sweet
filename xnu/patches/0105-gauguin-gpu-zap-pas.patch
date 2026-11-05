@@ -341,9 +341,12 @@
 +static uint32_t
 +gg_parity(uint32_t val)
 +{
-+	return (0x9669u >> (0xfu & (val ^ (val >> 4) ^ (val >> 8) ^
-+	    (val >> 12) ^ (val >> 16) ^ (val >> 20) ^ (val >> 24) ^
-+	    (val >> 28)))) & 1u;
++	val ^= val >> 1;
++	val ^= val >> 2;
++	val ^= val >> 4;
++	val ^= val >> 8;
++	val ^= val >> 16;
++	return val & 1u;
 +}
 +
 +/* PM4 type-7 header (vendor adreno_pm4types.h cp_type7_packet):
