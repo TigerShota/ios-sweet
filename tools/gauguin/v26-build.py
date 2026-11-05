@@ -120,7 +120,7 @@ marks = {
     'secmode hdr fmt': b'GAUGUIN CP: secmode hdr=%#x',
     'me_init verdict': b'GAUGUIN CP: ME_INIT %s (rptr=%u wptr=%u)',
     'secmode submitted': b'GAUGUIN CP: SET_SECURE_MODE submitted (wptr=%u)',
-    'secmode verdict': b'GAUGUIN CP: SET_SECURE_MODE %s (rptr=%u wptr=%u)',
+    'secmode verdict': b'GAUGUIN CP: SET_SECURE_MODE %s (rptr=%u reg=%#x wptr=%u)',
     'post status fmt': b'GAUGUIN CP: post cp_status1=%#x',
     'abort secmode': b'GAUGUIN CP: L3b abort after SEC_MODE',
     'CP started': b'GAUGUIN CP: started - the CP executes our packets',
