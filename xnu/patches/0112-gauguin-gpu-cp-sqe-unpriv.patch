@@ -1,0 +1,26 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1202,6 +1202,22 @@
+ #define GG_SID_CP        0u        /* gfx3d_user stream */
+ #define S2CR_TRANS_CB1   ((3u << 8) | GG_CB1)
+-#define PTE_PAGE_RO      (3ull | (1ull << 10) | (2ull << 8) | (2ull << 6) | (1ull << 11))
++/*
++ * LPAE AP[2:1] is bits 7:6: AP[2]=1 makes a page read-only, AP[1]=1 lets the
++ * *unprivileged* master read it. The CP (gfx3d_user, SID 0) is an
++ * unprivileged master, so a read-only SQE page needs both bits - with only
++ * AP[2] set the SMMU records a permission fault (CB1 FSR bit 3, v32
++ * fsr=0x408) with FAR exactly at CP_SQE_INSTR_BASE (0x40010000) and the
++ * SQE, unable to fetch its own ucode, reports CP_ILLEGAL_INSTR_ERROR (0x80)
++ * and never advances RPTR. The GMU (CB0) and the ring/scratch pages (AP=01,
++ * RW unprivileged) never had this problem, which is why only the SQE page
++ * faulted.
++ *
++ * Same flags as the working Adreno bring-up in Floppikrob/willow-hackios
++ * (bsd/dev/redwood_adreno.c): PTE_UNPRIVILEGED (1 << 6) is set on every
++ * mapping of the 3D core, PTE_READ_ONLY (1 << 7) only on the microcode page,
++ * i.e. SQE = PTE_CORE | PTE_READ_ONLY = 0xec3 - the value below.
++ */
++#define PTE_PAGE_RO      (3ull | (1ull << 10) | (2ull << 8) | (3ull << 6) | (1ull << 11))
+ 
+ static vm_offset_t cpmem;
+ static uint64_t cp_pa;

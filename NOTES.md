@@ -2,11 +2,19 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-05 00:45 CST: v32 BOOTED, GPU STILL NOT DRIVEN - LOG PULLED (read first) <<<
+### >>> UPDATE 2026-11-05 (LATEST): 0112 - THE SQE PTE ITSELF WAS THE FAULT; A WORKING SNAPDRAGON REFERENCE CONFIRMS THE FIX <<<
+- Reference (user's suggestion, GitHub): **Floppikrob/willow-hackios** - Snapdragon 665 / Adreno bring-up with a working GPU (docs/gpu-first-frame.png). Downloaded `xnu/files/bsd/dev/redwood_adreno.c` (185,321 B) and `xnu/files/iokit/Kernel/RedwoodGPU.cpp` to **D:\hackios\out\refs\** (repo has no NOTES.md; README/PORTING/checks only). Its SMMUv2 + LPAE scheme is the same one we use, and it names the exact bug:
+  - `PTE_UNPRIVILEGED (1 << 6)` - "the 3D core's accesses are; the GMU's are not"; `PTE_READ_ONLY (1 << 7)` only on the microcode page ("Linux gives the core its microcode so", MSM_BO_GPU_READONLY). Their mappings: ring/scratch `PTE_CORE` = SH_OS|AF|nG|AP[1] = **0xE43**, SQE = `PTE_CORE | PTE_READ_ONLY` = **0xEC3**. CB0/GMU pages carry no AP[1] - same split as ours.
+  - So the v32 `cb1 fsr=0x408 far=0x40010000` is explained: 0099's `PTE_PAGE_RO` was **0xE83** (AP[2] only), which denies the unprivileged CP read of its own ucode. `PTE_PAGE_NC` 0xE43 already had AP[1], which is why only the SQE page faulted.
+- 0112: `PTE_PAGE_RO` gains `(1ull << 6)` -> **0xEC3**, comment cites the reference. Nothing else changes; the zap order stays as 0110 (Linux `a6xx_hw_init`: SQE_INSTR_BASE -> SQE_CNTL=1 -> CP_ME_INIT -> zap -> CP_SET_SECURE_MODE; willow keeps the vendor order on its phone but Linux's on the same hardware proves both work).
+- Expected v33: up to `sqe_cntl=0x1 intr=0x80`, then **ME_INIT RETIRED (rptr=9 wptr=9)**, no CB1 PF (fsr=0), SET_SECURE_MODE retired. If 0x80 survives with fsr=0, next A/B is NS bit5 + NSTABLE bit63 (io-pgtable ARM QUIRK_ARM_NS).
+- Other candidates checked, none with GPU source worth copying: TODOCRACK/Daisy_XNU16 (msm8953), nftuoa/ios-sweet-sagit (msm8998, same ios-sweet lineage), 3099404236/ios-flame (sm4450), lvyufeng/ios-le-pro3 (msm8996).
+
+### >>> UPDATE 2026-11-05 00:45 CST: v32 BOOTED, GPU STILL NOT DRIVEN - LOG PULLED <<<
 - Log: **D:\hackios\out\sweetlog-v32\v32.txt** (recovery pull, 2110 lines). pre intr=0, W1C clear=0, after SQE release=0x80 => **fresh 0->1 fault every time, not sticky** (0111 answered). ME_INIT STUCK rptr=0 wptr=12, ROQ 0/0; sqe_stat[0..3]=0, ucode[0..3]=0; roq_dbg=0x620283c0/c8a00002/804c812/12238.
 - 0111's CB1 dump decodes as **PERMISSION FAULT**: `fsr=0x408` (bit3 PF, FORMAT=2), `far=0x40010000` = exactly the SQE window, `fsynr0=0x3` (WNR=0 read, IND=0 data). So the walk itself worked (a FAR was resolved); the SQE's ucode read was denied by attributes, not by a missing mapping. gfsr=0.
-- Prime suspect: the SQE page is the only read-only mapping. 0099 `PTE_PAGE_RO=0xF83` sets AP[2] (RO) but not AP[1], so unprivileged reads are denied; ring/scratch `PTE_PAGE_NC=0xE43` allow them. The same CB0/PTE style works for the (secure) GMU HFI, so the tables/cache are not the issue.
-- 0112 fix candidate: `PTE_PAGE_RO = PTE_PAGE_NC | AP_RDONLY = 0xEC3`; also print the three L3 PTE qwords via `ml_phys_read_data` (uncached) to prove SMMU visibility. If 0x80 survives, next A/B is NS bit5 + NSTABLE bit63.
+- Prime suspect: the SQE page is the only read-only mapping. 0099 `PTE_PAGE_RO=0xE83` sets AP[2] (RO) but not AP[1], so unprivileged reads are denied; ring/scratch `PTE_PAGE_NC=0xE43` allow them. The same CB0/PTE style works for the (secure) GMU HFI, so the tables/cache are not the issue.
+- 0112 fix (implemented, see the block above): `PTE_PAGE_RO` gains AP[1] -> `0xEC3`. If 0x80 survives, next A/B is NS bit5 + NSTABLE bit63.
 
 ### >>> UPDATE 2026-11-05 00:10 CST: v32 (0111) BUILT, **NOT YET BOOTED** <<<
 - main = c0ee318 (0111). xnu run **41937851780** GREEN (9m34s, workflow_dispatch on the latest head; the previous push run 41855958891 failed only because the macOS hosted runner was never assigned - capacity, not code). shim run **41939156905** GREEN, kernel from 41937851780, cmdline = the v31 one (cpus=8 ... gauguingpu=2).
