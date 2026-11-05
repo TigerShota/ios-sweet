@@ -1,0 +1,43 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index fce350b..cafebabe 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1589,11 +1589,15 @@ gg_pkt7(uint32_t opcode, uint32_t cnt)
+     ((opcode & 0x7fu) << 16) | (gg_parity(opcode) << 23);
+ }
+ 
++/* 18-bit register number for CP_TYPE4_PKT: 0x4 << 16 | SUBBLOCK_OFFSET.
++ * a6xx mainline (cp_register) passes this to cp_type4_packet; our previous
++ * gg_pkt4 wrongly passed the raw 16-bit hardware register address, which
++ * produced completely different encodings and caused CP_OPCODE_ERROR (0x1). */
++#define GG_CP_REG(reg) ((0x4u << 16) | (((unsigned int)(reg)) - 0x2000u))
++
+ /* PM4 type-4 header: one dword written to a 3D/2D core register. Same bit
+  * layout as the reference's ring_register(). */
+ static uint32_t
+ gg_pkt4(uint32_t number)
+ {
+-	return (4u << 28) | 1u | (gg_parity(1u) << 7) |
+-	    ((number & 0x3fffu) << 8) | (gg_parity(number) << 27);
++	uint32_t opcode = GG_CP_REG(number);
++	return (4u << 28) | 1u | (gg_parity(1u) << 7) |
++	    ((opcode & 0x3ffffu) << 8) | (gg_parity(opcode) << 27);
+ }
+ 
+ /*
+  * One SCM SMC64 call: x0 fn, x1 arginfo, x2-x4 args, x6 a6, x7 = 0.
+  * Interrupted rules from the device's own kernel (qcom_scm-64.c) and
+@@ -2330,6 +2334,7 @@ gauguin_cp_start(void)
+ 		for (i = 0; i < 2000; ++i) {
+ 			rreg = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
+ 			if (rreg == n) {
+ 				break;
+ 			}
+ 			delay(1000);
+ 		}
++		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x120u), 4, FALSE);
+ 		mw = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x120u);
+ 		printf("GAUGUIN CP: memwrite=%#x (want 0x600dc0de) reg=%#x"
+ 		    " protect=%#x roq=%#x/%#x wptr=%u\n", mw, rreg,
+ 		    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
+ 		    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
