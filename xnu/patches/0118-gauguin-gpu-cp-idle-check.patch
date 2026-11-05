@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index cafebabe..deadbeef 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -2348,6 +2348,48 @@ gauguin_cp_start(void)
+ 	val = gg_rd(gg.gpu, GR(CP_HW_FAULT_DW));
+ 	printf("GAUGUIN CP: hw_fault=%#x\n", val);
+ 	(void)sweet_log_flush_now();
+ 
++	/*
++	 * Linux _a6xx_check_idle style firmware-level idle check after
++	 * SET_SECURE_MODE. RPTR advancing only means the ring was read - the
++	 * firmware may still sit in the secure domain and silently swallow
++	 * memory operations. Linux checks RBBM_STATUS (0x840) for the CX
++	 * master idle bit and RBBM_INT_0_STATUS (0x848) for HANG_DETECT; we
++	 * also sweep CP_SMMU and status0 to capture any secure-mode flag.
++	 */
++	{
++		uint32_t rbbm_st, rbbm_int0, smmu, status0;
++		rbbm_st = gg_rd(gg.gpu, GR(0x840u));
++		rbbm_int0 = gg_rd(gg.gpu, GR(0x848u));
++		smmu = gg_rd(gg.gpu, GR(0x8c8u));
++		status0 = gg_rd(gg.gpu, GR(0x820u));
++		printf("GAUGUIN CP: post-secmode idle rbbm=%#x int0=%#x"
++		    " status0=%#x cp_smmu=%#x\n",
++		    rbbm_st, rbbm_int0, status0, smmu);
++		(void)sweet_log_flush_now();
++		/* sweep RBBM dw 0x200..0x215 and CP dw 0x200..0x20b */
++		{
++			unsigned dw;
++			for (dw = 0x200u; dw <= 0x215u; dw++) {
++				printf("GAUGUIN CP: 0x%03x = %#x\n",
++				    dw, gg_rd(gg.gpu, GR(dw)));
++			}
++		}
++		(void)sweet_log_flush_now();
++		/* GP registers around CP_SECURE_MODE / CP_SMMU */
++		{
++			unsigned dw;
++			for (dw = 0x81eu; dw <= 0x832u; dw++) {
++				printf("GAUGUIN CP: gp+0x%03x = %#x\n",
++				    dw, gg_rd(gg.gpu, GR(dw)));
++			}
++		}
++		(void)sweet_log_flush_now();
++	}
++
+ 	/*
+ 	 * ---- proof that the core *performs* packets after the secure-mode
+ 	 * switch. SET_SECURE_MODE's RPTR only says the ring was read: on a
