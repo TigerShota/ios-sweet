@@ -2,6 +2,12 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-11-05 00:45 CST: v32 BOOTED, GPU STILL NOT DRIVEN - LOG PULLED (read first) <<<
+- Log: **D:\hackios\out\sweetlog-v32\v32.txt** (recovery pull, 2110 lines). pre intr=0, W1C clear=0, after SQE release=0x80 => **fresh 0->1 fault every time, not sticky** (0111 answered). ME_INIT STUCK rptr=0 wptr=12, ROQ 0/0; sqe_stat[0..3]=0, ucode[0..3]=0; roq_dbg=0x620283c0/c8a00002/804c812/12238.
+- 0111's CB1 dump decodes as **PERMISSION FAULT**: `fsr=0x408` (bit3 PF, FORMAT=2), `far=0x40010000` = exactly the SQE window, `fsynr0=0x3` (WNR=0 read, IND=0 data). So the walk itself worked (a FAR was resolved); the SQE's ucode read was denied by attributes, not by a missing mapping. gfsr=0.
+- Prime suspect: the SQE page is the only read-only mapping. 0099 `PTE_PAGE_RO=0xF83` sets AP[2] (RO) but not AP[1], so unprivileged reads are denied; ring/scratch `PTE_PAGE_NC=0xE43` allow them. The same CB0/PTE style works for the (secure) GMU HFI, so the tables/cache are not the issue.
+- 0112 fix candidate: `PTE_PAGE_RO = PTE_PAGE_NC | AP_RDONLY = 0xEC3`; also print the three L3 PTE qwords via `ml_phys_read_data` (uncached) to prove SMMU visibility. If 0x80 survives, next A/B is NS bit5 + NSTABLE bit63.
+
 ### >>> UPDATE 2026-11-05 00:10 CST: v32 (0111) BUILT, **NOT YET BOOTED** <<<
 - main = c0ee318 (0111). xnu run **41937851780** GREEN (9m34s, workflow_dispatch on the latest head; the previous push run 41855958891 failed only because the macOS hosted runner was never assigned - capacity, not code). shim run **41939156905** GREEN, kernel from 41937851780, cmdline = the v31 one (cpus=8 ... gauguingpu=2).
 - Image: **D:\hackios\out\shim-v32\shim\out\shim-boot.img** (17,530,880 B), payload.bin alongside. Payload string check: 0111 diagnostics present ("GAUGUIN CP: intr cold/cleared/after release", "ib1=%#x/%#x ib2=... crash=%#x", CB1/SMR2 + GFSR dumps).
