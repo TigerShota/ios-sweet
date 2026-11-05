@@ -1,0 +1,69 @@
+﻿diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index faaca75..b807bfe 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -2299,6 +2299,40 @@ gauguin_cp_start(void)
+ 		(void)sweet_log_flush_now();
+ 	}
+ 
++	/*
++	 * ---- proof that the core *performs* packets after the secure-mode
++	 * switch. SET_SECURE_MODE's RPTR only says the ring was read: on a
++	 * core that is still in secure mode the ROQ swallows the packets and
++	 * nothing is carried out. The reference (fajita step 21) checks this
++	 * same word before it draws; our port never did, and the zero pixels
++	 * of v40 are consistent with exactly that.
++	 * CP_MEM_WRITE 0x3d: address low, address high, value.
++	 */
++	{
++		uint32_t n = 17u;
++		uint32_t mw;
++		ring[n++] = gg_pkt7(0x3du, 3u);
++		ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x120u) & 0xffffffffu);
++		ring[n++] = 0u;
++		ring[n++] = 0x600dc0deu;
++		__asm__ volatile("dmb oshst" ::: "memory");
++		gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), n);
++		for (i = 0; i < 2000; ++i) {
++			rreg = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++			if (rreg == n) {
++				break;
++			}
++			delay(1000);
++		}
++		mw = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x120u);
++		printf("GAUGUIN CP: memwrite=%#x (want 0x600dc0de) reg=%#x"
++		    " protect=%#x roq=%#x/%#x wptr=%u\n", mw, rreg,
++		    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++		    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
++		    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)), n);
++		(void)sweet_log_flush_now();
++	}
++
+ 	flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
+ 	val = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
+ 	printf("GAUGUIN CP: rptr shadow=%u reg=%#x\n",
+@@ -2321,7 +2355,7 @@ gauguin_cp_start(void)
+ 	 * Packet order is the reference's ring_fill/step_frame verbatim.
+ 	 */
+ 	{
+-		uint32_t n = 17u, k;
++		uint32_t n = 21u, k;
+ 		const uint32_t band[3][3] = {
+ 			{ 255u, 128u, 0u },     /* orange */
+ 			{ 255u, 255u, 255u },   /* white */
+@@ -2407,6 +2441,14 @@ gauguin_cp_start(void)
+ 		    *(volatile uint32_t *)(target + TARGET_PITCH * 500u + 4u),
+ 		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x100u),
+ 		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x110u));
++		printf("GAUGUIN CP: step22 protect=%#x fault=%#x int=%#x"
++		    " roq=%#x/%#x status1=%#x\n",
++		    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++		    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
++		    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)),
++		    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
++		    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
++		    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)));
+ 		(void)sweet_log_flush_now();
+ 	}
+ 

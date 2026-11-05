@@ -2,7 +2,17 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-05 (LATEST): v39 (0114) PANICS IN OUR OWN CACHE FLUSH, NOT IN THE GPU - `flush_dcache64()` GOT A PHYSICAL ADDRESS WITH `phys=FALSE` <<<
+### >>> UPDATE 2026-11-05 (LATEST): v40 BOOTS AND STEP 22 IS *CONSUMED* BUT PERFORMS NOTHING - THE CP IS STILL IN SECURE MODE <<<
+- v40 (`41980520032`, image `out\shim-v40`) booted the system (CPU still draws). Log `D:\hackios\temp\v40.txt`:
+  - `GAUGUIN CP: target pa=0xce374000 va=0x40200000 512x512 pitch=2048 pte0=0xce374e43` - page tables good, `PTE_PAGE_NC` correct.
+  - `step22 125 dwords` -> `step22 RETIRED (rptr=17 reg=0x7d wptr=125)` - RPTR register reached 125, shadow stayed 17.
+  - `step22 px top=0 mid=0 bot=0 ev=0/0` - nothing written, **including the two `CP_EVENT_WRITE` words**.
+- Diagnosis: ring consumption is not execution. Before the zap reset the same port proved execution (`CP_WHERE_AM_I` wrote 12 into the scratch, `roq_dbg` holds our ME_INIT payload). After `PAS_AUTH_AND_RESET` the CP runs in secure mode; a core still in secure mode swallows the ROQ packets and carries out nothing, while RPTR keeps advancing.
+- The reference verifies this at its step 21 with `CP_MEM_WRITE` (0x3d) of `0x600dc0de`; our port never had that check.
+- 0115 (`0115-gauguin-gpu-cp-performs-check.patch`, 3 hunks): (1) after SET_SECURE_MODE submit `CP_MEM_WRITE 0x3d` to `CP_VA_SCRATCH+0x120` and print `memwrite=... protect=... roq=.../...`; (2) step22 ring index 17 -> 21 (4 dwords consumed by the probe); (3) after step22 print `protect/fault/int/roq/status1`.
+- Decide from `memwrite`: `0x600dc0de` -> the core performs, and the zero pixels are a 2D-programming matter (rings, formats, `RB_CCU_CNTL`, SQE-dependent BLIT). Still 0 -> the secure-mode switch is not taking effect; next stop is the zap/`CP_SET_SECURE_MODE` handshake (`CP_PROTECT_STATUS`, `RBBM_SECVID`, and whether `CP_ME_INIT` must be re-sent after the secure release).
+
+### >>> UPDATE 2026-11-05 (superseded): v39 (0114) PANICS IN OUR OWN CACHE FLUSH, NOT IN THE GPU - `flush_dcache64()` GOT A PHYSICAL ADDRESS WITH `phys=FALSE` <<<
 - xnu run 41973837009 green (0114 applied), shim run 41977092366 green, image `D:\hackios\out\shim-v39\shim\out\shim-boot.img` (17,547,264 B), 4/4 step22 payload marks. Log `D:\hackios\temp\v39.txt` (raw `v39.bin`, 132 KB, pulled with `skip=<userdata blocks>-1025`; note PowerShell `>` mangles binary - use `Start-Process -RedirectStandardOutput`).
 - Boot panicked at `gauguin_cp_mem_setup` right after `GAUGUIN CP: gap pte0=0 (want 0)`. PC `0xfffffe00074d67f4` = `_FlushPoC_DcacheRegion+0x1c` (`dc civac`), caller `flush_dcache`+0xa4 <- `gauguin_cp_mem_setup+0x548`. ESR `0x96000145` = write, translation fault level 1.
 - Cause: `flush_dcache64(addr, len, phys)`; with `phys=FALSE` the address is a **VA** (`kvtophys` then `FlushPoC_DcacheRegion(va)`). 0114 passed `cp_pa` and `target_pa` (physical) with `FALSE` -> `dc civac` on an unmapped VA.
