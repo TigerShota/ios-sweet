@@ -1,8 +1,8 @@
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -117,3 +117,4 @@
- bsd/dev/gauguin_gmu_fw.c		standard
+@@ -118,3 +118,4 @@
  bsd/dev/gauguin_sqe_fw.c		standard
+ bsd/dev/gauguin_zap_fw.c		standard
 +bsd/dev/gauguin_bt.c			standard
  bsd/dev/mem.c				standard
 --- a/bsd/dev/sweet_ufs.c
