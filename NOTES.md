@@ -2,6 +2,11 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-11-05 00:10 CST: v32 (0111) BUILT, **NOT YET BOOTED** <<<
+- main = c0ee318 (0111). xnu run **41937851780** GREEN (9m34s, workflow_dispatch on the latest head; the previous push run 41855958891 failed only because the macOS hosted runner was never assigned - capacity, not code). shim run **41939156905** GREEN, kernel from 41937851780, cmdline = the v31 one (cpus=8 ... gauguingpu=2).
+- Image: **D:\hackios\out\shim-v32\shim\out\shim-boot.img** (17,530,880 B), payload.bin alongside. Payload string check: 0111 diagnostics present ("GAUGUIN CP: intr cold/cleared/after release", "ib1=%#x/%#x ib2=... crash=%#x", CB1/SMR2 + GFSR dumps).
+- Next: `fastboot boot` v32 and pull the log; the v26 judgment block below still applies, plus 0111: read the three intr values (cold / after W1C clear / after release) and, on a stuck ring, CB1 FSR/FAR/TTBR + GFSR/GFSYNR0/1. If 0x80 returns after a verified zero latch it is a fresh 0->1 fault; an SMMU translation/permission fault explains "illegal instruction with zero fetch", otherwise the SQE ucode itself is rejecting the release.
+
 ### >>> UPDATE 2026-11-04 FINAL: 0107 REWRITTEN FROM THE DEVICE'S OWN KERNEL - THE ARG VECTOR WAS NEVER WRONG; x7=0 + x0=1 RESUME ARE THE FIX; bearssl VENDORED (build was dying on a 502, not on our code) <<<
 **RETRACTION of the section below.** "The PAS argument vector has been wrong since 0105" is FALSE. It was inferred from fajita's log; the device's own kernel says the opposite. Source of truth fetched this session (proxy 7890) from `MiCode/Xiaomi_Kernel_OpenSource` branch **gauguin-r-oss** (the kernel this phone shipped) into `%TEMP%\gauguin-scm`:
 - `drivers/firmware/qcom_scm-64.c:287-351` - `__qcom_scm_pas_init_image(peripheral, metadata_phys)`: `desc.args[0] = peripheral; desc.args[1] = metadata_phys; arginfo = QCOM_SCM_ARGS(2, VAL, RW)` = **0x82, PAS id FIRST**; `__qcom_scm_pas_mem_setup(peripheral, addr, size)`: `SCM_ARGS(3)` = 0x3, (pas, addr, size); `pas_auth_and_reset(pas)` / `pas_shutdown(pas)`: `SCM_ARGS(1)` = 0x1. Mainline `drivers/firmware/qcom/qcom_scm.c` is byte-identical in ordering.
