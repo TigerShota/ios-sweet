@@ -11,16 +11,17 @@ index cafebabe..deadbeef 100644
 +	 * Linux _a6xx_check_idle style firmware-level idle check after
 +	 * SET_SECURE_MODE. RPTR advancing only means the ring was read - the
 +	 * firmware may still sit in the secure domain and silently swallow
-+	 * memory operations. Linux checks RBBM_STATUS (0x840) for the CX
-+	 * master idle bit and RBBM_INT_0_STATUS (0x848) for HANG_DETECT; we
-+	 * also sweep CP_SMMU and status0 to capture any secure-mode flag.
++	 * memory operations. Linux checks RBBM_STATUS (dw 0x210, byte 0x840)
++	 * for the CX master idle bit and RBBM_INT_0_STATUS (dw 0x212, byte
++	 * 0x848) for HANG_DETECT; we also sweep CP_SMMU and status0 to capture
++	 * any secure-mode flag.
 +	 */
 +	{
 +		uint32_t rbbm_st, rbbm_int0, smmu, status0;
-+		rbbm_st = gg_rd(gg.gpu, GR(0x840u));
-+		rbbm_int0 = gg_rd(gg.gpu, GR(0x848u));
-+		smmu = gg_rd(gg.gpu, GR(0x8c8u));
-+		status0 = gg_rd(gg.gpu, GR(0x820u));
++		rbbm_st = gg_rd(gg.gpu, GR(0x210u));
++		rbbm_int0 = gg_rd(gg.gpu, GR(0x212u));
++		smmu = gg_rd(gg.gpu, GR(0x232u));
++		status0 = gg_rd(gg.gpu, GR(0x208u));
 +		printf("GAUGUIN CP: post-secmode idle rbbm=%#x int0=%#x"
 +		    " status0=%#x cp_smmu=%#x\n",
 +		    rbbm_st, rbbm_int0, status0, smmu);
@@ -37,7 +38,7 @@ index cafebabe..deadbeef 100644
 +		/* GP registers around CP_SECURE_MODE / CP_SMMU */
 +		{
 +			unsigned dw;
-+			for (dw = 0x81eu; dw <= 0x832u; dw++) {
++			for (dw = 0x207u; dw <= 0x20cu; dw++) {
 +				printf("GAUGUIN CP: gp+0x%03x = %#x\n",
 +				    dw, gg_rd(gg.gpu, GR(dw)));
 +			}
