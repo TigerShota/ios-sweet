@@ -2,7 +2,14 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-05 (LATEST): v36/v37 BOOTED - **GPU IS DRIVEN** (0112 CONFIRMED ON HARDWARE); BT PROBE DIES ON THE FIRST GCC READ, v38 BOOTS WITH BT DISABLED <<<
+### >>> UPDATE 2026-11-05 (LATEST): v39 (0114) PANICS IN OUR OWN CACHE FLUSH, NOT IN THE GPU - `flush_dcache64()` GOT A PHYSICAL ADDRESS WITH `phys=FALSE` <<<
+- xnu run 41973837009 green (0114 applied), shim run 41977092366 green, image `D:\hackios\out\shim-v39\shim\out\shim-boot.img` (17,547,264 B), 4/4 step22 payload marks. Log `D:\hackios\temp\v39.txt` (raw `v39.bin`, 132 KB, pulled with `skip=<userdata blocks>-1025`; note PowerShell `>` mangles binary - use `Start-Process -RedirectStandardOutput`).
+- Boot panicked at `gauguin_cp_mem_setup` right after `GAUGUIN CP: gap pte0=0 (want 0)`. PC `0xfffffe00074d67f4` = `_FlushPoC_DcacheRegion+0x1c` (`dc civac`), caller `flush_dcache`+0xa4 <- `gauguin_cp_mem_setup+0x548`. ESR `0x96000145` = write, translation fault level 1.
+- Cause: `flush_dcache64(addr, len, phys)`; with `phys=FALSE` the address is a **VA** (`kvtophys` then `FlushPoC_DcacheRegion(va)`). 0114 passed `cp_pa` and `target_pa` (physical) with `FALSE` -> `dc civac` on an unmapped VA.
+- Fix in 0114: `flush_dcache64((addr64_t)cpmem, CPMEM_SIZE, FALSE)` and `flush_dcache64((addr64_t)target, TARGET_SIZE, FALSE)` (VA, cached writes) - the flush after `bzero(target)`/PTE writes keeps `..., TRUE` on the PA.
+- Everything before the crash is healthy: L2/rpmh/HFI/GX/SMMU all up, `rbbm_status=0x1`, `GX ALIVE`, CP page tables written. Step 22 has never actually run yet - the next boot answers it.
+
+### >>> UPDATE 2026-11-05 (superseded): v36/v37 BOOTED - **GPU IS DRIVEN** (0112 CONFIRMED ON HARDWARE); BT PROBE DIES ON THE FIRST GCC READ, v38 BOOTS WITH BT DISABLED <<<
 - **GPU: 0112 is the fix.** v36 log (recovery pull, 2240 lines) shows the full ladder:
   `sqe_cntl=0x1` -> `ME_INIT+WAI submitted (wptr=12)` -> **`ME_INIT RETIRED (rptr=12 wptr=12)`** -> **`SET_SECURE_MODE RETIRED (rptr=17 reg=0x11 wptr=17)`** -> `rptr shadow=17` -> `post cp_status1=0x1000000`, `hw_fault=0`, and **no CB1 `fsr=0x408` anywhere**. The `PTE_UNPRIVILEGED (1<<6)` on the SQE page (0xEC3) fixed the permission fault: the CP now executes our packets. One cosmetic WARN stays: `write FAIL dw=0x50b got=0x2f7fff want=0xffffffff` is the flaky-register path that continues by design.
 - **BT: the probe panics on the very first GCC access.** v36 stopped at `gcc mapped=1 tlmm mapped=1` with no cold line (no flush existed between the reads). v37 (same kernel, per-register flush) stopped at exactly the same place and printed **zero** `GAUGUIN BT: read ...` lines, so the abort is the *first* read, GCC `QUPV3_WRAP0_VOTE` @0x52000 - before any halt or RCG register. The whole iOS userland (SpringBoard, backboardd, bluetoothd...) was alive at 45 s, so the BT thread is the only suspect. Log: `D:\hackios\temp\v37.txt` (2228 lines).

@@ -88,7 +88,7 @@
 +			cp_wr64(CPMEM_L3T + 8u * i,
 +			    (target_pa + 0x1000u * i) | PTE_PAGE_NC);
 +		}
-+		flush_dcache64((addr64_t)cp_pa, CPMEM_SIZE, FALSE);
++		flush_dcache64((addr64_t)cpmem, CPMEM_SIZE, FALSE);
 +		printf("GAUGUIN CP: target pa=%#llx va=%#x %ux%u pitch=%u"
 +		    " pte0=%#x\n", target_pa, CP_VA_TARGET, TARGET_W, TARGET_H,
 +		    TARGET_PITCH, gm_rd32_raw(CPMEM_L3T));
@@ -204,7 +204,7 @@
 +		printf("GAUGUIN CP: step22 %s (rptr=%u reg=%#x wptr=%u)\n",
 +		    (rptr == wptr || rreg == wptr) ? "RETIRED" : "STUCK",
 +		    rptr, rreg, wptr);
-+		flush_dcache64((addr64_t)target_pa, TARGET_SIZE, FALSE);
++		flush_dcache64((addr64_t)target, TARGET_SIZE, FALSE);
 +		printf("GAUGUIN CP: step22 px top=%#x mid=%#x bot=%#x ev=%#x/%#x\n",
 +		    *(volatile uint32_t *)(target + 16u),
 +		    *(volatile uint32_t *)(target + TARGET_PITCH * 255u + 4u),
