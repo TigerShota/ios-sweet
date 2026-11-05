@@ -1,0 +1,219 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1204,6 +1204,41 @@ gauguin_gx_pdc_rsc(void)
+ #define CP_VA_RING       0x40000000u
+ #define CP_VA_SQE        0x40010000u
+ #define CP_VA_SCRATCH    0x40020000u
++
++/* Step 22 target: a 512x512 BGRA buffer the 2D pipe fills with three colour
++ * bands, in its own LPAE window behind the third (unused) L2 entry. Its L3
++ * table lives in the 32 KiB tail of cpmem that the ring/SQE/scratch windows
++ * never reach. */
++#define CPMEM_L3T        0x18000u
++#define CP_VA_TARGET     0x40200000u
++#define TARGET_W         512u
++#define TARGET_H         512u
++#define TARGET_PITCH     2048u
++#define TARGET_SIZE      (TARGET_PITCH * TARGET_H)
++
++/* CP opcodes and a6xx 2D register numbers, all from the redwood reference
++ * (out/refs/willow-redwood_adreno.c, step 22). a615 belongs to the same
++ * a6xx block family, so the 2D pipe is addressed with the same numbers. */
++#define CP_WAIT_FOR_IDLE     0x26u
++#define CP_BLIT              0x2cu
++#define CP_EVENT_WRITE       0x46u
++#define CP_SET_MARKER        0x65u
++#define RB_CCU_CNTL          0x8e07u
++#define GRAS_2D_BLIT_CNTL    0x8400u
++#define GRAS_2D_DST_TL       0x8405u
++#define GRAS_2D_DST_BR       0x8406u
++#define RB_2D_BLIT_CNTL      0x8c00u
++#define RB_2D_PIXEL_CNTL     0x8c01u
++#define RB_2D_DST_INFO       0x8c17u
++#define RB_2D_DST            0x8c18u
++#define RB_2D_DST_PITCH      0x8c1au
++#define RB_2D_SRC_SOLID_C0   0x8c2cu
++#define SP_2D_DST_FORMAT     0xacc0u
++#define FORMAT_8888          0x30u
++#define BLIT_SOLID_8888      (1u << 7 | FORMAT_8888 << 8 | 0xfu << 20 | 0x10u << 24)
++#define DST_BGRA_LINEAR      (FORMAT_8888 | 1u << 10)
++#define EVENT_FLUSH_COLOR    0x1du
++#define EVENT_CACHE_FLUSH    0x04u
+ #define SQE_DWORDS       8066u     /* incl. the container dword */
+ #define GG_CB1           1
+ #define GG_ASID1         2u
+@@ -1229,6 +1264,8 @@ gauguin_gx_pdc_rsc(void)
+ 
+ static vm_offset_t cpmem;
+ static uint64_t cp_pa;
++static vm_offset_t target;
++static uint64_t target_pa;
+ 
+ static uint32_t
+ gm_rd32_raw(uint32_t off)
+@@ -1308,6 +1345,46 @@ gauguin_cp_mem_setup(void)
+ 	printf("GAUGUIN CP: gap pte0=%#x (want 0)\n", val);
+ 	(void)sweet_log_flush_now();
+ 
++	/* Step 22 target: 1 MiB of WCOMB memory the 2D pipe will fill.
++	 * L2 entry 1 (VA 0x40200000) points at the tail L3 table, whose 256
++	 * pages carry the same NC RW attributes as the ring. */
++	{
++		vm_offset_t tkva = 0;
++		ppnum_t tpn = 0;
++
++		kr = kmem_alloc_contig(kernel_map, &tkva, TARGET_SIZE, 0,
++		    0xffffffffu, 0u, 0u, 1u);
++		if (kr != KERN_SUCCESS) {
++			printf("GAUGUIN CP: target alloc failed %d\n", kr);
++			(void)sweet_log_flush_now();
++			return;
++		}
++		tpn = pmap_find_phys(kernel_pmap, (addr64_t)tkva);
++		if (!tpn) {
++			printf("GAUGUIN CP: target has no phys page\n");
++			(void)sweet_log_flush_now();
++			return;
++		}
++		target_pa = ptoa_64(tpn);
++		for (i = 0; i < TARGET_SIZE / PAGE_SIZE; i++) {
++			pmap_set_cache_attributes(tpn + i, VM_WIMG_WCOMB);
++		}
++		flush_dcache64((addr64_t)target_pa, TARGET_SIZE, TRUE);
++		target = tkva;
++		bzero((void *)target, TARGET_SIZE);
++		cp_wr64(CPMEM_L2 + 8u * ((CP_VA_TARGET >> 21) & 0x1ffu),
++		    (cp_pa + CPMEM_L3T) | PTE_TABLE);
++		for (i = 0; i < TARGET_SIZE / PAGE_SIZE; i++) {
++			cp_wr64(CPMEM_L3T + 8u * i,
++			    (target_pa + 0x1000u * i) | PTE_PAGE_NC);
++		}
++		flush_dcache64((addr64_t)cp_pa, CPMEM_SIZE, FALSE);
++		printf("GAUGUIN CP: target pa=%#llx va=%#x %ux%u pitch=%u"
++		    " pte0=%#x\n", target_pa, CP_VA_TARGET, TARGET_W, TARGET_H,
++		    TARGET_PITCH, gm_rd32_raw(CPMEM_L3T));
++		(void)sweet_log_flush_now();
++	}
++
+ 	/* SQE microcode: skip the container dword, copy, read back every word. */
+ 	for (i = 1; i < SQE_DWORDS; i++) {
+ 		*(volatile uint32_t *)(cpmem + CPMEM_SQE + 4u * (i - 1u)) =
+@@ -1512,6 +1589,15 @@ gg_pkt7(uint32_t opcode, uint32_t cnt)
+ 	    ((opcode & 0x7fu) << 16) | (gg_parity(opcode) << 23);
+ }
+ 
++/* PM4 type-4 header: one dword written to a 3D/2D core register. Same bit
++ * layout as the reference's ring_register(). */
++static uint32_t
++gg_pkt4(uint32_t number)
++{
++	return (4u << 28) | 1u | (gg_parity(1u) << 7) |
++	    ((number & 0x3fffu) << 8) | (gg_parity(number) << 27);
++}
++
+ /*
+  * One SCM SMC64 call: x0 fn, x1 arginfo, x2-x4 args, x6 a6, x7 = 0.
+  * Interrupted rules from the device's own kernel (qcom_scm-64.c) and
+@@ -2228,6 +2314,102 @@ gauguin_cp_start(void)
+ 	printf("GAUGUIN CP: hw_fault=%#x\n", val);
+ 	(void)sweet_log_flush_now();
+ 
++	/*
++	 * ---- step 22 (redwood reference): the 2D pipe paints three bands
++	 * into the target buffer, then flushes its caches. This is the first
++	 * packet stream in this port that makes the core *draw* something.
++	 * Packet order is the reference's ring_fill/step_frame verbatim.
++	 */
++	{
++		uint32_t n = 17u, k;
++		const uint32_t band[3][3] = {
++			{ 255u, 128u, 0u },     /* orange */
++			{ 255u, 255u, 255u },   /* white */
++			{ 0u, 128u, 255u },     /* blue */
++		};
++		const uint32_t top[3] = { 0u, 170u, 340u };
++		const uint32_t bot[3] = { 170u, 340u, 512u };
++
++		ring[n++] = gg_pkt7(CP_SET_MARKER, 1u);
++		ring[n++] = 12u;                /* 2D blits follow */
++		ring[n++] = gg_pkt4(RB_CCU_CNTL);
++		ring[n++] = 0x10000004u;
++		for (k = 0; k < 3u; k++) {
++			ring[n++] = gg_pkt4(GRAS_2D_DST_TL);
++			ring[n++] = top[k] << 16;
++			ring[n++] = gg_pkt4(GRAS_2D_DST_BR);
++			ring[n++] = (TARGET_W - 1u) | ((bot[k] - 1u) << 16);
++			ring[n++] = gg_pkt4(RB_2D_SRC_SOLID_C0);
++			ring[n++] = band[k][0];
++			ring[n++] = gg_pkt4(RB_2D_SRC_SOLID_C0 + 1u);
++			ring[n++] = band[k][1];
++			ring[n++] = gg_pkt4(RB_2D_SRC_SOLID_C0 + 2u);
++			ring[n++] = band[k][2];
++			ring[n++] = gg_pkt4(RB_2D_SRC_SOLID_C0 + 3u);
++			ring[n++] = 255u;
++			ring[n++] = gg_pkt4(RB_2D_BLIT_CNTL);
++			ring[n++] = BLIT_SOLID_8888;
++			ring[n++] = gg_pkt4(GRAS_2D_BLIT_CNTL);
++			ring[n++] = BLIT_SOLID_8888;
++			ring[n++] = gg_pkt4(SP_2D_DST_FORMAT);
++			ring[n++] = 1u | (FORMAT_8888 << 3) | (0xfu << 12);
++			ring[n++] = gg_pkt4(RB_2D_PIXEL_CNTL);
++			ring[n++] = 0u;
++			ring[n++] = gg_pkt4(RB_2D_DST_INFO);
++			ring[n++] = DST_BGRA_LINEAR;
++			ring[n++] = gg_pkt4(RB_2D_DST);
++			ring[n++] = (uint32_t)(CP_VA_TARGET & 0xffffffffu);
++			ring[n++] = gg_pkt4(RB_2D_DST + 1u);
++			ring[n++] = 0u;
++			ring[n++] = gg_pkt4(RB_2D_DST_PITCH);
++			ring[n++] = TARGET_PITCH >> 6;
++			ring[n++] = gg_pkt7(CP_WAIT_FOR_IDLE, 0u);
++			ring[n++] = gg_pkt7(CP_BLIT, 1u);
++			ring[n++] = 3u;         /* the 2D engine's one operation */
++		}
++		ring[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++		ring[n++] = EVENT_FLUSH_COLOR;
++		ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x100u) & 0xffffffffu);
++		ring[n++] = 0u;
++		ring[n++] = 0x0c0c0c0cu;
++		ring[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++		ring[n++] = EVENT_CACHE_FLUSH;
++		ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x110u) & 0xffffffffu);
++		ring[n++] = 0u;
++		ring[n++] = 0x0d0e0d0eu;
++		ring[n++] = gg_pkt7(CP_WAIT_FOR_IDLE, 0u);
++		printf("GAUGUIN CP: step22 %u dwords, target %#x\n", n, CP_VA_TARGET);
++		(void)sweet_log_flush_now();
++		__asm__ volatile("dmb oshst" ::: "memory");
++		wptr = n;
++		gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wptr);
++		for (i = 0; i < 3000; ++i) {
++			flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
++			rptr = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
++			rreg = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++			if (rptr == wptr || rreg == wptr) {
++				break;
++			}
++			delay(1000);
++			if ((i % 50) == 49) {
++				printf("GAUGUIN CP: step22 waiting rptr=%u wptr=%u\n",
++				    rptr, wptr);
++				(void)sweet_log_flush_now();
++			}
++		}
++		printf("GAUGUIN CP: step22 %s (rptr=%u reg=%#x wptr=%u)\n",
++		    (rptr == wptr || rreg == wptr) ? "RETIRED" : "STUCK",
++		    rptr, rreg, wptr);
++		flush_dcache64((addr64_t)target_pa, TARGET_SIZE, FALSE);
++		printf("GAUGUIN CP: step22 px top=%#x mid=%#x bot=%#x ev=%#x/%#x\n",
++		    *(volatile uint32_t *)(target + 16u),
++		    *(volatile uint32_t *)(target + TARGET_PITCH * 255u + 4u),
++		    *(volatile uint32_t *)(target + TARGET_PITCH * 500u + 4u),
++		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x100u),
++		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x110u));
++		(void)sweet_log_flush_now();
++	}
++
+ 	/* Release PAS 13 (fajita console76 shuts down after the test). */
+ 	{
+ 		int64_t st = gauguin_scm_call(ZAP_FN_SHUTDOWN, 0x1u,
