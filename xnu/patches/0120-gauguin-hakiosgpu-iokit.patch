@@ -2,7 +2,7 @@ diff --git a/xnu/iokit/Kernel/arm/SweetAdreno.cpp b/xnu/iokit/Kernel/arm/SweetAd
 new file mode 100644
 --- /dev/null
 +++ b/xnu/iokit/Kernel/arm/SweetAdreno.cpp
-@@ -0,0 +1,678 @@
+@@ -0,0 +1,690 @@
 +/*
 + * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
 + * Ported from yfl520/hackios-raphael (MIT license), adapted for
@@ -247,6 +247,7 @@ new file mode 100644
 +	uint32_t            fBufferCount;
 +	uint32_t            fNextQueue;
 +	uint32_t            fSubmits;
++	task_t              fTask;
 +
 +	struct gpu_buffer * buffer(uint32_t handle);
 +	IOReturn             gemNew(struct msm_gem_new * request);
@@ -255,6 +256,7 @@ new file mode 100644
 +	IOReturn             surfaceBuffer(struct hakios_surface * request);
 +	IOReturn             gemClose(uint32_t handle);
 +
++	virtual bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
 +	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
 +	virtual void free(void) APPLE_KEXT_OVERRIDE;
 +	virtual IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
@@ -265,6 +267,16 @@ new file mode 100644
 +};
 +
 +OSDefineMetaClassAndStructors(SweetAdrenoUserClient, IOUserClient);
++
++bool
++SweetAdrenoUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
++{
++	if (!IOUserClient::initWithTask(owningTask, securityID, type)) {
++		return false;
++	}
++	fTask = owningTask;
++	return true;
++}
 +
 +bool
 +SweetAdrenoUserClient::start(IOService * provider)
@@ -682,8 +694,8 @@ new file mode 100644
 +}
 +
 diff --git a/xnu/iokit/conf/files.arm64 b/xnu/iokit/conf/files.arm64
---- a/xnu/iokit/conf/files.arm64
-+++ b/xnu/iokit/conf/files.arm64
+--- --- a/xnu/iokit/conf/files.arm64
++++ +++ b/xnu/iokit/conf/files.arm64
 @@ -15,6 +15,7 @@
  iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
  iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
@@ -692,4 +704,3 @@ diff --git a/xnu/iokit/conf/files.arm64 b/xnu/iokit/conf/files.arm64
  iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
-
