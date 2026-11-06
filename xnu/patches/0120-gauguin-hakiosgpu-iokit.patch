@@ -2,7 +2,7 @@ diff --git a/xnu/iokit/Kernel/arm/SweetAdreno.cpp b/xnu/iokit/Kernel/arm/SweetAd
 new file mode 100644
 --- /dev/null
 +++ b/xnu/iokit/Kernel/arm/SweetAdreno.cpp
-@@ -0,0 +1,673 @@
+@@ -0,0 +1,678 @@
 +/*
 + * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
 + * Ported from yfl520/hackios-raphael (MIT license), adapted for
@@ -89,10 +89,14 @@ new file mode 100644
 +struct msm_gem_submit {
 +	uint32_t flags, fence, nr_bos, nr_cmds;
 +	uint64_t bos, cmds;
++	int32_t fence_fd;
++	uint32_t queueid;
++	uint64_t in_syncobjs, out_syncobjs;
++	uint32_t nr_in_syncobjs, nr_out_syncobjs, syncobj_stride, pad;
 +};
 +
 +struct msm_wait_fence {
-+	uint32_t fence, pad;
++	uint32_t fence, flags;
 +	struct msm_timespec timeout;
 +};
 +
@@ -676,14 +680,16 @@ new file mode 100644
 +		gGPULock = IOLockAlloc();
 +	}
 +}
-
++
+diff --git a/xnu/iokit/conf/files.arm64 b/xnu/iokit/conf/files.arm64
 --- a/xnu/iokit/conf/files.arm64
 +++ b/xnu/iokit/conf/files.arm64
 @@ -15,6 +15,7 @@
  iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
  iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
  iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
-+iokit/Kernel/arm/SweetAdreno.cpp                               optional iokitcpp
++iokit/Kernel/arm/SweetAdreno.cpp                                 optional iokitcpp
  iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+
