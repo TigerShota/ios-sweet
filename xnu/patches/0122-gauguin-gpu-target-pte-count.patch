@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1374,14 +1374,24 @@ gauguin_cp_mem_setup(void)
+ 		bzero((void *)target, TARGET_SIZE);
+ 		cp_wr64(CPMEM_L2 + 8u * ((CP_VA_TARGET >> 21) & 0x1ffu),
+ 		    (cp_pa + CPMEM_L3T) | PTE_TABLE);
+-		for (i = 0; i < TARGET_SIZE / PAGE_SIZE; i++) {
++		/*
++		 * The GPU walks 4 KiB LPAE pages, but XNU's PAGE_SIZE is 16 KiB
++		 * on this port: using TARGET_SIZE / PAGE_SIZE here wrote only
++		 * 64 of the 256 PTEs, so everything past 256 KiB of the target
++		 * was unmapped. v53's blit wrote rows 0..127 correctly and then
++		 * took a stage-1 translation fault at 0x40246080 (exactly the
++		 * first access past 0x4023ffff). Count/step the GPU's 4 KiB
++		 * granule explicitly.
++		 */
++		for (i = 0; i < TARGET_SIZE / 0x1000u; i++) {
+ 			cp_wr64(CPMEM_L3T + 8u * i,
+ 			    (target_pa + 0x1000u * i) | PTE_PAGE_NC);
+ 		}
+ 		flush_dcache64((addr64_t)cpmem, CPMEM_SIZE, FALSE);
+ 		printf("GAUGUIN CP: target pa=%#llx va=%#x %ux%u pitch=%u"
+-		    " pte0=%#x\n", target_pa, CP_VA_TARGET, TARGET_W, TARGET_H,
+-		    TARGET_PITCH, gm_rd32_raw(CPMEM_L3T));
++		    " pte0=%#x pte255=%#x\n", target_pa, CP_VA_TARGET,
++		    TARGET_W, TARGET_H, TARGET_PITCH, gm_rd32_raw(CPMEM_L3T),
++		    gm_rd32_raw(CPMEM_L3T + 8u * 255u));
+ 		(void)sweet_log_flush_now();
+ 	}
+ 
+@@ -2501,6 +2511,15 @@ gauguin_cp_start(void)
+ 			}
+ 			ring[n++] = gg_pkt7(CP_BLIT, 1u);
+ 			ring[n++] = 3u;         /* the 2D engine's one operation */
++			/*
++			 * a619: CP_BLIT is pipelined - the front-end keeps
++			 * dispatching type-4 writes while the 2D pipe runs, so
++			 * the next band's register writes raced band 0's blit
++			 * (v53 read back band 2's GRAS/SRC values after the
++			 * stall). Wait for the 2D pipe to go idle before the
++			 * next band reprograms the same registers.
++			 */
++			ring[n++] = gg_pkt7(CP_WAIT_FOR_IDLE, 0u);
+ 			/* Stage fence 4: CP_BLIT of band 0 returned. */
+ 			if (k == 0u) {
+ 				ring[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
