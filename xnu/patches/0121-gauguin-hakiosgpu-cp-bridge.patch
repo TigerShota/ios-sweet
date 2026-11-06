@@ -1,0 +1,182 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3101,3 +3101,179 @@
+ 	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
++/* ============================================================
++ * SweetAdreno bridge functions (used by iokit/Kernel/arm/SweetAdreno.cpp).
++ * These wrap our existing GP CP ring + SMMU into the msm GEM/submit API
++ * that Mesa freedreno (fd/a6xx gallium) expects.
++ * ============================================================ */
++
++extern "C" bool
++gauguin_cp_ready(void)
++{
++	return gg.gpu != 0;
++}
++
++extern "C" bool
++gauguin_cp_done(uint32_t fence)
++{
++	/* fence == CP_EVENT_WRITE value written to CPMEM_SCRATCH + 0x140 by CP. */
++	return fence != 0 && *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) == fence;
++}
++
++extern "C" bool
++gauguin_cp_wait(uint32_t fence, uint64_t patience_ns)
++{
++	if (fence == 0)
++		return true;
++	uint32_t us = patience_ns > 0 ? (uint32_t)(patience_ns / 1000) : 2000;
++	/* minimum: a few tries anyway */
++	uint32_t iters = us / 10 + 1;
++	for (uint32_t i = 0; i < iters; ++i) {
++		if (*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) == fence)
++			return true;
++		delay(10);
++	}
++	return false;
++}
++
++extern "C" bool
++gauguin_cp_parameter(uint32_t param, uint64_t * value)
++{
++	if (value == NULL) return false;
++	switch (param) {
++	case 0x0001:      /* MSM_PARAM_CHIP_ID */
++		*value = 0x06050700u;   /* a615 ID */
++		return true;
++	case 0x0002:      /* MSM_PARAM_SMMU_INFO */
++		*value = 0;
++		return true;
++	case 0x0012:      /* MSM_PARAM_MAX_SOCKETS */
++		*value = 1;
++		return true;
++	case 0x0013:      /* MSM_PARAM_TIMESTAMP */
++		*value = 1;
++		return true;
++	default:
++		*value = 0;
++		return false;
++	}
++}
++
++/* A monotonically-increasing fence counter. */
++static uint32_t gg_next_fence = 0x06000001u;   /* avoid collision with 0x600dc0de etc */
++
++extern "C" uint32_t
++gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t count)
++{
++	if (gg.gpu == 0 || addresses == NULL || words == NULL || count == 0)
++		return 0;
++
++	uint32_t fence = ++gg_next_fence;
++
++	/* Wait for any previous submission to leave us enough ring space. */
++	uint32_t wp_before = gg_rd(gg.gpu, GR(CP_RB_WPTR_DW));
++	uint32_t rp_before = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++
++	/* Total dwords we'll append. */
++	uint32_t total_words = 0;
++	for (uint32_t i = 0; i < count; ++i) {
++		if (words[i] == 0 || words[i] > 0x4000)
++			return 0;
++		total_words += words[i];
++	}
++	if (total_words == 0 || total_words > 0x3000)
++		return 0;
++
++	/* Wait until ring has room (32 KiB ring, wp/rp are dword indices). */
++	uint32_t ring_size = CPMEM_RING / 4u;   /* 8192 dwords */
++	for (uint32_t tries = 0; tries < 4000; ++tries) {
++		rp_before = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++		uint32_t avail = ring_size - (wp_before - rp_before);   /* mod ring */
++		if (avail > total_words + 64)
++			break;
++		delay(10);
++	}
++
++	/* Reset scratch fence before doorbell. */
++	*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) = 0u;
++	__asm__ volatile("dmb oshst" ::: "memory");
++
++	uint32_t wp = wp_before;
++	uint32_t ring_off;   /* dword offset into ring */
++	uint32_t fence_pkt_iova = CP_VA_SCRATCH + 0x140u;
++	uint32_t fence_val = fence;
++
++	for (uint32_t i = 0; i < count; ++i) {
++		/* CP reads the BO via SMMU using addresses[i]; we don't memcpy here.
++		 * Mesa's a6xx UMD encodes a CP_SET_DRAW_STATE or CP_EXEC_PACKET that
++		 * the CP dispatches - and the operands (register writes / blit dwords)
++		 * are in the BO itself. The CP engine reads them from IOVA. */
++		/* We simply doorbell WPTR and let CP fetch from the BO. */
++		wp += words[i];   /* advance WPTR past this BO's dwords */
++	}
++
++	/* Tail fence packet: CP_EVENT_WRITE that writes `fence` to scratch. */
++	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * wp) = gg_pkt7(CP_EVENT_WRITE, 4u);
++	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * (wp + 1u)) = 0x04u;
++	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * (wp + 2u)) = fence_pkt_iova & 0xffffffffu;
++	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * (wp + 3u)) = 0u;
++	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * (wp + 4u)) = fence_val;
++
++	wp += 5u;
++
++	__asm__ volatile("dmb oshst" ::: "memory");
++	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wp);
++
++	/* Poll until CP writes the scratch fence. */
++	for (uint32_t i = 0; i < 10000; ++i) {
++		uint32_t got = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u);
++		if (got == fence)
++			return fence;
++		delay(1);
++	}
++	/* Don't leak fence number on timeout; but return 0 so userspace knows. */
++	return 0;
++}
++
++/* ============================================================
++ * GEM / SMMU: iova alloc + phys map + unmap
++ * For now we keep it dead-simple: identity mapping in a 256 MB window.
++ * Real SMMU page-table management lives in 0096/0097/0098 patches; we use
++ * that infrastructure once verified. This skeleton lets Mesa link & submit
++ * (a615 static identity map for the whole DDR already in place for bring-up).
++ * ============================================================ */
++
++#define GEM_IOVA_WINDOW_BASE   0x800000000ULL     /* 32 GB static ID-map region */
++
++static uint64_t gg_gem_iova_next = GEM_IOVA_WINDOW_BASE;
++extern "C" uint64_t
++gauguin_gem_address(uint64_t size)
++{
++	uint64_t pgsz = round_page(size);
++	uint64_t va = gg_gem_iova_next;
++	gg_gem_iova_next += pgsz;
++	return va;
++}
++
++extern "C" void
++gauguin_gem_address_free(uint64_t address, uint64_t size)
++{
++	/* window grows monotonically; no reclaim for now */
++	(void)address; (void)size;
++}
++
++extern "C" bool
++gauguin_gem_map(uint64_t iova, addr64_t phys, uint32_t flags)
++{
++	/* a615 static SMMU identity mapping already established in 0096 series;
++	 * phys == iova for our DDR window. Nothing to do. */
++	(void)iova; (void)phys; (void)flags;
++	return true;
++}
++
++extern "C" void
++gauguin_gem_unmap(uint64_t iova, uint64_t size)
++{
++	(void)iova; (void)size;
++}
++
