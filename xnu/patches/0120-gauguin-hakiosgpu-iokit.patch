@@ -1,0 +1,684 @@
+diff --git a/xnu/iokit/Kernel/arm/SweetAdreno.cpp b/xnu/iokit/Kernel/arm/SweetAdreno.cpp
+new file mode 100644
+--- /dev/null
++++ b/xnu/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -0,0 +1,668 @@
++/*
++ * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
++ * Ported from yfl520/hackios-raphael (MIT license), adapted for
++ * gauguin (SM7225 / Adreno A615 / a6xx gallium family).
++ *
++ * This service exposes Linux msm DRM ioctl numbers as IOUserClient
++ * externalMethod selectors so that Mesa freedreno (fd/a6xx gallium)
++ * can submit CP ring commands to our already-working GP engine.
++ *
++ * Selectors are the low byte of Linux's DRM_COMMAND_BASE + request:
++ *   msm_gem_new        = 0x42   (DRM_IOCTL_MSM_GEM_NEW)
++ *   msm_gem_info       = 0x43
++ *   msm_gem_cpu_prep   = 0x44
++ *   msm_gem_cpu_fini   = 0x45
++ *   msm_gem_submit     = 0x46   <-- the one everyone wants
++ *   msm_wait_fence     = 0x47
++ *   msm_gem_madvise    = 0x48
++ *   submitqueue_new    = 0x4a
++ *   submitqueue_close  = 0x4b
++ *   submitqueue_query  = 0x4c
++ *   drm_gem_close      = 0x09
++ *   + two custom:
++ *   hakios_surface     = 0x7e   (IOSurface as a GP buffer)
++ *   hakios_show        = 0x7f   (pixels straight onto panel)
++ */
++
++#include <IOKit/IOLib.h>
++#include <IOKit/IOLocks.h>
++#include <IOKit/IOBufferMemoryDescriptor.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include <IOKit/IOService.h>
++#include <IOKit/IOMapper.h>
++#include <libkern/c++/OSObject.h>
++#include <sys/time.h>
++
++#include <sys/types.h>
++#include <sys/protosw.h>
++#include <kern/thread.h>
++
++/* ---- Structures matching Linux include/uapi/drm/msm_drm.h ---- */
++
++struct msm_timespec {
++	uint64_t tv_sec;
++	uint64_t tv_nsec;
++};
++
++struct msm_param {
++	uint32_t param;
++	uint64_t value;
++	uint32_t pad;
++};
++
++struct msm_gem_new {
++	uint64_t size;
++	uint32_t flags, handle;
++};
++
++struct msm_gem_info {
++	uint32_t handle, param;
++	uint64_t value, pad;
++};
++
++struct msm_gem_cpu_prep {
++	uint32_t handle, op, pad;
++	struct msm_timespec timeout;
++};
++
++struct msm_gem_submit_cmd {
++	uint32_t type, submit_idx, submit_offset, size, pad, nr_relocs;
++	uint64_t relocs;
++};
++
++struct msm_gem_submit_bo {
++	uint32_t flags, handle;
++	uint64_t presumed;
++};
++
++struct msm_gem_submit {
++	uint32_t flags, fence, nr_bos, nr_cmds;
++	uint64_t bos, cmds;
++};
++
++struct msm_wait_fence {
++	uint32_t fence, pad;
++	struct msm_timespec timeout;
++};
++
++struct msm_gem_madvise {
++	uint32_t handle, madv, retained;
++};
++
++struct msm_submitqueue {
++	uint32_t flags, prio, id;
++};
++
++struct msm_submitqueue_query {
++	uint64_t data;
++	uint32_t id, param, len, pad;
++};
++
++struct drm_gem_close {
++	uint32_t handle, pad;
++};
++
++struct hakios_surface {
++	uint32_t surface;                         /* IOSurface's port, given as an id */
++	uint32_t handle;                         /* kHakiosDescribe: 0xffffffff else: back */
++	uint64_t size;
++	uint32_t offset, rowBytes;
++	uint32_t width, height, pixelFormat, planes;
++};
++
++struct hakios_show {
++	uint64_t pixels;
++	uint32_t width, height, rowBytes, pad;
++};
++
++/* ---- Selectors ---- */
++
++#define kDrmGemClose            0x09
++#define kMsmGetParam            0x40
++#define kMsmSetParam            0x41
++#define kMsmGemNew              0x42
++#define kMsmGemInfo             0x43
++#define kMsmGemCpuPrep          0x44
++#define kMsmGemCpuFini          0x45
++#define kMsmGemSubmit           0x46
++#define kMsmWaitFence           0x47
++#define kMsmGemMadvise          0x48
++#define kMsmSubmitQueueNew      0x4a
++#define kMsmSubmitQueueClose    0x4b
++#define kMsmSubmitQueueQuery    0x4c
++#define kHakiosSurface         0x7e
++#define kHakiosShow            0x7f
++
++#define kHakiosDescribe        0xffffffffu
++
++#define MSM_INFO_GET_OFFSET     0
++#define MSM_INFO_GET_IOVA       1
++#define MSM_INFO_SET_NAME       2
++#define MSM_INFO_GET_FLAGS      5
++#define MSM_BO_GPU_READONLY     0x00000002
++#define MSM_PREP_NOSYNC         0x04
++#define MSM_SUBMIT_CMD_BUF      1
++#define MSM_SUBMIT_FENCE_FD_OUT 0x20000000
++
++/* ---- Tunables ---- */
++
++#define GPU_BUFFERS             4096            /* a client's, at most */
++#define GPU_BUFFER_MAX          (256u << 20)
++#define GPU_SUBMIT_CMDS         128
++#define GPU_SUBMIT_BOS          4096
++#define GPU_PATIENCE_MS         5000
++
++#define NSEC_PER_SEC            1000000000ULL
++#define NSEC_PER_MSEC           1000000ULL
++#define NSEC_PER_USEC           1000ULL
++
++static IOLock * gGPULock;
++static uint32_t gGPUReportedSubmits;
++
++/* ---- gpu_buffer ---- */
++
++struct gpu_buffer {
++	IOMemoryDescriptor * memory;     /* NULL: this handle is free */
++	uint8_t *            kernel;     /* kernel virtual address (IOBuffer CPU VA) */
++	uint64_t            address;     /* GPU virtual address (IOVA for SMMU) */
++	uint64_t            size;
++	uint32_t            handle;      /* handle index */
++	uint32_t            flags;
++	uint32_t            fence;       /* last fence value for submit */
++};
++
++/* ---- Forward declarations (defined in gauguin_gpu.c) ---- */
++
++extern bool gauguin_cp_ready(void);
++extern bool gauguin_cp_done(uint32_t fence);
++extern bool gauguin_cp_wait(uint32_t fence, uint64_t patience_ns);
++extern bool gauguin_cp_parameter(uint32_t param, uint64_t * value);
++extern uint32_t gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words,
++    uint32_t count);
++extern uint64_t gauguin_gem_address(uint64_t size);
++extern void gauguin_gem_address_free(uint64_t address, uint64_t size);
++extern bool gauguin_gem_map(uint64_t iova, addr64_t phys, uint32_t flags);
++extern void gauguin_gem_unmap(uint64_t iova, uint64_t size);
++
++/* ============================================================
++ * HakiosGPU IOService
++ * ============================================================ */
++
++class HakiosGPU : public IOService {
++	OSDeclareDefaultStructors(HakiosGPU);
++
++public:
++	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
++	virtual void stop(IOService * provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(HakiosGPU, IOService);
++
++bool
++HakiosGPU::start(IOService * provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty("IOUserClientClass", "SweetAdrenoUserClient");
++	setProperty("MetalPluginName", "");      /* not Metal yet; placeholder for future */
++	setName("HakiosGPU");
++	registerService();
++	IOLog("HakiosGPU: service registered\n");
++	return true;
++}
++
++void
++HakiosGPU::stop(IOService * provider)
++{
++	IOLog("HakiosGPU: stop\n");
++	super::stop(provider);
++}
++
++/* ============================================================
++ * SweetAdrenoUserClient
++ * ============================================================ */
++
++class SweetAdrenoUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(SweetAdrenoUserClient);
++
++public:
++	struct gpu_buffer * fBuffers;
++	uint32_t            fNextBuffer;
++	uint32_t            fBufferCount;
++	uint32_t            fNextQueue;
++	uint32_t            fSubmits;
++
++	struct gpu_buffer * buffer(uint32_t handle);
++	IOReturn             gemNew(struct msm_gem_new * request);
++	IOReturn             gemInfo(struct msm_gem_info * request);
++	IOReturn             submit(struct msm_gem_submit * request);
++	IOReturn             surfaceBuffer(struct hakios_surface * request);
++	IOReturn             gemClose(uint32_t handle);
++
++	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
++	virtual void free(void) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn clientMemoryForType(UInt32 type, IOOptionBits * options,
++	    IOMemoryDescriptor ** memory) APPLE_KEXT_OVERRIDE;
++	virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments * args,
++	    IOExternalMethodDispatch * dispatch, OSObject * target, void * reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetAdrenoUserClient, IOUserClient);
++
++bool
++SweetAdrenoUserClient::start(IOService * provider)
++{
++	if (!gauguin_cp_ready() || !IOUserClient::start(provider)) {
++		return false;
++	}
++	fBuffers = IONewZero(struct gpu_buffer, GPU_BUFFERS);
++	fNextBuffer = 0;
++	fBufferCount = 0;
++	fNextQueue = 0;
++	fSubmits = 0;
++	if (fBuffers == NULL) {
++		return false;
++	}
++	IOLockLock(gGPULock);
++	fSubmits = 0;
++	IOLockUnlock(gGPULock);
++	return true;
++}
++
++IOReturn
++SweetAdrenoUserClient::clientClose(void)
++{
++	/* free any remaining buffers */
++	for (uint32_t i = 0; i < GPU_BUFFERS; i++) {
++		struct gpu_buffer * b = &fBuffers[i];
++		if (b->memory != NULL) {
++			IOLockLock(gGPULock);
++			if (gauguin_cp_ready() && b->fence != 0) {
++				gauguin_cp_wait(b->fence, (uint64_t) GPU_PATIENCE_MS * NSEC_PER_MSEC);
++			}
++			if (gauguin_cp_ready() && b->address != 0) {
++				gauguin_gem_unmap(b->address, b->size);
++				gauguin_gem_address_free(b->address, b->size);
++			}
++			b->memory->release();
++			bzero(b, sizeof(*b));
++			fBufferCount--;
++			IOLockUnlock(gGPULock);
++		}
++	}
++	IOLog("SweetAdreno: clientClose, %u buffers left\n", fBufferCount);
++	return kIOReturnSuccess;
++}
++
++void
++SweetAdrenoUserClient::free(void)
++{
++	if (fBuffers != NULL) {
++		IODelete(fBuffers, struct gpu_buffer, GPU_BUFFERS);
++		fBuffers = NULL;
++	}
++	IOUserClient::free();
++}
++
++struct gpu_buffer *
++SweetAdrenoUserClient::buffer(uint32_t handle)
++{
++	if (handle == 0 || handle > GPU_BUFFERS || fBuffers[handle - 1].memory == NULL) {
++		return NULL;
++	}
++	return &fBuffers[handle - 1];
++}
++
++IOReturn
++SweetAdrenoUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options, IOMemoryDescriptor ** memory)
++{
++	struct gpu_buffer * b;
++
++	IOLockLock(gGPULock);
++	b = buffer(type);
++	if (b != NULL) {
++		b->memory->retain();
++		*memory = b->memory;
++		*options = 0;
++		IOLockUnlock(gGPULock);
++		return kIOReturnSuccess;
++	}
++	IOLockUnlock(gGPULock);
++	return kIOReturnBadArgument;
++}
++
++/* ---- gemNew: allocate a BO (phys contig + SMMU iova) ---- */
++
++IOReturn
++SweetAdrenoUserClient::gemNew(struct msm_gem_new * request)
++{
++	uint64_t size = round_page_64(request->size);
++	IOBufferMemoryDescriptor * memory;
++	struct gpu_buffer * b = NULL;
++	uint32_t handle_idx;
++	addr64_t phys;
++	IOByteCount length = 0;
++
++	if (size == 0 || size > GPU_BUFFER_MAX) {
++		return kIOReturnBadArgument;
++	}
++	memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMapWriteCombineCache,
++	    (vm_size_t) size, PAGE_SIZE);
++	if (memory == NULL) {
++		IOLog("SweetAdreno: no memory for BO %llu bytes\n", size);
++		return kIOReturnNoMemory;
++	}
++	/* Get physical address and map into SMMU */
++	phys = memory->getPhysicalSegment(0, &length, kIOMemoryMapperNone);
++	if (phys == 0) {
++		memory->release();
++		return kIOReturnNoMemory;
++	}
++	IOLockLock(gGPULock);
++	handle_idx = 0;
++	for (uint32_t n = 0; n < GPU_BUFFERS; n++) {
++		uint32_t h = (fNextBuffer + n) % GPU_BUFFERS;
++		if (fBuffers[h].memory == NULL) {
++			handle_idx = h;
++			b = &fBuffers[h];
++			break;
++		}
++	}
++	if (b == NULL) {
++		IOLockUnlock(gGPULock);
++		memory->release();
++		return kIOReturnNoMemory;
++	}
++	uint64_t iova = gauguin_gem_address(size);
++	if (iova == 0) {
++		IOLockUnlock(gGPULock);
++		memory->release();
++		return kIOReturnNoMemory;
++	}
++	if (!gauguin_gem_map(iova, phys, request->flags & MSM_BO_GPU_READONLY)) {
++		gauguin_gem_address_free(iova, size);
++		IOLockUnlock(gGPULock);
++		memory->release();
++		return kIOReturnNoMemory;
++	}
++	bzero(b, sizeof(*b));
++	b->memory = memory;
++	b->kernel = (uint8_t *) memory->getBytesNoCopy();
++	b->address = iova;
++	b->size = size;
++	b->flags = request->flags;
++	b->handle = handle_idx + 1;
++	fNextBuffer = handle_idx + 1;
++	fBufferCount++;
++	request->handle = handle_idx + 1;
++	IOLockUnlock(gGPULock);
++	return kIOReturnSuccess;
++}
++
++/* ---- gemInfo: return IO of a BO ---- */
++
++IOReturn
++SweetAdrenoUserClient::gemInfo(struct msm_gem_info * request)
++{
++	struct gpu_buffer * b;
++
++	IOLockLock(gGPULock);
++	b = buffer(request->handle);
++	if (b == NULL) {
++		IOLockUnlock(gGPULock);
++		return kIOReturnBadArgument;
++	}
++	switch (request->param) {
++	case MSM_INFO_GET_IOVA:
++		request->value = b->address;
++		break;
++	case MSM_INFO_GET_OFFSET:
++		request->value = 0;
++		break;
++	default:
++		request->value = 0;
++		break;
++	}
++	IOLockUnlock(gGPULock);
++	return kIOReturnSuccess;
++}
++
++/* ---- submit: MSM_SUBMIT_CMD_BUF = 1, iova-based command buffers ---- */
++
++IOReturn
++SweetAdrenoUserClient::submit(struct msm_gem_submit * request)
++{
++	struct msm_gem_submit_bo * bos = NULL;
++	struct msm_gem_submit_cmd * cmds = NULL;
++	uint64_t addresses[GPU_SUBMIT_CMDS];
++	uint32_t words[GPU_SUBMIT_CMDS], count = 0;
++	IOReturn ret = kIOReturnBadArgument;
++
++	if (request->nr_cmds == 0 || request->nr_cmds > GPU_SUBMIT_CMDS ||
++	    request->nr_bos == 0 || request->nr_bos > GPU_SUBMIT_BOS) {
++		return kIOReturnBadArgument;
++	}
++	bos = IONew(struct msm_gem_submit_bo, request->nr_bos);
++	cmds = IONew(struct msm_gem_submit_cmd, request->nr_cmds);
++	if (bos == NULL || cmds == NULL) {
++		ret = kIOReturnNoMemory;
++		goto out;
++	}
++	if (copyin((user_addr_t) request->bos, bos,
++	    request->nr_bos * sizeof(*bos)) != 0 ||
++	    copyin((user_addr_t) request->cmds, cmds,
++	    request->nr_cmds * sizeof(*cmds)) != 0) {
++		ret = kIOReturnVMError;
++		goto out;
++	}
++	IOLockLock(gGPULock);
++	for (uint32_t i = 0; i < request->nr_cmds; i++) {
++		struct gpu_buffer * b;
++
++		if (cmds[i].type != MSM_SUBMIT_CMD_BUF) {
++			continue;
++		}
++		if (cmds[i].submit_idx >= request->nr_bos ||
++		    cmds[i].submit_offset & 3 || cmds[i].size & 3 ||
++		    cmds[i].nr_relocs != 0) {
++			IOLockUnlock(gGPULock);
++			IOLog("SweetAdreno: bad cmd %u off=%u size=%u relocs=%u\n",
++			    i, cmds[i].submit_offset, cmds[i].size, cmds[i].nr_relocs);
++			goto out;
++		}
++		b = buffer(bos[cmds[i].submit_idx].handle);
++		if (b == NULL ||
++		    (uint64_t) cmds[i].submit_offset + cmds[i].size > b->size) {
++			IOLockUnlock(gGPULock);
++			goto out;
++		}
++		addresses[count] = b->address + cmds[i].submit_offset;
++		words[count++] = cmds[i].size / 4;
++	}
++	IOLockUnlock(gGPULock);
++	request->fence = gauguin_cp_submit(addresses, words, count);
++	IOLockLock(gGPULock);
++	if (request->fence != 0) {
++		for (uint32_t i = 0; i < request->nr_bos; i++) {
++			struct gpu_buffer * b = buffer(bos[i].handle);
++			if (b != NULL) {
++				b->fence = request->fence;
++			}
++		}
++		fSubmits++;
++		if (fSubmits < 4) {
++			IOLog("SweetAdreno: submit %u: fence=%u first_iova=%#llx words=%u\n",
++			    fSubmits, request->fence,
++			    count > 0 ? addresses[0] : 0, count > 0 ? words[0] : 0);
++		}
++	}
++	IOLockUnlock(gGPULock);
++	if (request->flags & MSM_SUBMIT_FENCE_FD_OUT) {
++		request->fence_fd = -1;
++	}
++	ret = request->fence != 0 ? kIOReturnSuccess : kIOReturnTimeout;
++out:
++	if (bos != NULL) { IODelete(bos, struct msm_gem_submit_bo, request->nr_bos); }
++	if (cmds != NULL) { IODelete(cmds, struct msm_gem_submit_cmd, request->nr_cmds); }
++	return ret;
++}
++
++/* ---- surfaceBuffer: IOSurface as a GP buffer ---- */
++
++IOReturn
++SweetAdrenoUserClient::surfaceBuffer(struct hakios_surface * request)
++{
++	/* Simplified: only describe, do not wire IOSurface yet
++	 * (the full bridge requires MiniIOSurface which we don't have
++	 * available in Sweet build for A615). Return an invalid handle
++	 * so callers fall back to GEM buffers. */
++	if (request->handle != kHakiosDescribe) {
++		return kIOReturnUnsupported;
++	}
++	request->handle = 0;
++	request->size = 0;
++	request->offset = 0;
++	request->rowBytes = 0;
++	return kIOReturnSuccess;
++}
++
++/* ---- gemClose ---- */
++
++IOReturn
++SweetAdrenoUserClient::gemClose(uint32_t handle)
++{
++	struct gpu_buffer * b;
++
++	IOLockLock(gGPULock);
++	b = buffer(handle);
++	if (b == NULL) {
++		IOLockUnlock(gGPULock);
++		return kIOReturnBadArgument;
++	}
++	if (gauguin_cp_ready() && b->fence != 0) {
++		gauguin_cp_wait(b->fence, (uint64_t) GPU_PATIENCE_MS * NSEC_PER_MSEC);
++	}
++	if (gauguin_cp_ready() && b->address != 0) {
++		gauguin_gem_unmap(b->address, b->size);
++		gauguin_gem_address_free(b->address, b->size);
++	}
++	b->memory->release();
++	bzero(b, sizeof(*b));
++	fBufferCount--;
++	IOLockUnlock(gGPULock);
++	return kIOReturnSuccess;
++}
++
++/* ---- externalMethod: dispatch table ---- */
++
++IOReturn
++SweetAdrenoUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments * args,
++    IOExternalMethodDispatch * dispatch, OSObject * target, void * reference)
++{
++	union {
++		struct msm_param param;
++		struct msm_gem_new gemNew;
++		struct msm_gem_info gemInfo;
++		struct msm_gem_cpu_prep cpuPrep;
++		struct msm_gem_submit submit;
++		struct msm_wait_fence waitFence;
++		struct msm_gem_madvise madvise;
++		struct msm_submitqueue queue;
++		struct msm_submitqueue_query query;
++		struct drm_gem_close close;
++		struct hakios_surface surface;
++		struct hakios_show show;
++	} r;
++	size_t size = args->structureInputSize;
++	IOReturn ret = kIOReturnSuccess;
++	uint64_t zero = 0;
++	uint64_t patience_ns;
++
++	if (args->structureInput == NULL || size > sizeof(r) || fBuffers == NULL) {
++		return kIOReturnBadArgument;
++	}
++	bzero(&r, sizeof(r));
++	memcpy(&r, args->structureInput, size);
++
++	switch (selector) {
++	case kMsmGetParam:
++		ret = gauguin_cp_parameter(r.param.param, &r.param.value) ?
++		    kIOReturnSuccess : kIOReturnBadArgument;
++		break;
++	case kMsmSetParam:
++	case kMsmGemCpuFini:
++	case kMsmSubmitQueueClose:
++		break;                                    /* no-op */
++	case kMsmGemNew:
++		ret = gemNew(&r.gemNew);
++		break;
++	case kMsmGemInfo:
++		ret = gemInfo(&r.gemInfo);
++		break;
++	case kMsmGemCpuPrep:
++		patience_ns = (r.cpuPrep.op & MSM_PREP_NOSYNC) ? 0 :
++		    (r.cpuPrep.timeout.tv_sec * NSEC_PER_SEC + r.cpuPrep.timeout.tv_nsec);
++		if (patience_ns == 0) {
++			ret = gauguin_cp_done(r.cpuPrep.handle) ?
++			    kIOReturnSuccess : kIOReturnBusy;
++		} else {
++			ret = gauguin_cp_wait(r.cpuPrep.handle, patience_ns) ?
++			    kIOReturnSuccess : kIOReturnBusy;
++		}
++		break;
++	case kMsmGemSubmit:
++		ret = submit(&r.submit);
++		break;
++	case kMsmWaitFence:
++		patience_ns = r.waitFence.timeout.tv_sec * NSEC_PER_SEC +
++		    r.waitFence.timeout.tv_nsec;
++		ret = gauguin_cp_wait(r.waitFence.fence, patience_ns) ?
++		    kIOReturnSuccess : kIOReturnTimeout;
++		break;
++	case kMsmGemMadvise:
++		r.madvise.retained = 1;
++		break;
++	case kMsmSubmitQueueNew:
++		r.queue.id = ++fNextQueue;
++		break;
++	case kMsmSubmitQueueQuery:
++		if (r.query.data != 0 && r.query.len >= sizeof(zero)) {
++			copyout(&zero, (user_addr_t) r.query.data, sizeof(zero));
++		}
++		break;
++	case kDrmGemClose:
++		ret = gemClose(r.close.handle);
++		break;
++	case kHakiosSurface:
++		ret = surfaceBuffer(&r.surface);
++		break;
++	case kHakiosShow:
++		ret = kIOReturnUnsupported;
++		break;
++	default:
++		IOLog("SweetAdreno: unknown selector %#x (%zu bytes)\n", selector, size);
++		ret = kIOReturnUnsupported;
++		break;
++	}
++	if (ret == kIOReturnSuccess && args->structureOutput != NULL) {
++		if (args->structureOutputSize > size) {
++			args->structureOutputSize = (uint32_t) size;
++		}
++		memcpy(args->structureOutput, &r, args->structureOutputSize);
++	}
++	return ret;
++}
++
++/* ---- gGPULock init: called from gauguin_gpu_start in bsd/dev/gauguin_gpu.c ---- */
++
++void
++sweet_adreno_init(void)
++{
++	if (gGPULock == NULL) {
++		gGPULock = IOLockAlloc();
++	}
++}
+
+--- a/xnu/iokit/conf/files.arm64
++++ b/xnu/iokit/conf/files.arm64
+@@ -15,6 +15,7 @@
+ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
++iokit/Kernel/arm/SweetAdreno.cpp                               optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
