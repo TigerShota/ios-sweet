@@ -132,7 +132,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  	}
  
  	/* SQE microcode: skip the container dword, copy, read back every word. */
-@@ -2648,6 +2758,188 @@
+@@ -2648,6 +2758,195 @@
  				(void)sweet_log_flush_now();
  			}
  		}
@@ -175,7 +175,14 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +			ring[n2++] = 0u;
 +			ring[n2++] = gg_pkt4(RB_2D_DST_INFO);
 +			ring[n2++] = DST_BGRA_LINEAR;
-+			for (y = y0; y < y0 + PANEL_PROBE_ROWS; y++) {
++			/*
++			 * Paint one row past the probe band: v56/v57 both read
++			 * back 63 good rows and one black row, always the very
++			 * last (bottom) one, so the final CP_BLIT seems not to
++			 * reach memory before the fence. A trailing dummy row
++			 * absorbs that lag and lets us judge the band itself.
++			 */
++			for (y = y0; y < y0 + PANEL_PROBE_ROWS + 1u; y++) {
 +				uint32_t c = (y - y0) < 32u ? 0u : 1u;
 +				uint32_t boff = (y * panel_pitch) & 0x3fu;
 +				uint32_t dsh = boff >> 2;
