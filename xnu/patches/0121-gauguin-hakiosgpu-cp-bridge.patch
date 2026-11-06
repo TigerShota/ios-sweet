@@ -1,4 +1,4 @@
---- a/bsd/dev/gauguin_gpu.c
+﻿--- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
 @@ -3101,3 +3101,179 @@
  	}
@@ -10,20 +10,20 @@
 + * that Mesa freedreno (fd/a6xx gallium) expects.
 + * ============================================================ */
 +
-+extern "C" bool
++bool
 +gauguin_cp_ready(void)
 +{
 +	return gg.gpu != 0;
 +}
 +
-+extern "C" bool
++bool
 +gauguin_cp_done(uint32_t fence)
 +{
 +	/* fence == CP_EVENT_WRITE value written to CPMEM_SCRATCH + 0x140 by CP. */
 +	return fence != 0 && *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) == fence;
 +}
 +
-+extern "C" bool
++bool
 +gauguin_cp_wait(uint32_t fence, uint64_t patience_ns)
 +{
 +	if (fence == 0)
@@ -39,7 +39,7 @@
 +	return false;
 +}
 +
-+extern "C" bool
++bool
 +gauguin_cp_parameter(uint32_t param, uint64_t * value)
 +{
 +	if (value == NULL) return false;
@@ -65,7 +65,7 @@
 +/* A monotonically-increasing fence counter. */
 +static uint32_t gg_next_fence = 0x06000001u;   /* avoid collision with 0x600dc0de etc */
 +
-+extern "C" uint32_t
++uint32_t
 +gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t count)
 +{
 +	if (gg.gpu == 0 || addresses == NULL || words == NULL || count == 0)
@@ -149,7 +149,7 @@
 +#define GEM_IOVA_WINDOW_BASE   0x800000000ULL     /* 32 GB static ID-map region */
 +
 +static uint64_t gg_gem_iova_next = GEM_IOVA_WINDOW_BASE;
-+extern "C" uint64_t
++uint64_t
 +gauguin_gem_address(uint64_t size)
 +{
 +	uint64_t pgsz = round_page(size);
@@ -158,14 +158,14 @@
 +	return va;
 +}
 +
-+extern "C" void
++void
 +gauguin_gem_address_free(uint64_t address, uint64_t size)
 +{
 +	/* window grows monotonically; no reclaim for now */
 +	(void)address; (void)size;
 +}
 +
-+extern "C" bool
++bool
 +gauguin_gem_map(uint64_t iova, addr64_t phys, uint32_t flags)
 +{
 +	/* a615 static SMMU identity mapping already established in 0096 series;
@@ -174,7 +174,7 @@
 +	return true;
 +}
 +
-+extern "C" void
++void
 +gauguin_gem_unmap(uint64_t iova, uint64_t size)
 +{
 +	(void)iova; (void)size;
