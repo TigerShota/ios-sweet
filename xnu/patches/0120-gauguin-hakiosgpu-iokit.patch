@@ -2,7 +2,7 @@ diff --git a/xnu/iokit/Kernel/arm/SweetAdreno.cpp b/xnu/iokit/Kernel/arm/SweetAd
 new file mode 100644
 --- /dev/null
 +++ b/xnu/iokit/Kernel/arm/SweetAdreno.cpp
-@@ -0,0 +1,668 @@
+@@ -0,0 +1,673 @@
 +/*
 + * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
 + * Ported from yfl520/hackios-raphael (MIT license), adapted for
@@ -36,11 +36,16 @@ new file mode 100644
 +#include <IOKit/IOMemoryDescriptor.h>
 +#include <IOKit/IOService.h>
 +#include <IOKit/IOMapper.h>
++#include <IOKit/IOKitKeys.h>
++#include <kern/clock.h>
++#include <mach/mach_time.h>
++#include <mach/vm_param.h>
 +#include <libkern/c++/OSObject.h>
-+#include <sys/time.h>
 +
 +#include <sys/types.h>
 +#include <sys/protosw.h>
++#include <sys/systm.h>           /* copyin/copyout/kernel_task/user_addr_t */
++#include <sys/time.h>
 +#include <kern/thread.h>
 +
 +/* ---- Structures matching Linux include/uapi/drm/msm_drm.h ---- */
