@@ -1,34 +1,31 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -1592,13 +1592,21 @@
- 	    ((opcode & 0x7fu) << 16) | (gg_parity(opcode) << 23);
- }
- 
-+/* 18-bit register number for CP_TYPE4_PKT: 0x4 << 16 | SUBBLOCK_OFFSET.
-+ * a6xx mainline (cp_register) passes this to cp_type4_packet; passing the
-+ * raw 16-bit hardware register address produces wrong encodings and makes
-+ * the CP raise CP_OPCODE_ERROR (RBBM_INT_0_STATUS bit 0). */
-+#define GG_CP_REG(reg) ((0x4u << 16) | (((unsigned int)(reg)) - 0x2000u))
-+
+@@ -1595,10 +1595,17 @@
  /* PM4 type-4 header: one dword written to a 3D/2D core register. Same bit
   * layout as the reference's ring_register(). */
  static uint32_t
  gg_pkt4(uint32_t number)
  {
-+	uint32_t opcode = GG_CP_REG(number);
-+
  	return (4u << 28) | 1u | (gg_parity(1u) << 7) |
 -	    ((number & 0x3fffu) << 8) | (gg_parity(number) << 27);
-+	    ((opcode & 0x3ffffu) << 8) | (gg_parity(opcode) << 27);
++	    /*
++	     * The type-4 base index is 18 bits (0x3FFFF), not 14. The 2D
++	     * registers sit at 0x84xx/0x8cxx, so the old 0x3FFF mask encoded
++	     * 0x8c18 as 0x0c18 while the parity bit still covered 0x8c18:
++	     * every type-4 header failed parity and the CP raised
++	     * CP_OPCODE_ERROR (CP_INTERRUPT_STATUS bit 0).
++	     */
++	    ((number & 0x3ffffu) << 8) | (gg_parity(number) << 27);
  }
  
  /*
-@@ -2322,6 +2330,7 @@
+@@ -2322,6 +2329,8 @@
  			}
  			delay(1000);
  		}
-+		invalidate_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x120u), 64);
++		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x120u),
++		    64, FALSE);
  		mw = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x120u);
  		printf("GAUGUIN CP: memwrite=%#x (want 0x600dc0de) reg=%#x"
  		    " protect=%#x roq=%#x/%#x wptr=%u\n", mw, rreg,
