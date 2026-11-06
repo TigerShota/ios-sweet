@@ -1,7 +1,6 @@
-diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -149,6 +149,29 @@
+@@ -149,6 +149,28 @@
  
  OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
  
@@ -27,11 +26,10 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +}
 +
 +
-+
  bool
  AppleCLCD::start(IOService *provider)
  {
-@@ -201,6 +224,31 @@
+@@ -201,6 +223,27 @@
  	setProperty("external", false);
  	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
  	registerService();
@@ -44,21 +42,17 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +			stub->attach(this);
 +			if (stub->start(this)) {
 +				stub->registerService();
-+				IOLog("SWEET FB: IOAcceleratorES published (class only, no MetalPluginName)
-+");
++				IOLog("SWEET FB: IOAcceleratorES published (stub only, no MetalPluginName)\n");
 +			} else {
-+				IOLog("SWEET FB: IOAcceleratorES start failed
-+");
++				IOLog("SWEET FB: IOAcceleratorES start failed\n");
 +				OSSafeReleaseNULL(stub);
 +			}
 +		} else {
-+			IOLog("SWEET FB: IOAcceleratorES alloc/init failed
-+");
++			IOLog("SWEET FB: IOAcceleratorES alloc/init failed\n");
 +			OSSafeReleaseNULL(stub);
 +		}
 +	} else {
-+		IOLog("SWEET FB: IOAcceleratorES disabled (sweetaccel=0)
-+");
++		IOLog("SWEET FB: IOAcceleratorES disabled (sweetaccel=0)\n");
 +	}
  	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
  	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
