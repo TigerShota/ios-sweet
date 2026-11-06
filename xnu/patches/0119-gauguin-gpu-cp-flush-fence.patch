@@ -1,0 +1,112 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index c1ee54c..46390c4 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -2315,25 +2315,43 @@ gauguin_cp_start(void)
+ 	 */
+ 	{
+ 		uint32_t n = 17u;
+-		uint32_t mw;
++		uint32_t mw, flush = 0u, tries = 0u;
+ 		ring[n++] = gg_pkt7(0x3du, 3u);
+ 		ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x120u) & 0xffffffffu);
+ 		ring[n++] = 0u;
+ 		ring[n++] = 0x600dc0deu;
++		/*
++		 * The reference pairs CP_MEM_WRITE with
++		 * CP_EVENT_WRITE(CACHE_FLUSH_TS): the timestamp word lands in
++		 * memory only after everything ahead of it has been carried
++		 * out, so the word itself is the completion fence - the RPTR
++		 * register is not one on a6xx. Event 0x04, address lo/hi,
++		 * value.
++		 */
++		ring[n++] = gg_pkt7(0x46u, 4u);
++		ring[n++] = 0x04u;
++		ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x130u) & 0xffffffffu);
++		ring[n++] = 0u;
++		ring[n++] = 0x600df1a5u;
+ 		__asm__ volatile("dmb oshst" ::: "memory");
+ 		gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), n);
+ 		for (i = 0; i < 2000; ++i) {
++			flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x100u),
++			    64, FALSE);
++			flush = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x130u);
+ 			rreg = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
+-			if (rreg == n) {
++			if (flush == 0x600df1a5u) {
+ 				break;
+ 			}
+ 			delay(1000);
+ 		}
++		tries = i;
+ 		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x120u),
+ 		    64, FALSE);
+ 		mw = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x120u);
+-		printf("GAUGUIN CP: memwrite=%#x (want 0x600dc0de) reg=%#x"
+-		    " protect=%#x roq=%#x/%#x wptr=%u\n", mw, rreg,
++		printf("GAUGUIN CP: memwrite=%#x (want 0x600dc0de) flush=%#x"
++		    " (want 0x600df1a5) tries=%u reg=%#x protect=%#x"
++		    " roq=%#x/%#x wptr=%u\n", mw, flush, tries, rreg,
+ 		    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
+ 		    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
+ 		    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)), n);
+@@ -2395,7 +2413,8 @@ gauguin_cp_start(void)
+ 	 * Packet order is the reference's ring_fill/step_frame verbatim.
+ 	 */
+ 	{
+-		uint32_t n = 21u, k;
++		uint32_t n = 26u, k;
++		uint32_t flush = 0u, tries = 0u;
+ 		const uint32_t band[3][3] = {
+ 			{ 255u, 128u, 0u },     /* orange */
+ 			{ 255u, 255u, 255u },   /* white */
+@@ -2452,29 +2471,42 @@ gauguin_cp_start(void)
+ 		ring[n++] = 0u;
+ 		ring[n++] = 0x0d0e0d0eu;
+ 		ring[n++] = gg_pkt7(CP_WAIT_FOR_IDLE, 0u);
++		/* Completion fence: this word lands only after the blits and
++		 * the two events above have been carried out. */
++		ring[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++		ring[n++] = 0x04u;
++		ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x140u) & 0xffffffffu);
++		ring[n++] = 0u;
++		ring[n++] = 0x600dd22eu;
+ 		printf("GAUGUIN CP: step22 %u dwords, target %#x\n", n, CP_VA_TARGET);
+ 		(void)sweet_log_flush_now();
+ 		__asm__ volatile("dmb oshst" ::: "memory");
+ 		wptr = n;
+ 		gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wptr);
+ 		for (i = 0; i < 3000; ++i) {
+-			flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
++			flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x100u),
++			    0x80u, FALSE);
++			flush = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u);
+ 			rptr = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
+ 			rreg = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
+-			if (rptr == wptr || rreg == wptr) {
++			if (flush == 0x600dd22eu) {
+ 				break;
+ 			}
+ 			delay(1000);
+ 			if ((i % 50) == 49) {
+-				printf("GAUGUIN CP: step22 waiting rptr=%u wptr=%u\n",
+-				    rptr, wptr);
++				printf("GAUGUIN CP: step22 waiting flush=%#x"
++				    " rptr=%u wptr=%u\n", flush, rptr, wptr);
+ 				(void)sweet_log_flush_now();
+ 			}
+ 		}
+-		printf("GAUGUIN CP: step22 %s (rptr=%u reg=%#x wptr=%u)\n",
+-		    (rptr == wptr || rreg == wptr) ? "RETIRED" : "STUCK",
+-		    rptr, rreg, wptr);
++		tries = i;
++		printf("GAUGUIN CP: step22 %s (flush=%#x tries=%u rptr=%u"
++		    " reg=%#x wptr=%u)\n",
++		    (flush == 0x600dd22eu) ? "RETIRED" : "STUCK",
++		    flush, tries, rptr, rreg, wptr);
+ 		flush_dcache64((addr64_t)target, TARGET_SIZE, FALSE);
++		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x100u),
++		    0x80u, FALSE);
+ 		printf("GAUGUIN CP: step22 px top=%#x mid=%#x bot=%#x ev=%#x/%#x\n",
+ 		    *(volatile uint32_t *)(target + 16u),
+ 		    *(volatile uint32_t *)(target + TARGET_PITCH * 255u + 4u),
