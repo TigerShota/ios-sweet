@@ -1,0 +1,76 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 46390c4..76a4f11 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -2427,6 +2427,12 @@ gauguin_cp_start(void)
+ 		ring[n++] = 12u;                /* 2D blits follow */
+ 		ring[n++] = gg_pkt4(RB_CCU_CNTL);
+ 		ring[n++] = 0x10000004u;
++		/* Stage fence 1: marker + RB_CCU_CNTL carried out. */
++		ring[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++		ring[n++] = 0x04u;
++		ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x150u) & 0xffffffffu);
++		ring[n++] = 0u;
++		ring[n++] = 0x600d0a01u;
+ 		for (k = 0; k < 3u; k++) {
+ 			ring[n++] = gg_pkt4(GRAS_2D_DST_TL);
+ 			ring[n++] = top[k] << 16;
+@@ -2456,9 +2462,37 @@ gauguin_cp_start(void)
+ 			ring[n++] = 0u;
+ 			ring[n++] = gg_pkt4(RB_2D_DST_PITCH);
+ 			ring[n++] = TARGET_PITCH >> 6;
++			/* Stage fence 2: all 2D register writes of band 0 done,
++			 * before waiting for the pipe. */
++			if (k == 0u) {
++				ring[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++				ring[n++] = 0x04u;
++				ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x154u) &
++				    0xffffffffu);
++				ring[n++] = 0u;
++				ring[n++] = 0x600d0a02u;
++			}
+ 			ring[n++] = gg_pkt7(CP_WAIT_FOR_IDLE, 0u);
++			/* Stage fence 3: CP_WAIT_FOR_IDLE returned. */
++			if (k == 0u) {
++				ring[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++				ring[n++] = 0x04u;
++				ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x158u) &
++				    0xffffffffu);
++				ring[n++] = 0u;
++				ring[n++] = 0x600d0a03u;
++			}
+ 			ring[n++] = gg_pkt7(CP_BLIT, 1u);
+ 			ring[n++] = 3u;         /* the 2D engine's one operation */
++			/* Stage fence 4: CP_BLIT of band 0 returned. */
++			if (k == 0u) {
++				ring[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++				ring[n++] = 0x04u;
++				ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x15cu) &
++				    0xffffffffu);
++				ring[n++] = 0u;
++				ring[n++] = 0x600d0a04u;
++			}
+ 		}
+ 		ring[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+ 		ring[n++] = EVENT_FLUSH_COLOR;
+@@ -2483,7 +2517,7 @@ gauguin_cp_start(void)
+ 		__asm__ volatile("dmb oshst" ::: "memory");
+ 		wptr = n;
+ 		gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wptr);
+-		for (i = 0; i < 3000; ++i) {
++		for (i = 0; i < 1500; ++i) {
+ 			flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x100u),
+ 			    0x80u, FALSE);
+ 			flush = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u);
+@@ -2507,6 +2541,11 @@ gauguin_cp_start(void)
+ 		flush_dcache64((addr64_t)target, TARGET_SIZE, FALSE);
+ 		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x100u),
+ 		    0x80u, FALSE);
++		printf("GAUGUIN CP: step22 stage f1=%#x f2=%#x f3=%#x f4=%#x\n",
++		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x150u),
++		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x154u),
++		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x158u),
++		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x15cu));
+ 		printf("GAUGUIN CP: step22 px top=%#x mid=%#x bot=%#x ev=%#x/%#x\n",
+ 		    *(volatile uint32_t *)(target + 16u),
+ 		    *(volatile uint32_t *)(target + TARGET_PITCH * 255u + 4u),
