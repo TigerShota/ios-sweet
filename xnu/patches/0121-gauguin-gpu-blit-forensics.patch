@@ -1,0 +1,86 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 76a4f11..8b34104 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -2423,6 +2423,23 @@ gauguin_cp_start(void)
+ 		const uint32_t top[3] = { 0u, 170u, 340u };
+ 		const uint32_t bot[3] = { 170u, 340u, 512u };
+ 
++		/*
++		 * 0121: the scratch-page memwrite works, so the CP does write
++		 * memory after SET_SECURE_MODE. Prove the *target* VA is also
++		 * writable by the CP: if this word lands, the target's SMMU
++		 * mapping/page tables are fine and the CP_BLIT hang is inside
++		 * the 2D block; if it faults, the blit never even got a chance.
++		 * Fence it with the reference's CACHE_FLUSH_TS order.
++		 */
++		ring[n++] = gg_pkt7(0x3du, 3u);
++		ring[n++] = (uint32_t)(CP_VA_TARGET & 0xffffffffu);
++		ring[n++] = 0u;
++		ring[n++] = 0x600d7a11u;
++		ring[n++] = gg_pkt7(0x46u, 4u);
++		ring[n++] = 0x04u;
++		ring[n++] = (uint32_t)((CP_VA_SCRATCH + 0x160u) & 0xffffffffu);
++		ring[n++] = 0u;
++		ring[n++] = 0x600d7a12u;
+ 		ring[n++] = gg_pkt7(CP_SET_MARKER, 1u);
+ 		ring[n++] = 12u;                /* 2D blits follow */
+ 		ring[n++] = gg_pkt4(RB_CCU_CNTL);
+@@ -2561,6 +2578,57 @@ gauguin_cp_start(void)
+ 		    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
+ 		    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)));
+ 		(void)sweet_log_flush_now();
++		/* 0121: did the probe write reach the target VA? */
++		printf("GAUGUIN CP: step22 target word=%#x (want 0x600d7a11)\n",
++		    *(volatile uint32_t *)target);
++		printf("GAUGUIN CP: step22 target fence=%#x (want 0x600d7a12)\n",
++		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x160u));
++		(void)sweet_log_flush_now();
++		/*
++		 * 0121: read back the 2D register block. Register constants in
++		 * the packet stream are dword indices, so GR() converts them to
++		 * byte offsets. One MMIO read per printf.
++		 */
++		{
++			static const struct {
++				uint32_t dw;
++				const char *what;
++			} r2d[] = {
++				{ GRAS_2D_DST_TL, "GRAS_2D_DST_TL" },
++				{ GRAS_2D_DST_BR, "GRAS_2D_DST_BR" },
++				{ RB_2D_BLIT_CNTL, "RB_2D_BLIT_CNTL" },
++				{ RB_2D_PIXEL_CNTL, "RB_2D_PIXEL_CNTL" },
++				{ RB_2D_DST_INFO, "RB_2D_DST_INFO" },
++				{ RB_2D_DST, "RB_2D_DST" },
++				{ RB_2D_DST_PITCH, "RB_2D_DST_PITCH" },
++				{ RB_2D_SRC_SOLID_C0, "RB_2D_SRC_SOLID_C0" },
++				{ SP_2D_DST_FORMAT, "SP_2D_DST_FORMAT" },
++				{ 0x8e07u, "RB_CCU_CNTL" },
++			};
++			for (unsigned j = 0;
++			    j < sizeof(r2d) / sizeof(r2d[0]); ++j) {
++				printf("GAUGUIN CP: step22 reg %s=%#x\n",
++				    r2d[j].what, gg_rd(gg.gpu, GR(r2d[j].dw)));
++			}
++			(void)sweet_log_flush_now();
++		}
++		/* 0121: SMMU CB1 fault state after the stall. */
++		{
++			vm_offset_t s = gg_smmu_base();
++
++			if (s) {
++				vm_offset_t cb = s + SMMU_CB(GG_CB1);
++				printf("GAUGUIN CP: step22 smmu gfsr=%#x\n",
++				    gg_rd(s, SMMU_GFSR));
++				printf("GAUGUIN CP: step22 smmu cb1 fsr=%#x\n",
++				    gg_rd(cb, SMMU_CB_FSR));
++				printf("GAUGUIN CP: step22 smmu cb1 far=%#x\n",
++				    gg_rd(cb, SMMU_CB_FAR));
++				printf("GAUGUIN CP: step22 smmu cb1 fsynr0=%#x\n",
++				    gg_rd(cb, SMMU_CB_FSYNR0));
++				(void)sweet_log_flush_now();
++			}
++		}
+ 	}
+ 
+ 	/* Release PAS 13 (fajita console76 shuts down after the test). */
