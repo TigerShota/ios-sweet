@@ -20,20 +20,26 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  /* CP opcodes and a6xx 2D register numbers, all from the redwood reference
   * (out/refs/willow-redwood_adreno.c, step 22). a615 belongs to the same
   * a6xx block family, so the 2D pipe is addressed with the same numbers. */
-@@ -1266,6 +1278,12 @@
+@@ -1266,6 +1278,18 @@
  static uint64_t cp_pa;
  static vm_offset_t target;
  static uint64_t target_pa;
 +/* 0123: the live panel buffer (see the CP_VA_PANEL constants). panel_rd is a
 + * separate CPU mapping used only for the read-back after the GPU blits; it
-+ * stays 0 whenever the mapping was refused, and the panel test is skipped. */
++ * stays 0 whenever the mapping was refused, and the panel test is skipped.
++ * The panel is 9.89 MiB but io_map's submap is only IO_MAP_SIZE = 8 MiB
++ * (osfmk/arm/io_map.c), and kmem_alloc there is KMA_NOFAIL: v55 (0123) asked
++ * for the whole buffer and panicked inside ml_io_map. Only the 64-row
++ * read-back window at the bottom of the panel is mapped - a few hundred KiB. */
++#define PANEL_PROBE_ROWS   64u
 +static vm_offset_t panel_rd;
 +static uint64_t panel_pa;
 +static uint32_t panel_w, panel_h, panel_pitch, panel_bytes;
++static uint32_t panel_probe_row;
  
  static uint32_t
  gm_rd32_raw(uint32_t off)
-@@ -1393,6 +1411,77 @@
+@@ -1393,6 +1417,83 @@
  		    TARGET_W, TARGET_H, TARGET_PITCH, gm_rd32_raw(CPMEM_L3T),
  		    gm_rd32_raw(CPMEM_L3T + 8u * 255u));
  		(void)sweet_log_flush_now();
@@ -101,17 +107,23 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +				    gm_rd32_raw(CPMEM_L3P + 0x1000u * (li >> 9) +
 +				    8u * (li & 0x1ffu)));
 +				(void)sweet_log_flush_now();
-+				panel_rd = ml_io_map((vm_offset_t)panel_pa,
-+				    panel_bytes);
-+				printf("GAUGUIN CP: panel cpu map=%#llx\n",
-+				    (uint64_t)panel_rd);
++				if (panel_h > PANEL_PROBE_ROWS) {
++					panel_probe_row = panel_h - PANEL_PROBE_ROWS;
++					panel_rd = ml_io_map((vm_offset_t)(panel_pa +
++					    (uint64_t)panel_probe_row * panel_pitch),
++					    panel_pitch * PANEL_PROBE_ROWS);
++				}
++				printf("GAUGUIN CP: panel cpu map=%#llx rows %u..%u"
++				    " bytes=%u\n", (uint64_t)panel_rd,
++				    panel_probe_row, panel_h - 1u,
++				    panel_pitch * PANEL_PROBE_ROWS);
 +				(void)sweet_log_flush_now();
 +			}
 +		}
  	}
  
  	/* SQE microcode: skip the container dword, copy, read back every word. */
-@@ -2648,6 +2737,163 @@
+@@ -2648,6 +2749,167 @@
  				(void)sweet_log_flush_now();
  			}
  		}
@@ -222,29 +234,33 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +			 * state below are the evidence then.
 +			 */
 +			if (panel_rd) {
++				/* panel_rd points at row panel_probe_row. */
 +				for (i = 0; i < panel_w; i++) {
 +					if (*(volatile uint32_t *)(panel_rd +
-+					    (uint64_t)(y0 + 4u) * panel_pitch +
-+					    4u * i) == 0xffff8000u) {
++					    (uint64_t)(y0 + 4u - panel_probe_row) *
++					    panel_pitch + 4u * i) == 0xffff8000u) {
 +						hit0++;
 +					}
 +					if (*(volatile uint32_t *)(panel_rd +
-+					    (uint64_t)(y0 + 40u) * panel_pitch +
-+					    4u * i) == 0xff0080ffu) {
++					    (uint64_t)(y0 + 40u - panel_probe_row) *
++					    panel_pitch + 4u * i) == 0xff0080ffu) {
 +						hit1++;
 +					}
 +					if (*(volatile uint32_t *)(panel_rd +
-+					    (uint64_t)(panel_h - 1u) * panel_pitch +
-+					    4u * i) == 0xff0080ffu) {
++					    (uint64_t)(panel_h - 1u - panel_probe_row) *
++					    panel_pitch + 4u * i) == 0xff0080ffu) {
 +						hit2++;
 +					}
 +				}
 +				px0 = *(volatile uint32_t *)(panel_rd +
-+				    (uint64_t)(y0 + 4u) * panel_pitch + 4u);
++				    (uint64_t)(y0 + 4u - panel_probe_row) *
++				    panel_pitch + 4u);
 +				px1 = *(volatile uint32_t *)(panel_rd +
-+				    (uint64_t)(y0 + 40u) * panel_pitch + 4u);
++				    (uint64_t)(y0 + 40u - panel_probe_row) *
++				    panel_pitch + 4u);
 +				px2 = *(volatile uint32_t *)(panel_rd +
-+				    (uint64_t)(panel_h - 1u) * panel_pitch + 4u);
++				    (uint64_t)(panel_h - 1u - panel_probe_row) *
++				    panel_pitch + 4u);
 +			}
 +			printf("GAUGUIN CP: panel %s (fence=%#x tries=%u)\n",
 +			    (f2 == 0x600d0a05u) ? "RETIRED" : "STUCK", f2, tries2);
