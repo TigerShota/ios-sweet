@@ -1,0 +1,277 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1216,6 +1216,18 @@
+ #define TARGET_PITCH     2048u
+ #define TARGET_SIZE      (TARGET_PITCH * TARGET_H)
+ 
++/* 0123: the panel buffer the bootloader left running, mapped behind the
++ * target's L2 entries so the 2D pipe can write the real display. Its stride
++ * is 1080*4 = 4320 B, which is not a multiple of the 64 B unit of
++ * RB_2D_DST_PITCH, so no single blit can express it: each row goes out as
++ * its own one-row blit (pitch is unused when h == 1). Seven free 4 KiB L3
++ * tables remain in the cpmem tail, i.e. 14 MiB of VA - enough for
++ * 1080x2400x4 = 10,368,000 B. */
++#define CPMEM_L3P          0x19000u
++#define CP_VA_PANEL        0x40400000u
++#define PANEL_TABLES_MAX   7u
++#define PANEL_BYTES_MAX    (PANEL_TABLES_MAX * 0x200000u)
++
+ /* CP opcodes and a6xx 2D register numbers, all from the redwood reference
+  * (out/refs/willow-redwood_adreno.c, step 22). a615 belongs to the same
+  * a6xx block family, so the 2D pipe is addressed with the same numbers. */
+@@ -1266,6 +1278,12 @@
+ static uint64_t cp_pa;
+ static vm_offset_t target;
+ static uint64_t target_pa;
++/* 0123: the live panel buffer (see the CP_VA_PANEL constants). panel_rd is a
++ * separate CPU mapping used only for the read-back after the GPU blits; it
++ * stays 0 whenever the mapping was refused, and the panel test is skipped. */
++static vm_offset_t panel_rd;
++static uint64_t panel_pa;
++static uint32_t panel_w, panel_h, panel_pitch, panel_bytes;
+ 
+ static uint32_t
+ gm_rd32_raw(uint32_t off)
+@@ -1393,6 +1411,77 @@
+ 		    TARGET_W, TARGET_H, TARGET_PITCH, gm_rd32_raw(CPMEM_L3T),
+ 		    gm_rd32_raw(CPMEM_L3T + 8u * 255u));
+ 		(void)sweet_log_flush_now();
++	}
++
++	/*
++	 * 0123: map the panel buffer the bootloader left scanning out (the same
++	 * memory AppleCLCD wraps as its default IOSurface) into the CP's address
++	 * space, so the 2D pipe can write the real display. VAs from 0x40400000
++	 * up, behind L2 entries 0x202..: five 4 KiB L3 tables (10 MiB) cover the
++	 * 1080x2400x4 = 9.89 MiB buffer; two of the seven cpmem-tail tables stay
++	 * unused. Nothing here is guesswork: PE_current_console returns exactly
++	 * what the framebuffer driver uses.
++	 */
++	{
++		PE_Video pv;
++		uint32_t pages, tables, t, p;
++		int rc;
++
++		bzero(&pv, sizeof(pv));
++		rc = PE_current_console(&pv);
++		if (rc != 0 || pv.v_baseAddr == 0) {
++			printf("GAUGUIN CP: panel: no console video (rc=%d"
++			    " base=%#llx)\n", rc, (uint64_t)pv.v_baseAddr);
++			(void)sweet_log_flush_now();
++		} else {
++			panel_pa = (uint64_t)pv.v_baseAddr;
++			panel_w = (uint32_t)pv.v_width;
++			panel_h = (uint32_t)pv.v_height;
++			panel_pitch = (uint32_t)pv.v_rowBytes;
++			panel_bytes = panel_pitch * panel_h;
++			pages = (panel_bytes + 0xfffu) >> 12;
++			tables = (pages + 511u) >> 9;
++			printf("GAUGUIN CP: panel %ux%u pitch=%u pa=%#llx bytes=%u"
++			    " pages=%u tables=%u\n", panel_w, panel_h,
++			    panel_pitch, panel_pa, panel_bytes, pages, tables);
++			(void)sweet_log_flush_now();
++			if ((panel_pa & 0xfffull) || panel_pa + panel_bytes < panel_pa ||
++			    panel_pitch < panel_w * 4u ||
++			    panel_bytes > PANEL_BYTES_MAX ||
++			    tables > PANEL_TABLES_MAX ||
++			    CP_VA_PANEL + panel_bytes < CP_VA_PANEL) {
++				printf("GAUGUIN CP: panel: geometry rejected\n");
++				(void)sweet_log_flush_now();
++				panel_w = panel_h = panel_pitch = panel_bytes = 0;
++			} else {
++				/* A 32-bit VA window only reaches 4 GiB of PA. */
++				for (t = 0; t < tables; t++) {
++					cp_wr64(CPMEM_L2 + 8u *
++					    (((CP_VA_PANEL >> 21) & 0x1ffu) + t),
++					    (cp_pa + CPMEM_L3P + 0x1000u * t) |
++					    PTE_TABLE);
++				}
++				for (p = 0; p < pages; p++) {
++					cp_wr64(CPMEM_L3P + 0x1000u * (p >> 9) +
++					    8u * (p & 0x1ffu),
++					    (panel_pa + 0x1000u * p) | PTE_PAGE_NC);
++				}
++				flush_dcache64((addr64_t)cpmem, CPMEM_SIZE, FALSE);
++				printf("GAUGUIN CP: panel mapped va=%#x tables=%u"
++				    " pages=%u pte0=%#x pte%u=%#x\n",
++				    CP_VA_PANEL, tables, pages,
++				    gm_rd32_raw(CPMEM_L3P),
++				    pages - 1u,
++				    gm_rd32_raw(CPMEM_L3P + 0x1000u *
++				    ((pages - 1u) >> 9) + 8u * ((pages - 1u) & 0x1ffu));
++				(void)sweet_log_flush_now();
++				panel_rd = ml_io_map((vm_offset_t)panel_pa,
++				    panel_bytes);
++				printf("GAUGUIN CP: panel cpu map=%#llx\n",
++				    (uint64_t)panel_rd);
++				(void)sweet_log_flush_now();
++			}
++		}
+ 	}
+ 
+ 	/* SQE microcode: skip the container dword, copy, read back every word. */
+@@ -2648,6 +2737,163 @@
+ 				(void)sweet_log_flush_now();
+ 			}
+ 		}
++
++		/*
++		 * 0123: prove the GPU -> panel path. The bottom 64 rows of the live
++		 * buffer are painted by the 2D pipe: the first 32 orange, the next
++		 * 32 blue. Two colours prove the per-row destination addressing, not
++		 * just that one address accepted writes.
++		 *
++		 * The panel stride is 4320 B, not a multiple of the 64 B unit of
++		 * RB_2D_DST_PITCH, so no multi-row blit can describe the buffer. With
++		 * h == 1 the pitch is unused, so every row is one one-row blit.
++		 *
++		 * RB_A2D_DEST_BUFFER_BASE is 64 B aligned (a6xx.xml align=64) and the
++		 * destination rect is relative to that base with Y = 0 - the row
++		 * offset belongs in the address, exactly what fd6_blitter.c does:
++		 *   doff   = (dst_byte_offset) & ~0x3f
++		 *   dshift = (dst_byte_offset) & 0x3f      -> GRAS_2D_DST_TL_X
++		 *   TL_Y = 0, BR_Y = 0, pitch = align(width, 64)
++		 * 4320 & 63 = 32, so odd rows start 8 pixels past a 64 B boundary:
++		 * base = row_start - 32, TL_X = 8, BR_X = 8 + w - 1. The blit still
++		 * writes exactly the 4320 bytes of that row.
++		 */
++		if (flush == 0x600dd22eu && panel_h > 64u &&
++		    panel_w && (panel_pitch >> 6) > 0u) {
++			uint32_t y0 = panel_h - 64u;
++			uint32_t y, n2 = wptr, hit0 = 0u, hit1 = 0u, hit2 = 0u;
++			uint32_t f2 = 0u, tries2 = 0u, px0 = 0u, px1 = 0u, px2 = 0u;
++			uint32_t rpitch = ((panel_w * 4u + 63u) & ~63u) >> 6;
++			const uint32_t row_c0[2] = { 255u, 0u };    /* R */
++			const uint32_t row_c1[2] = { 128u, 128u };  /* G */
++			const uint32_t row_c2[2] = { 0u, 255u };    /* B */
++
++			ring[n2++] = gg_pkt4(SP_2D_DST_FORMAT);
++			ring[n2++] = 1u | (FORMAT_8888 << 3) | (0xfu << 12);
++			ring[n2++] = gg_pkt4(RB_2D_PIXEL_CNTL);
++			ring[n2++] = 0u;
++			ring[n2++] = gg_pkt4(RB_2D_DST_INFO);
++			ring[n2++] = DST_BGRA_LINEAR;
++			for (y = y0; y < panel_h; y++) {
++				uint32_t c = (y - y0) < 32u ? 0u : 1u;
++				uint32_t boff = (y * panel_pitch) & 0x3fu;
++				uint32_t dsh = boff >> 2;
++
++				ring[n2++] = gg_pkt4(GRAS_2D_DST_TL);
++				ring[n2++] = dsh;
++				ring[n2++] = gg_pkt4(GRAS_2D_DST_BR);
++				ring[n2++] = dsh + panel_w - 1u;
++				ring[n2++] = gg_pkt4(RB_2D_SRC_SOLID_C0);
++				ring[n2++] = row_c0[c];
++				ring[n2++] = gg_pkt4(RB_2D_SRC_SOLID_C0 + 1u);
++				ring[n2++] = row_c1[c];
++				ring[n2++] = gg_pkt4(RB_2D_SRC_SOLID_C0 + 2u);
++				ring[n2++] = row_c2[c];
++				ring[n2++] = gg_pkt4(RB_2D_SRC_SOLID_C0 + 3u);
++				ring[n2++] = 255u;
++				ring[n2++] = gg_pkt4(RB_2D_BLIT_CNTL);
++				ring[n2++] = BLIT_SOLID_8888;
++				ring[n2++] = gg_pkt4(GRAS_2D_BLIT_CNTL);
++				ring[n2++] = BLIT_SOLID_8888;
++				ring[n2++] = gg_pkt4(RB_2D_DST);
++				ring[n2++] = (uint32_t)((CP_VA_PANEL + y *
++				    panel_pitch - boff) & 0xffffffffu);
++				ring[n2++] = gg_pkt4(RB_2D_DST + 1u);
++				ring[n2++] = 0u;
++				ring[n2++] = gg_pkt4(RB_2D_DST_PITCH);
++				ring[n2++] = rpitch;
++				ring[n2++] = gg_pkt7(CP_BLIT, 1u);
++				ring[n2++] = 3u;
++				ring[n2++] = gg_pkt7(CP_WAIT_FOR_IDLE, 0u);
++			}
++			ring[n2++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++			ring[n2++] = EVENT_CACHE_FLUSH;
++			ring[n2++] = (uint32_t)((CP_VA_SCRATCH + 0x1c0u) &
++			    0xffffffffu);
++			ring[n2++] = 0u;
++			ring[n2++] = 0x600d0a06u;
++			ring[n2++] = gg_pkt7(CP_WAIT_FOR_IDLE, 0u);
++			ring[n2++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++			ring[n2++] = 0x04u;
++			ring[n2++] = (uint32_t)((CP_VA_SCRATCH + 0x1a0u) &
++			    0xffffffffu);
++			ring[n2++] = 0u;
++			ring[n2++] = 0x600d0a05u;
++			printf("GAUGUIN CP: panel %u dwords for rows %u..%u (wptr %u ->"
++			    " %u, ring 8192)\n", n2 - wptr, y0, panel_h - 1u, wptr, n2);
++			(void)sweet_log_flush_now();
++			__asm__ volatile("dmb oshst" ::: "memory");
++			gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), n2);
++			for (i = 0; i < 2000; ++i) {
++				flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH +
++				    0x100u), 0x100u, FALSE);
++				f2 = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH +
++				    0x1a0u);
++				if (f2 == 0x600d0a05u) {
++					break;
++				}
++				delay(1000);
++			}
++			tries2 = i;
++			/*
++			 * Read the panel back before printing anything: the kernel
++			 * text console draws into the bottom of this very buffer on
++			 * every log flush, so a printf between the GPU's last write and
++			 * these reads could cover the band we are verifying. Without a
++			 * CPU mapping the band is still painted - the fence and SMMU
++			 * state below are the evidence then.
++			 */
++			if (panel_rd) {
++				for (i = 0; i < panel_w; i++) {
++					if (*(volatile uint32_t *)(panel_rd +
++					    (uint64_t)(y0 + 4u) * panel_pitch +
++					    4u * i) == 0xffff8000u) {
++						hit0++;
++					}
++					if (*(volatile uint32_t *)(panel_rd +
++					    (uint64_t)(y0 + 40u) * panel_pitch +
++					    4u * i) == 0xff0080ffu) {
++						hit1++;
++					}
++					if (*(volatile uint32_t *)(panel_rd +
++					    (uint64_t)(panel_h - 1u) * panel_pitch +
++					    4u * i) == 0xff0080ffu) {
++						hit2++;
++					}
++				}
++				px0 = *(volatile uint32_t *)(panel_rd +
++				    (uint64_t)(y0 + 4u) * panel_pitch + 4u);
++				px1 = *(volatile uint32_t *)(panel_rd +
++				    (uint64_t)(y0 + 40u) * panel_pitch + 4u);
++				px2 = *(volatile uint32_t *)(panel_rd +
++				    (uint64_t)(panel_h - 1u) * panel_pitch + 4u);
++			}
++			printf("GAUGUIN CP: panel %s (fence=%#x tries=%u)\n",
++			    (f2 == 0x600d0a05u) ? "RETIRED" : "STUCK", f2, tries2);
++			printf("GAUGUIN CP: panel px row%u=%#x row%u=%#x row%u=%#x"
++			    " hits=%u/%u/%u of %u cpu map=%#llx\n",
++			    y0 + 4u, px0, y0 + 40u, px1, panel_h - 1u, px2,
++			    hit0, hit1, hit2, panel_w, (uint64_t)panel_rd);
++			(void)sweet_log_flush_now();
++			printf("GAUGUIN CP: panel protect=%#x fault=%#x int=%#x\n",
++			    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++			    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
++			    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++			(void)sweet_log_flush_now();
++			{
++				vm_offset_t s = gg_smmu_base();
++
++				if (s) {
++					vm_offset_t cb = s + SMMU_CB(GG_CB1);
++
++					printf("GAUGUIN CP: panel smmu cb1 fsr=%#x"
++					    " far=%#x\n", gg_rd(cb, SMMU_CB_FSR),
++					    gg_rd(cb, SMMU_CB_FAR));
++					(void)sweet_log_flush_now();
++				}
++			}
++			wptr = n2;
++		}
+ 	}
+ 
+ 	/* Release PAS 13 (fajita console76 shuts down after the test). */

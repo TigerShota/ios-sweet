@@ -2,7 +2,17 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-06 (LATEST): v54 - THE GPU PIPE IS END-TO-END: 2D BLIT RETIRES, THREE BANDS PAINT THE REFERENCE PICTURE, SMMU CLEAN (0122) <<<
+### >>> UPDATE 2026-11-06 (LATEST): v55 / 0123 - FIRST GPU WRITE INTO THE REAL PANEL BUFFER (PAGE TABLES + PER-ROW 2D BLITS); UNFLASHED <<<
+- v54 proved the 2D pipe end to end. 0123 is the first step of "the GPU takes part in presentation": map the buffer AppleCLCD actually scans out into CB1 and paint its bottom 64 rows with the already-proven solid blit. `xnu/patches/0123-gauguin-gpu-panel-blit.patch` (LF, 4 hunks; regenerated from `temp\gpu-0122` -> `temp\gpu-0123` and `git apply` reproduces the source byte for byte). Not built, not flashed yet.
+- Panel facts that shaped it: `AppleCLCD 1080x2400 stride 4320 at 0xa0000000` = 10,368,000 B; stride 4320 is not a multiple of 64.
+- **Destination addressing rule (mesa `fd6_blitter.c`, authoritative)**: `RB_A2D_DEST_BUFFER_BASE` is 64 B aligned (a6xx.xml `align="64"`) and the destination rect is relative to that base with **Y = 0**; the row offset belongs in the address:
+  `doff = byte_offset & ~0x3f; dshift = byte_offset & 0x3f -> GRAS_2D_DST_TL_X; TL_Y = BR_Y = 0; pitch = align(width,64)>>6`.
+- Consequence: a multi-row blit cannot describe a 4320 B stride (pitch unit is 64 B, 4320 = 67.5 x 64), so each row is its own `CP_BLIT` with `h == 1`. Odd rows start 32 B past a 64 B boundary: `base = row_start - 32`, `TL_X = 8 px`, `BR_X = 8 + 1079` - still exactly the 4320 B of that row.
+- 0123 content: panel VA window `0x40400000` behind L2 entries `0x202..`, five 4 KiB L3 tables from `CPMEM_L3P 0x19000` (2 of the 7 cpmem-tail tables unused), 2532 4 KiB PTEs with `PTE_PAGE_NC`, plus `ml_io_map` for a CPU read-back. Then, only if step22 retired: 64 one-row blits at the bottom of the panel (rows 2336..2367 orange, 2368..2399 blue, `CP_WAIT_FOR_IDLE` after each), a `CACHE_FLUSH_TS` fence `0x600d0a05` at scratch+0x1a0, and row sampling. Pixel reads run **before any printf** because the kernel text console paints the bottom of this same buffer on every log flush.
+- Judge v55 strictly: `panel 1080x2400 pitch=4320 pa=0xa0000000 bytes=10368000 pages=2532 tables=5` -> `panel mapped va=0x40400000 ... pte0=... pte2531=...` -> `panel RETIRED (fence=0x600d0a05 tries=1)` -> `panel px row2340=0xffff8000 row2376=0xff0080ff row2399=0xff0080ff hits=1080/1080/1080`. All-zero pixels with a retired fence = the 64 B base rule or the `TL_X` pixel unit is wrong (next probe: even rows only, which are naturally aligned); `smmu cb1 fsr`/`far` in the 0x40de... range = the panel PTE window is wrong.
+- Expect the band to be erased within ~100 ms even if it appears: `present()` still `memcpy`s every enabled layer into the whole panel 10x/s. The next milestone is to carve the GPU band out of `present()` (or move the layer copy itself into the GPU), and to double-buffer/fence so the CPU never scans a half-painted frame.
+
+### >>> UPDATE 2026-11-06 (superseded): v54 - THE GPU PIPE IS END-TO-END: 2D BLIT RETIRES, THREE BANDS PAINT THE REFERENCE PICTURE, SMMU CLEAN (0122) <<<
 - v54 = `0122` (commit `e261be5`). Image `D:\hackios\out\shim-v54` (17,547,264 B, payload verified). Log `D:\hackios\out\sweetlog-v54\v54.txt`.
 - **Page tables complete**: `target pa=0xcd4f0000 va=0x40200000 512x512 pitch=2048 pte0=0xcd4f0e43 pte255=0xcd5efe43` - all 256 4 KiB PTEs of the 1 MiB target are present (the 16 KiB `PAGE_SIZE` bug is gone).
 - **step22 completes on the first try**: `step22 RETIRED (flush=0x600dd22e tries=1 rptr=171 reg=0xab wptr=171)`, stage fences `f1=0x600d0a01 f2=0x600d0a02 f3=0x600d0a03 f4=0x600d0a04` - all four landed. No more front-end dispatch race (the per-band `CP_WAIT_FOR_IDLE` works).
