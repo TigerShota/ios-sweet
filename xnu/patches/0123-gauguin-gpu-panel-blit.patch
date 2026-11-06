@@ -50,7 +50,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +	 */
 +	{
 +		PE_Video pv;
-+		uint32_t pages, tables, t, p;
++		uint32_t pages, tables, t, p, li;
 +		int rc;
 +
 +		bzero(&pv, sizeof(pv));
@@ -93,13 +93,13 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +					    (panel_pa + 0x1000u * p) | PTE_PAGE_NC);
 +				}
 +				flush_dcache64((addr64_t)cpmem, CPMEM_SIZE, FALSE);
++				li = pages - 1u;
 +				printf("GAUGUIN CP: panel mapped va=%#x tables=%u"
 +				    " pages=%u pte0=%#x pte%u=%#x\n",
 +				    CP_VA_PANEL, tables, pages,
-+				    gm_rd32_raw(CPMEM_L3P),
-+				    pages - 1u,
-+				    gm_rd32_raw(CPMEM_L3P + 0x1000u *
-+				    ((pages - 1u) >> 9) + 8u * ((pages - 1u) & 0x1ffu));
++				    gm_rd32_raw(CPMEM_L3P), li,
++				    gm_rd32_raw(CPMEM_L3P + 0x1000u * (li >> 9) +
++				    8u * (li & 0x1ffu)));
 +				(void)sweet_log_flush_now();
 +				panel_rd = ml_io_map((vm_offset_t)panel_pa,
 +				    panel_bytes);
