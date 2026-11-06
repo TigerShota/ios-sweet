@@ -2,7 +2,7 @@ diff --git a/xnu/iokit/Kernel/arm/SweetAdreno.cpp b/xnu/iokit/Kernel/arm/SweetAd
 new file mode 100644
 --- /dev/null
 +++ b/xnu/iokit/Kernel/arm/SweetAdreno.cpp
-@@ -0,0 +1,690 @@
+@@ -0,0 +1,709 @@
 +/*
 + * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
 + * Ported from yfl520/hackios-raphael (MIT license), adapted for
@@ -683,14 +683,33 @@ new file mode 100644
 +	return ret;
 +}
 +
-+/* ---- gGPULock init: called from gauguin_gpu_start in bsd/dev/gauguin_gpu.c ---- */
++/* ---- HakiosGPU service creation: called from gauguin_gpu_init() ---- */
 +
-+void
++extern "C" void
 +sweet_adreno_init(void)
 +{
++	IOService * provider;
++	HakiosGPU * gpu;
++
 +	if (gGPULock == NULL) {
 +		gGPULock = IOLockAlloc();
 +	}
++	provider = IOService::getPlatform();
++	gpu = OSTypeAlloc(HakiosGPU);
++	if (gpu == NULL || provider == NULL ||
++	    !gpu->init() || !gpu->attach(provider)) {
++		OSSafeReleaseNULL(gpu);
++		IOLog("HakiosGPU: cannot create the service\n");
++		return;
++	}
++	if (!gpu->start(provider)) {
++		gpu->detach(provider);
++		IOLog("HakiosGPU: the service did not start\n");
++		gpu->release();
++		return;
++	}
++	gpu->release();
++	IOLog("HakiosGPU: service registered\n");
 +}
 +
 diff --git a/xnu/iokit/conf/files.arm64 b/xnu/iokit/conf/files.arm64
