@@ -1,0 +1,1940 @@
+Darwin Kernel Version 22.6.0: Mon Aug 14 05:06:07 UTC 2023; runner:xnu-8796.141.3
+pmap_startup() init/release time: 5992 microsec
+pmap_startup() delayed init/release of 0 pages
+vm_page_bootstrap: 54649 free pages, 2631 wired pages, (up to 0 of which are delayed free)
+VM boostrap: 97 maps, 204 entries and 512 holes available
+Maximum number of VM swap files: 100
+bsd_pageable            : 0xfffffe1000450000 - 0xfffffe1002658000 (34M)
+zone_meta               : 0xfffffe1002658000 - 0xfffffe100a8fc000 (130M)
+zones                   : 0xfffffe100a8fc000 - 0xfffffe300a8fc000 (128G)
+compressor              : 0xfffffe300a8fc000 - 0xfffffe3389a74000 (13G)
+ipc_kernel_copy_map     : 0xfffffe3389a74000 - 0xfffffe338a274000 (8M)
+gIOKitPageableFixed0    : 0xfffffe338a274000 - 0xfffffe3390274000 (96M)
+gIOKitPageableFixed1    : 0xfffffe3390274000 - 0xfffffe3396274000 (96M)
+gIOKitPageableFixed2    : 0xfffffe3396274000 - 0xfffffe339c274000 (96M)
+kmem_ptr_range          : 0xfffffe339c274000 - 0xfffffe4ab0e74000 (92G)
+io_submap               : 0xfffffe4ab0e74000 - 0xfffffe4ab1674000 (8M)
+kmem_sprayqtn_range     : 0xfffffe4ab1674000 - 0xfffffe4acc348000 (428M)
+kmem_data_range         : 0xfffffe4acc348000 - 0xfffffe8ff14b4000 (276G)
+mb                      : 0xfffffe8ff14b4000 - 0xfffffe8ff54b4000 (64M)
+gIOKitPageableFixed3    : 0xfffffe8ff54b4000 - 0xfffffe8ffb4b4000 (96M)
+ipc_kernel_map          : 0xfffffe8ffb4b4000 - 0xfffffe8fff4b4000 (64M)
+bufferhdr               : 0xfffffe8fff4b4000 - 0xfffffe8fff554000 (640K)
+kmem_ptr_range_meta     : 0xfffffe8fff554000 - 0xfffffe8fffdfc000 (8M)
+kmem_large_ranges[1]    : 0 - 0 (0B)
+kmem_large_ranges[2]    : 0 - 0 (0B)
+kmem_large_ranges[3]    : 0 - 0 (0B)
+kmem_large_ranges[4]    : 0xfffffe4ab4c0e800 - 0xfffffe4acc348000 (375M)
+kmem_large_ranges[5]    : 0xfffffe5370d75800 - 0xfffffe8ff14b4000 (242G)
+"vm_compressor_mode" is 4
+zone_init: pgzalloc  0xfffffe100a8fc000:0xfffffe100afb0000 (6M) [214 slots]
+zone_init: map VM    0xfffffe100afb0000:0xfffffe14d7b78000 (19G)
+zone_init: map RO    0xfffffe14d7b78000:0xfffffe16714bc000 (6G)
+zone_init: map GEN0  0xfffffe16714bc000:0xfffffe1b3e088000 (19G)
+zone_init: map GEN1  0xfffffe1b3e088000:0xfffffe200ac54000 (19G)
+zone_init: map GEN2  0xfffffe200ac54000:0xfffffe24d7820000 (19G)
+zone_init: map GEN3  0xfffffe24d7820000:0xfffffe29a43ec000 (19G)
+zone_init: map DATA  0xfffffe29a43ec000:0xfffffe300a8fc000 (25G)
+zone_init: metadata  0xfffffe1002668000:0xfffffe100a668000 (128M)
+zone_init: metabits  0xfffffe100a668000:0xfffffe100a8ec000 (2576K)
+zone_init: extra     0:0 (0B)
+VM bootstrap done: 85 maps, 165 entries and 502 holes left
+Long logs support configured: size: 16384
+Log queues configured: slot count: 64, per-slot size: 32768, total size: 2097152
+Firehose configured: 16 chunks, 8 io pages
+OSLog stream configured: stream: 8192 bytes, cache: 2112 bytes
+OSLog stream verification: 0
+standard timeslicing quantum is 10000 us
+standard background quantum is 2500 us
+mig_table_max_displ = 54 mach_kobj_count = 374
+kdp_core zlib memory 0x8000
+Serial requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
+iBoot version: sweet-shim
+"name" not a kext
+"AAPL,phandle" not a kext
+SWEET AMFI: built-in interface registered (XML entitlements)
+calling mpo_policy_init for vnguard
+Security policy loaded: Guarded vnode policy (vnguard)
+SWEET: trust caches unavailable (Image4/AMFI not installed)
+keepsyms boot arg specified; keeping linkedit segment for symbols.
+No POST boot-arg set.
+SWEET: starting device-tree platform expert
+SWEET: platform expert registered
+SWEET AKS: AppleKeyStore registered (no passcode, unlocked)
+SWEET WDT: IOWatchdog registered (accepts check-ins, never fires)
+SWEET SURF: IOCoreSurfaceRoot registered
+SWEET HID: buttons registered (test every 0 s)
+SWEET HID: touch registered
+SWEET BATTERY: static fallback, 100% 4200mV external=1 charging=0
+SWEET FB: AppleCLCD 1080x2400 stride 4320 at 0xa0000000, default surface 1, presented as 1125x2436
+SWEET CPU: requested=8 selected=8 (limit=8)
+SWEET CPU: cpu=0 mpidr=0x0 came alive; SGI1 OK
+SWEET CPU: cpu=1 CPU_ON target=0x100 entry_pa=0xc94e6000 context=1
+SWEET CPU: cpu=1 PSCI CPU_ON rc=0
+SWEET CPU: cpu=1 mpidr=0x100 came alive; SGI1 OK
+SWEET CPU: cpu=2 CPU_ON target=0x200 entry_pa=0xc94e6000 context=2
+SWEET CPU: cpu=2 PSCI CPU_ON rc=0
+SWEET CPU: cpu=2 mpidr=0x200 came alive; SGI1 OK
+SWEET CPU: cpu=3 CPU_ON target=0x300 entry_pa=0xc94e6000 context=3
+SWEET CPU: cpu=3 PSCI CPU_ON rc=0
+SWEET CPU: cpu=3 mpidr=0x300 came alive; SGI1 OK
+SWEET CPU: cpu=4 CPU_ON target=0x400 entry_pa=0xc94e6000 context=4
+SWEET CPU: cpu=4 PSCI CPU_ON rc=0
+SWEET CPU: cpu=4 mpidr=0x400 came alive; SGI1 OK
+SWEET CPU: cpu=5 CPU_ON target=0x500 entry_pa=0xc94e6000 context=5
+SWEET CPU: cpu=5 PSCI CPU_ON rc=0
+SWEET CPU: cpu=5 mpidr=0x500 came alive; SGI1 OK
+SWEET CPU: cpu=6 CPU_ON target=0x600 entry_pa=0xc94e6000 context=6
+SWEET CPU: cpu=6 PSCI CPU_ON rc=0
+SWEET CPU: cpu=6 mpidr=0x600 came alive; SGI1 OK
+SWEET CPU: cpu=7 CPU_ON target=0x700 entry_pa=0xc94e6000 context=7
+SWEET CPU: cpu=7 PSCI CPU_ON rc=0
+SWEET CPU: cpu=7 mpidr=0x700 came alive; SGI1 OK
+SWEET CPU: 8/8 CPUs initialized, SGI1 verified
+Copyright (c) 1982, 1986, 1989, 1991, 1993
+	The Regents of the University of California. All rights reserved.
+
+MAC Framework successfully initialized
+using 1097 buffer headers and 1097 cluster IO buffer headers
+ktriage_register_subsystem_strings: set subsystem 8 strings
+calling mpo_policy_init for SWEET AMFI
+Security policy loaded: SWEET built-in Mobile File Integrity (SWEET AMFI)
+SWEET AMFI: platform binary policy registered (0)
+calling mpo_policy_init for Sandbox
+Security policy loaded: SWEET permissive sandbox stand-in (Sandbox)
+SWEET Sandbox: permissive policy registered (0)
+SWEET HFS: hfs-627.100.6 registered
+mcache: 8 CPU(s), 64 bytes CPU cache line size
+mbinit: done [64 MB total pool size, (42/21) split]
+dlil_init: Waiting for all the create dlil kernel threads to get scheduled at least once.
+dlil_init: All the created dlil kernel threads have been scheduled at least once. Proceeding.
+ifnet_attach: All kernel threads created for interface lo0 have been scheduled at least once. Proceeding.
+ifnet_attach: All kernel threads created for interface gif0 have been scheduled at least once. Proceeding.
+skip attaching fsw to lo0 using legacy TX modelifnet_attach: All kernel threads created for interface stf0 have been scheduled at least once. Proceeding.
+SWEET UFS: "userdata" on LUN 0: first block 0x2c1000, 109595 MiB, read-write, DMA at 0xcb71c000
+SWEET LOG: console log to the last 4100 KiB of the partition (block 0x1d827fa)
+SWEET KEYS: arb=0x50010000 apids=512 pon-apid=308 gpio4-apid=316 pon=0x4/1 gpio=0x1/1 mode=0/1 en=0x80/1 subtype=0x10/1
+SWEET TOUCH: disabled (sweettouch=0)
+GAUGUIN TOUCH: starting in 45 s
+GAUGUIN BT: disabled (gauguinbt=0)
+GAUGUIN GPU: starting in 30 s
+BSD root: ufsroot0, major 1, minor 0
+jnl: b(1, 0): replay_journal: from: 8064512 to: 1736704 (joffset 0x82000)
+jnl: b(1, 0): journal replay done.
+hfs: Removed 13 orphaned / unlinked files and 27 directories 
+hfs: mounted iOSRoot on device b(1, 0)
+SWEET: root volume is not authenticated (error 25); continuing unsealed
+No POST boot-arg set.
+load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development
+VM Swap Subsystem is ON
+load_init_program: attempting to load /sbin/launchd
+exec launchd
+shared_region: 0x2127959f4fbab049 [1(launchd)] check_np(0x16d747bc0) vm_shared_region_start_address() failed
+SWEET Sandbox: launchd op 2
+Darwin Ignition Sequence Version 1.0.0: Tue Jul  2 20:41:23 PDT 2024; root:libignition-51~1974/libignition_core/RELEASE_ARM64
+libignition: 1: arguments           :
+libignition: 1:   ignition level    : 0x1
+libignition: 1:   force dylib root  : 0x0
+libignition: 1:   halt after stage  : n/a
+libignition: 1: ignition blob not available
+libignition: 1: configuration         :
+libignition: 1:   program             : launchd
+libignition: 1:   os environment      : n/a
+libignition: 1:   rd                  : ufsroot0
+libignition: 1:   arp0                : n/a
+libignition: 1:   rp                  : n/a
+libignition: 1:   pivot src           : n/a
+libignition: 1:   root ramdisk        : 0x0
+libignition: 1:   restore             : 0x0
+libignition: 1:   root device info    : 0x0
+libignition: 1:   can haz debugger    : 0x1
+libignition: 1:   rootfs mount flags  : 0x480d000
+libignition: 1:   ecid                : 0x0
+libignition: 1:   hardware target     : d22ap
+libignition: 1:   initproc            : 0x1
+libignition: 1:   single user         : 0x0
+libignition: 1:   userspace reboot    : 0x0
+libignition: 1:   secure boot level   : 0x0
+libignition: 1:   os version          : n/a
+libignition: 1: parameters          :
+libignition: 1:   version           : 0x1
+libignition: 1:   argc              : 0x1
+libignition: 1:   log fd            : 0xffffffffffffffff
+libignition: 1:   platform          : 0x2
+libignition: 1: boot spec           :
+libignition: 1:   name              : local
+libignition: 1:   stage count       : 0x7
+libignition: 1:        hello: commence primary ignition
+libignition: 1:        hello: hello from launchd.1
+libignition: 1:      preboot: ignition level insufficient: actual = 1, required >= 2
+libignition: 1: cryptex1 sniff: ignition level insufficient: actual = 1, required >= 2
+libignition: 1:        graft: ignition level insufficient: actual = 1, required >= 3
+libignition: 1: select os cryptex path: ignition level insufficient: actual = 1, required >= 3
+libignition: 1:  dylib_cache: discovering shared library cache
+libignition: 1:  dylib_cache: finding shared cache on system volume: ignition level = 1, search root fd = 4, subpath = System/Library/Caches/com.apple.dyld/
+libignition: 1:  dylib_cache: opened shared cache directory: /System/Library/Caches/com.apple.dyld
+libignition: 1:      goodbye: ignition sequence complete
+shared_region: 0x2127959f4fbab049 [1(launchd)] check_np(0x16d747150) vm_shared_region_start_address() failed
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c1979:'dyld_shared_cache_arm64'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c3519:'dyld_shared_cache_arm64.01'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c3409:'dyld_shared_cache_arm64.02'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c32f9:'dyld_shared_cache_arm64.03'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c31e9:'dyld_shared_cache_arm64.04'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c30d9:'dyld_shared_cache_arm64.05'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c2fc9:'dyld_shared_cache_arm64.06'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c2eb9:'dyld_shared_cache_arm64.07'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c2da9:'dyld_shared_cache_arm64.08'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c40c9:'dyld_shared_cache_arm64.09'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c3fb9:'dyld_shared_cache_arm64.10'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c3ea9:'dyld_shared_cache_arm64.11'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c3c89:'dyld_shared_cache_arm64.12'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c3b79:'dyld_shared_cache_arm64.13'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c3959:'dyld_shared_cache_arm64.14'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c3849:'dyld_shared_cache_arm64.15'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c3629:'dyld_shared_cache_arm64.16'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c4b69:'dyld_shared_cache_arm64.17'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c4a59:'dyld_shared_cache_arm64.18'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c4949:'dyld_shared_cache_arm64.19'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c4839:'dyld_shared_cache_arm64.20'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c4509:'dyld_shared_cache_arm64.21'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c54f9:'dyld_shared_cache_arm64.22'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c53e9:'dyld_shared_cache_arm64.23'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c52d9:'dyld_shared_cache_arm64.24'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c50b9:'dyld_shared_cache_arm64.25'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c4fa9:'dyld_shared_cache_arm64.26'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c4e99:'dyld_shared_cache_arm64.27.dylddata'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c4d89:'dyld_shared_cache_arm64.28.dyldlinkedit'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c4c79:'dyld_shared_cache_arm64.29'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c1869:'dyld_shared_cache_arm64.30'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c5719:'dyld_shared_cache_arm64.31'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98c5609:'dyld_shared_cache_arm64.32'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98b9979:'dyld_shared_cache_arm64.33'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98ba1f9:'dyld_shared_cache_arm64.34'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98ba0e9:'dyld_shared_cache_arm64.35'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98b9fd9:'dyld_shared_cache_arm64.36'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98b9ec9:'dyld_shared_cache_arm64.37'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98b9db9:'dyld_shared_cache_arm64.38'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98b9ca9:'dyld_shared_cache_arm64.39'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98b9b99:'dyld_shared_cache_arm64.40'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x2127958a82b15a89:'dyld_shared_cache_arm64.41.dylddata'): not in trust cache
+shared_region: 0x2127959f4fbab049 [1(launchd)] map(0x21279590e98baa79:'dyld_shared_cache_arm64.42.dyldlinkedit'): not in trust cache
+SWEET Sandbox: launchd op 4
+com.apple.xpc.launchd|1969-12-31 16:00:58.899622 <Notice>: hello
+com.apple.xpc.launchd|1969-12-31 16:00:58.905349 <Error>: Could not opt into 50 MB Jetsam high watermark: 22: Invalid argument
+com.apple.xpc.launchd|1969-12-31 16:00:58.905768 <Notice>: Darwin Bootstrapper Version 7.0.0: Thu Feb  1 20:33:09 PST 2024; root:libxpc_executables-2462.140.4.702.1~1/launchd/RELEASE_ARM64
+com.apple.xpc.launchd|1969-12-31 16:00:58.905896 <Notice>: boot-args = debug=0xc serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 wdt=-1 sweetusb=0 sweettouch=0 sweetfb_noconsole=1 sweetfb_hz=30 ufslogsecs=5 sweetsample=SpringBoard,backboardd,lsd,MobileGestaltHelper,securityd,installd,misagent,misd,installcoordinationd,containermanagerd,launchd,logd sweetiolog=MobileGestaltHelper,securityd,lsd,backboardd gauguingpu=2 gauguinbt=0 gauguinbtclk=1
+com.apple.xpc.launchd|1969-12-31 16:00:58.911595 (system) <Notice>: entering ondemand mode
+com.apple.xpc.launchd|1969-12-31 16:00:58.914469 (system) <Notice>: created
+SWEET NET: launchd lo0 add address 127.0.0.1
+skip attaching fsw to lo0 using legacy TX modelcom.apple.xpc.launchd|1969-12-31 16:00:58.916154 (mount-phase-1) <Notice>: Doing boot task
+exec mount
+failed to get filesystem info
+failed to get filesystem info
+mount: data volume missing, but not required in env: 0
+vnode_create_internal: alias vnode 0xfffffe16716bf9a0 is in state of change (start)
+vnode_create_internal: alias vnode 0xfffffe16716bf9a0 is in state of change (end)
+exec mount_hfs
+GetMasterBlock: Error 16 opening /dev/ufsroot0
+/dev/ufsroot0 on / (hfs, local, journaled, noatime)
+ERROR: BindFS bindfs_mount: lookup of /private/preboot/5CBE36011D7D831515CDF1122A93FFCAD48B05E9194388AD12E9752A1AE4A5A0B934008B37985301041D7E086FFF5205/usr/standalone/firmware failed error: 2
+com.apple.xpc.launchd|1969-12-31 16:00:59.079997 (data-protection) <Notice>: Doing boot task
+exec seputil
+init_data_protection: No SEP present on this device
+com.apple.xpc.launchd|1969-12-31 16:00:59.219027 (finish-obliteration) <Notice>: Doing boot task
+exec mobile_obliterator
+Obliterator: In INIT check
+Wed Dec 31 16:00:59 1969: checkOblitNVRAMkey: IORegistryEntryFromPath failed [gF: 0x0000000000000000]
+Obliterator: No obliteration needed, continue booting, returning 0
+com.apple.xpc.launchd|1969-12-31 16:00:59.292873 (detect-installed-roots) <Notice>: Doing boot task
+com.apple.xpc.launchd|1969-12-31 16:00:59.293659 <Notice>: No cookie from system volume
+com.apple.xpc.launchd|1969-12-31 16:00:59.293855 <Notice>: No cookie: /private/preboot/5CBE36011D7D831515CDF1122A93FFCAD48B05E9194388AD12E9752A1AE4A5A0B934008B37985301041D7E086FFF5205/.roots-installed
+com.apple.xpc.launchd|1969-12-31 16:00:59.293900 (commit-boot-mode) <Notice>: Doing boot task
+com.apple.xpc.launchd|1969-12-31 16:00:59.293936 <Notice>: boot-mode committed: (null)
+com.apple.xpc.launchd|1969-12-31 16:00:59.293976 (restore-datapartition) <Notice>: Doing boot task
+com.apple.xpc.launchd|1969-12-31 16:00:59.295898 (restore-datapartition) <Notice>: optional boot task not present
+com.apple.xpc.launchd|1969-12-31 16:00:59.295972 (mount-phase-2) <Notice>: Doing boot task
+exec mount
+failed to get filesystem info
+failed to get filesystem info
+mount: data volume missing, but not required in env: 0
+ERROR: BindFS bindfs_mount: lookup of /private/var/hardware/Pearl/System/Library/Pearl/ReferenceFrames failed error: 2
+ERROR: BindFS bindfs_mount: lookup of /private/var/hardware/FactoryData/System/Library/Caches/com.apple.factorydata failed error: 2
+com.apple.xpc.launchd|1969-12-31 16:00:59.321012 (init-with-data-volume) <Notice>: Doing boot task
+com.apple.xpc.launchd|1969-12-31 16:00:59.344339 (MSUEarlyBootTask) <Notice>: Doing boot task
+exec MSUEarlyBootTask
+MSUEarlyBootTask: MSUEarlyBootTask running
+main: Content from the ramdisk will be present at /private/var/MobileSoftwareUpdate//5cbe36011d7d831515cdf1122a93ffcad48b05e9194388ad12e9752a1ae4a5a0b934008b37985301041d7e086fff5205-MSUData if it exists
+MSUEarlyBootTask: I have nothing to do. Goodbye!!
+com.apple.xpc.launchd|1969-12-31 16:00:59.440060 (fips) <Notice>: Doing boot task
+exec cc_fips_test
+About to call the FIPS_POST function in the corecrypto.dylib
+Tracing: disabled
+FIPSPOST_USER [1141560650] fipspost_post:152: [FIPSPOST][Module-ID] Apple corecrypto Module v13.0 [Apple ARM, User, Software, SL1]
+FIPSPOST_USER [1141595433] fipspost_post:160: PASSED: (1 ms) - fipspost_post_hmac
+FIPSPOST_USER [1141658963] fipspost_post:164: PASSED: (2 ms) - fipspost_post_integrity
+FIPSPOST_USER [1141669405] fipspost_post:168: PASSED: (0 ms) - fipspost_post_indicator
+FIPSPOST_USER [1141675640] fipspost_post:169: PASSED: (0 ms) - fipspost_post_aes_ecb
+FIPSPOST_USER [1141681771] fipspost_post:170: PASSED: (0 ms) - fipspost_post_aes_cbc
+FIPSPOST_USER [1141993498] fipspost_post:171: PASSED: (15 ms) - fipspost_post_rsa_sig
+FIPSPOST_USER [1142544250] fipspost_post:172: PASSED: (28 ms) - fipspost_post_ecdsa
+FIPSPOST_USER [1142570618] fipspost_post:173: PASSED: (1 ms) - fipspost_post_ecdh
+FIPSPOST_USER [1142576895] fipspost_post:174: PASSED: (0 ms) - fipspost_post_aes_ccm
+FIPSPOST_USER [1142583298] fipspost_post:175: PASSED: (0 ms) - fipspost_post_aes_cmac
+FIPSPOST_USER [1142591616] fipspost_post:176: PASSED: (0 ms) - fipspost_post_hkdf
+FIPSPOST_USER [1143345517] fipspost_post:177: PASSED: (38 ms) - fipspost_post_pbkdf
+FIPSPOST_USER [1143353188] fipspost_post:178: PASSED: (0 ms) - fipspost_post_drbg_hmac
+FIPSPOST_USER [1143360445] fipspost_post:180: PASSED: (0 ms) - fipspost_post_kdf_ctr
+FIPSPOST_USER [1143366646] fipspost_post:181: PASSED: (0 ms) - fipspost_post_aes_gcm
+FIPSPOST_USER [1143372819] fipspost_post:182: PASSED: (0 ms) - fipspost_post_aes_xts
+FIPSPOST_USER [1143380246] fipspost_post:183: PASSED: (0 ms) - fipspost_post_tdes_ecb
+FIPSPOST_USER [1143386705] fipspost_post:184: PASSED: (0 ms) - fipspost_post_drbg_ctr
+FIPSPOST_USER [1144496533] fipspost_post:186: PASSED: (57 ms) - fipspost_post_ffdh
+FIPSPOST_USER [1145121001] fipspost_post:187: PASSED: (32 ms) - fipspost_post_rsa_enc_dec
+FIPSPOST_USER [1145127275] fipspost_post:206: all tests PASSED (185 ms)
+Returned from calling the FIPS_POST function in the corecrypto.dylib: result = true
+com.apple.xpc.launchd|1969-12-31 16:00:59.643603 (keybag) <Notice>: Doing boot task
+exec keybagd
+****** IN MKB_INIT ****
+SWEET AKS: keybagd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: keybagd sel 14 arg0 0 in 0/0 out 1/0 -> 0x0
+SWEET AKS: keybagd sel 14 arg0 0 in 0/0 out 1/0 -> 0x0
+MKB_INIT: mount is with NO CPROTECT:0x1480d000 on  (/private/var/)
+MKB_INIT: mount point (/private/var/) does not support Data Protection
+MKB_INIT: System Keybag loaded
+MKB_INIT: Could not get options entry from the device tree
+Unable to set /private/var//tmp to class D!****** DONE MKB_INIT ****
+com.apple.xpc.launchd|1969-12-31 16:00:59.714411 (usermanagerd) <Notice>: Doing boot task
+exec usermanagerd
+****** IN UMD_INIT ****
+****** STARTING EARLYBOOT SETUP ****
+UMD_INIT: STARTING EARLYBOOT SETUP
+UMD_INIT: LOADING USER SESSIONS
+UMD_INIT: Device Configuration Type:0
+UMD_INIT: BOOTEDUSER is:501
+UMD_INIT: diskLoadUserSessions, APNSID:, set to 18446744073709551615
+UMD_INIT: Reloaded _gUserSessionTable (
+        {
+        MKBUserSessionCreateTimeStamp = "1970-01-01 00:03:18 +0000";
+        MKBUserSessionDirty = 0;
+        MKBUserSessionDisplayName = mobile;
+        MKBUserSessionFirstName = mobile;
+        MKBUserSessionForeground = 1;
+        MKBUserSessionGroupID = 501;
+        MKBUserSessionID = 501;
+        MKBUserSessionLanguage = "en_US";
+        MKBUserSessionLastName = mobile;
+        MKBUserSessionLibinfoHomeDir = "/var/mobile";
+        MKBUserSessionLoginTimeStamp = "1970-01-01 00:03:18 +0000";
+        MKBUserSessionLoginUser = 0;
+        MKBUserSessionName = mobile;
+        MKBUserSessionNeedsMount = 1;
+        MKBUserSessionShortName = mobile;
+        MKBUserSessionType = UserSessionOther;
+        MKBUserSessionUUID = "536C75CE-608A-4EE5-961B-5E9399011E8E";
+        MKBUserSessionVolumeFSType = UserVolumeAPFSNative;
+        MKBUserSessionisAdminKey = 1;
+        MKBUserSessionisPrimary = 1;
+    }
+)
+UMD_INIT: FOUND NO SYNC BUBBLE UIDS:0
+UMD_INIT: FOUND NO LRU TABLE UIDS:0
+UMD_INIT: FOUND NO VOLUMETYPE, setting up volume type
+UMD_INIT: Set the new volume type to APFSNativeDevice
+UMD_INIT: SAVING SESSION TODISK
+UMD_INIT: SESSION TABLE TO BLOB
+UMD_INIT: NOTHING TO SAVE IN LRU UID LIST
+UMD_INIT: diskSaveUserSessions Success
+UMD_INIT: Read user sessions in _gUserSessionTable (
+        {
+        MKBUserSessionCreateTimeStamp = "1970-01-01 00:03:18 +0000";
+        MKBUserSessionDirty = 0;
+        MKBUserSessionDisplayName = mobile;
+        MKBUserSessionFirstName = mobile;
+        MKBUserSessionForeground = 1;
+        MKBUserSessionGroupID = 501;
+        MKBUserSessionID = 501;
+        MKBUserSessionLanguage = "en_US";
+        MKBUserSessionLastName = mobile;
+        MKBUserSessionLibinfoHomeDir = "/var/mobile";
+        MKBUserSessionLoginTimeStamp = "1970-01-01 00:03:18 +0000";
+        MKBUserSessionLoginUser = 0;
+        MKBUserSessionName = mobile;
+        MKBUserSessionNeedsMount = 1;
+        MKBUserSessionShortName = mobile;
+        MKBUserSessionType = UserSessionOther;
+        MKBUserSessionUUID = "536C75CE-608A-4EE5-961B-5E9399011E8E";
+        MKBUserSessionVolumeFSType = UserVolumeAPFSNative;
+        MKBUserSessionisAdminKey = 1;
+        MKBUserSessionisPrimary = 1;
+    }
+)
+UMD_INIT: LOADED USER SESSIONS
+UMD_INIT: failed to read nextsession dict
+UMD_INIT: Unable to Obtained foreground, curFG:502, nextID:-1
+UMD_INIT: Failed to get next session, booting with default id to be Loginwindow UID
+UMD_INIT: BootedUser is:501
+UMD_INIT: Regular mode Setup for user:501: Num Sessions:1, CurrentsessionID:-1
+UMD_INIT: FAILED to Set Foreground ID + multiuser in commpage successfully
+UMD_INIT: LOADING PERSONA..
+UMD_INIT: Manifest version: 1
+UMD_INIT: Loaded Persona Generation ID from manifest:1
+UMD_INIT: Adding 1000 entry to persona Table for user:536C75CE-608A-4EE5-961B-5E9399011E8E
+UMD_INIT: Adding 200 entry to persona Table for user:536C75CE-608A-4EE5-961B-5E9399011E8E
+UMD_INIT: Adding 0 entry to persona Table for user:536C75CE-608A-4EE5-961B-5E9399011E8E
+UMD_INIT: Adding 100 entry to persona Table for user:536C75CE-608A-4EE5-961B-5E9399011E8E
+UMD_INIT: Adding 99 entry to persona Table for user:FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF
+UMD_INIT: Adding 199 entry to persona Table for user:FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF
+UMD_INIT: Loaded persona manifest
+UMD_INIT: Failed to retrieve info for kernel persona 99: No such process
+UMD_INIT: PersonaID:99 not loaded, loading..
+UMD_INIT: Allocated kernel persona with ID: 99, Type: 4, UID: 4294967295
+UMD_INIT: Failed to retrieve info for kernel persona 199: No such process
+UMD_INIT: PersonaID:199 not loaded, loading..
+UMD_INIT: Allocated kernel persona with ID: 199, Type: 6, UID: 4294967295
+UMD_INIT: Failed to retrieve info for kernel persona 1000: No such process
+UMD_INIT: PersonaID:1000 not loaded, loading..
+UMD_INIT: Allocated kernel persona with ID: 1000, Type: 5, UID: 501
+UMD_INIT: Failed to retrieve info for kernel persona 200: No such process
+UMD_INIT: PersonaID:200 not loaded, loading..
+UMD_INIT: Allocated kernel persona with ID: 200, Type: 6, UID: 501
+UMD_INIT: Failed to retrieve info for kernel persona 100: No such process
+UMD_INIT: PersonaID:100 not loaded, loading..
+UMD_INIT: Allocated kernel persona with ID: 100, Type: 4, UID: 501
+UMD_INIT: setup kernel personas
+UMD_INIT: Failed to notify_register_check com.apple.mobile.usermanagerd.personageneration_changed: 8
+UMD_INIT: Failed to notify generation changed: Failed to register for darwin notification token
+UMD_INIT: DONE EARLYBOOT SETUP
+****** DONE EARLYBOOT SETUP ****
+****** DONE UMD_INIT ****
+com.apple.xpc.launchd|1969-12-31 16:00:59.933100 (dirs_cleaner) <Notice>: Doing boot task
+exec dirs_cleaner
+dc_reset: /tmp: Invalid argument
+dc_reset: /var/run: Invalid argument
+exec xpcroleaccountd
+exec init_featureflags
+[System Event] [1151812312] [INFO] [Subsystem: launchd] [Event: mount-phase-1] Doing boot task
+[System Event] [1151820314] [INFO] [Subsystem: launchd] [Event: data-protection] Doing boot task
+[System Event] [1151827941] [INFO] [Subsystem: launchd] [Event: finish-obliteration] Doing boot task
+[System Event] [1151903090] [INFO] [Subsystem: launchd] [Event: detect-installed-roots] Doing boot task
+[System Event] [1151913021] [INFO] [Subsystem: launchd] [Event: commit-boot-mode] Doing boot task
+[System Event] [1151921516] [INFO] [Subsystem: launchd] [Event: restore-datapartition] Doing boot task
+[System Event] [1151928984] [INFO] [Subsystem: launchd] [Event: restore-datapartition] optional boot task not present
+[System Event] [1151936721] [INFO] [Subsystem: launchd] [Event: mount-phase-2] Doing boot task
+[System Event] [1151944599] [INFO] [Subsystem: launchd] [Event: init-with-data-volume] Doing boot task
+[System Event] [1151952100] [INFO] [Subsystem: launchd] [Event: MSUEarlyBootTask] Doing boot task
+[System Event] [1151959480] [INFO] [Subsystem: launchd] [Event: fips] Doing boot task
+[System Event] [1151966690] [INFO] [Subsystem: launchd] [Event: keybag] Doing boot task
+[System Event] [1151973977] [INFO] [Subsystem: launchd] [Event: usermanagerd] Doing boot task
+[System Event] [1151981312] [INFO] [Subsystem: launchd] [Event: dirs_cleaner] Doing boot task
+com.apple.xpc.launchd|1969-12-31 16:00:59.947238 <Notice>: launchd logging initialized. name: com.apple.xpc.launchd pid: 1
+com.apple.xpc.launchd|1969-12-31 16:00:59.947252 (xpcroleaccountd) <Notice>: Doing boot task
+[System Event] [1152003323] [INFO] [Subsystem: launchd] [Event: xpcroleaccountd] Doing boot task
+com.apple.xpc.launchd|1969-12-31 16:00:59.967253 (init_featureflags) <Notice>: Doing boot task
+[System Event] [1152021878] [INFO] [Subsystem: launchd] [Event: init_featureflags] Doing boot task
+com.apple.xpc.launchd|1969-12-31 16:01:00.265904 (auearlyboot) <Notice>: Doing boot task
+[System Event] [1157117512] [INFO] [Subsystem: launchd] [Event: auearlyboot] Doing boot task
+exec auearlyboot
+auearlyboot: -[FudEarlyBoot doFUDEarlyBoot:](): Starting Early Boot
+auearlyboot: -[AppleFirmwareUpdateController getEarlyBootListInternal:]: Pending critical earlyBoot entries (
+)
+auearlyboot: No Early Boot Accessories
+auearlyboot: -[FudEarlyBoot calculateTimeTakenForEarlyBootEntries] Time Taken to wait for critical earlyBoot entries: 0.000000 sec
+auearlyboot: -[FudEarlyBoot doFUDEarlyBoot:](): End Early Boot
+auearlyboot: Exitng Early Boot
+com.apple.xpc.launchd|1969-12-31 16:01:00.312062 (tzinit) <Notice>: Doing boot task
+[System Event] [1158003705] [INFO] [Subsystem: launchd] [Event: tzinit] Doing boot task
+exec tzinit
+com.apple.xpc.launchd|1969-12-31 16:01:00.326420 (finish-restore) <Notice>: Doing boot task
+[System Event] [1158279781] [INFO] [Subsystem: launchd] [Event: finish-restore] Doing boot task
+exec FinishRestoreFromBackup
+com.apple.xpc.launchd|1969-12-31 16:01:00.337661 (finish-demo-restore) <Notice>: Doing boot task
+[System Event] [1158495410] [INFO] [Subsystem: launchd] [Event: finish-demo-restore] Doing boot task
+exec finish_demo_restore
+com.apple.xpc.launchd|1969-12-31 16:01:00.359997 (sysstatuscheck) <Notice>: Doing boot task
+[System Event] [1158924103] [INFO] [Subsystem: launchd] [Event: sysstatuscheck] Doing boot task
+exec sysstatuscheck
+com.apple.xpc.launchd|1969-12-31 16:01:00.372831 (prng_seedctl) <Notice>: Doing boot task
+[System Event] [1159170689] [INFO] [Subsystem: launchd] [Event: prng_seedctl] Doing boot task
+exec prng_seedctl
+kern.prng.user_reseed_count: (-1) (2) No such file or directory
+failed to load virtual random: (-147) (-536870212)
+com.apple.xpc.launchd|1969-12-31 16:01:00.387677 (launchd_cache_loader) <Notice>: Doing boot task
+[System Event] [1159522099] [INFO] [Subsystem: launchd] [Event: launchd_cache_loader] Doing boot task
+exec launchd_cache_loader
+0 Found valid port: 7427 Valid: 1
+1 Found valid port: 0 Valid: 0
+2 Found valid port: 0 Valid: 0
+Using default cache paths
+Code: /System/Library/xpc/launchd.plist Sig: /System/Library/xpc/launchd.plist.sig
+Using unsecure cache: /System/Library/xpc/launchd.plist
+Trying to send bytes to launchd: 7427 16384
+Sending validated cache to launchd
+Cache sent to launchd successfully
+com.apple.xpc.launchd|1969-12-31 16:01:00.743694 <Notice>: launchd UUID: 5C15DB07-B3BC-3DF3-B62F-3E498B993B8E
+com.apple.xpc.launchd|1969-12-31 16:01:00.743784 (boot) <Notice>: Early boot complete. Continuing system boot.
+[System Event] [1166300210] [INFO] [Subsystem: launchd] [Event: boot] Early boot complete. Continuing system boot.
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec SpringBoard
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec UserEventAgent
+exec logd
+exec runningboardd
+exec mediaserverd
+exec configd
+exec keybagd
+exec misd
+exec remoted
+exec amfid
+exec watchdogd
+exec DumpPanic
+exec nfcd
+exec usermanagerd
+exec mtmergeprops
+exec locationd
+SWEET AKS: keybagd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+exec routined
+exec fairplayd.H2
+exec containermanagerd
+exec driverkitd
+exec mobiletimerd
+exec thermalmonitord
+exec fseventsd
+exec bluetoothd
+exec notifyd
+exec rapportd
+exec atc
+exec AppleCredentialManagerDaemon
+exec wcd
+exec WirelessRadioManagerd
+exec IOMFB_FDR_Loader
+exec peakpowermanagerd
+exec accessoryupdaterd
+exec imagent
+exec identityservicesd
+exec cloudpaird
+exec remindd
+exec OTACrashCopier
+exec sleepd
+exec backboardd
+exec dasd
+exec distnoted
+exec ptpd
+exec bluetoothuserd
+exec seld
+exec sharingd
+exec timed
+exec lockdownd
+exec xpcproxy
+exec logd_helper
+SWEET Sandbox: logd privilege 1002 granted
+exec xpcproxy
+exec cfprefsd
+SWEET WDT: watchdogd sel 0 in 0/0 out 1/0 -> ok
+SWEET Sandbox: distnoted op 28
+exec powerd
+exec passd
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec mobileassetd
+SWEET Sandbox: cfprefsd op 12
+exec xpcproxy
+exec xpcproxy
+exec ACCHWComponentAuthService
+exec apfs_iosd
+SWEET AKS: powerd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: powerd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec PowerUIAgent
+exec xpcproxy
+exec contextstored
+exec com.apple.datamigrator
+CRASH driverkitd[66] sig 9 code 0x0 sub 0x0 slide 0x41cbc000 mh 0x1006f4000
+CRASH driverkitd pc 0x2042cdd98 lr 0x1c2e603a4 sp 0x16f7091f0 fp 0x16f709260 far 0x1008fc000
+CRASH driverkitd bt 0x1c2e5512c 0x1c2e46514 0x1007926b4 0x1007dd37c 0x1007de81c 0x10071c31c 0x10076d00c 0x10078497c 0x10079acf8 0x1007964a8
+CRASH driverkitd reason ns 1 code 0x7: (none)
+exec xpcproxy
+exec xpcproxy
+exec ReportCrash
+exec MobileGestaltHelper
+IOK backboardd: path IODeviceTree:/arm-io/pearl-sep -> none
+IOK MobileGestaltHelper: path IODeviceTree:/defaults -> IOService
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">AppleDiagnosticDataAccess</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK MobileGestaltHelper: path IODeviceTree:/arm-io/pearl-sep -> none
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">AppleDiagnosticDataAccessReadOnly</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK MobileGestaltHelper: IOServiceMatched <dict ID="0"><key>IOProviderClass</key><string ID="1">AppleDiagnosticDataAccessReadOnly</string><key>IOServiceNotificationUser</key><true/></dict> -> notify
+exec biomed
+SWEET AKS: ReportCrash sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: ReportCrash sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: ReportCrash sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: contextstored sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: contextstored sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+hfs: set hardlink bit on vol=iOSRoot cnid=321331 inoid=834779957
+hfs: set hardlink bit on vol=iOSRoot cnid=321331 inoid=834779957
+hfs: set hardlink bit on vol=iOSRoot cnid=321331 inoid=834779957
+hfs: set hardlink bit on vol=iOSRoot cnid=321331 inoid=834779957
+hfs: set hardlink bit on vol=iOSRoot cnid=321331 inoid=834779957
+hfs: set hardlink bit on vol=iOSRoot cnid=321331 inoid=834779957
+IOK backboardd: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">ApplePearlSEPDriver</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+exec xpcproxy
+IOK backboardd: path IOService:/IOResources/AppleKeyStore -> AppleKeyStore
+IOK backboardd: open AppleKeyStore type 0 -> 0x0
+SWEET AKS: backboardd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: backboardd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec coreduetd
+exec lsd
+IOK backboardd: IOServiceFirstMatch <dict ID="0"><key>IOProviderClass</key><string ID="1">IOHIDDevice</string><key>DeviceUsagePairs</key><array ID="2"><dict ID="3"><key>DeviceUsage</key><integer size="32" ID="4">0x2</integer><key>DeviceUsagePage</key><intexec xpcproxy
+exec nanoregistryd
+IOK backboardd: IOServiceFirstMatch <dict ID="0"><key>IOProviderClass</key><string ID="1">IOService</string><key>IOPropertyMatch</key><dict ID="2"><key>HIDServiceSupport</key><true/></dict><key>IOServiceNotificationUser</key><true/></dict> -> notify
+exec apsd
+SWEET Sandbox: containermanager op 16
+SWEET Sandbox: containermanager op 15
+SWEET AKS: powerd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: powerd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+hfs: set hardlink bit on vol=iOSRoot cnid=321331 inoid=834779957
+hfs: set hardlink bit on vol=iOSRoot cnid=321331 inoid=834779957
+SWEET AKS: powerd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: powerd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec nehelper
+|backboardd| objc[56]: Class _GCHapticEvent is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee20) and /System/Library/HIDPlugins/ServicePlugins/DualShock4HIDServicePlugin.|backboardd| ck4HIDServicePlugin (0x104212bc0). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class GCHapticMotor is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee70) and /System/Library/HIDPlugins/ServicePlugins/DualShock4HIDServicePlugin.p|backboardd| k4HIDServicePlugin (0x104212c10). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class GCGamepadHIDServicePlugin is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eeec0) and /System/Library/HIDPlugins/ServicePlugins/DualShock4HIDSer|backboardd| gin/DualShock4HIDServicePlugin (0x104212cb0). One of the two will be used. Which one is undefined.
+SWEET AKS: mobileassetd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: mobileassetd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+|backboardd| objc[56]: Class GCGamepadHIDServicePlugin is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eeec0) and /System/Library/HIDPlugins/ServicePlugins/GenericGamepadHI|backboardd| .plugin/GenericGamepadHIDServicePlugin (0x104236a88). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class GCHapticMotor is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee70) and /System/Library/HIDPlugins/ServicePlugins/GenericGamepadHIDServicePlug|backboardd| ricGamepadHIDServicePlugin (0x104236ad8). One of the two will be used. Which one is undefined.
+exec xpcproxy
+|backboardd| objc[56]: Class _GCHapticEvent is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee20) and /System/Library/HIDPlugins/ServicePlugins/GenericGamepadHIDServicePlu|backboardd| ericGamepadHIDServicePlugin (0x104236b78). One of the two will be used. Which one is undefined.
+exec nsurlsessiond
+|backboardd| objc[56]: Class GCGamepadHIDServicePlugin is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eeec0) and /System/Library/HIDPlugins/ServicePlugins/JoyConHIDService|backboardd| JoyConHIDServicePlugin (0x104296ba0). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class GCHapticMotor is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee70) and /System/Library/HIDPlugins/ServicePlugins/JoyConHIDServicePlugin.plugi|backboardd| vicePlugin (0x104296bf0). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class _GCHapticEvent is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee20) and /System/Library/HIDPlugins/ServicePlugins/JoyConHIDServicePlugin.plug|backboardd| rvicePlugin (0x104296c40). One of the two will be used. Which one is undefined.
+SWEET AKS: containermanagerd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: containermanagerd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+|backboardd| objc[56]: Class _GCHapticEvent is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee20) and /System/Library/HIDPlugins/ServicePlugins/LunaHIDServicePlugin.plugin|backboardd| ePlugin (0x104252628). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class GCHapticMotor is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee70) and /System/Library/HIDPlugins/ServicePlugins/LunaHIDServicePlugin.plugin/|backboardd| Plugin (0x104252678). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class GCGamepadHIDServicePlugin is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eeec0) and /System/Library/HIDPlugins/ServicePlugins/LunaHIDServicePl|backboardd| naHIDServicePlugin (0x104252718). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class _GCHapticEvent is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee20) and /System/Library/HIDPlugins/ServicePlugins/XboxOneHIDServicePlugin.plu|backboardd| ServicePlugin (0x1042b6780). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class GCHapticMotor is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eee70) and /System/Library/HIDPlugins/ServicePlugins/XboxOneHIDServicePlugin.plug|backboardd| ervicePlugin (0x1042b67d0). One of the two will be used. Which one is undefined.
+|backboardd| objc[56]: Class GCGamepadHIDServicePlugin is implemented in both /System/Library/HIDPlugins/ServicePlugins/DualSenseHIDServicePlugin.plugin/DualSenseHIDServicePlugin (0x1041eeec0) and /System/Library/HIDPlugins/ServicePlugins/XboxOneHIDServic|backboardd| /XboxOneHIDServicePlugin (0x1042b6870). One of the two will be used. Which one is undefined.
+IOK backboardd: open SweetHIDTouch type 1702065507 -> 0x0
+SWEET HID: SweetHIDTouch open by IOHIDEventServiceUserClient -> 1
+IOK backboardd: open SweetHIDButtons type 1702065507 -> 0x0
+SWEET HID: SweetHIDButtons open by IOHIDEventServiceUserClient -> 1
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">bluetooth</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK lsd: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">AppleMobileFileIntegrity</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK lsd: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">IOPlatformExpertDevice</string><key>IOServiceNotificationUser</key><true/></dict> -> IOPlatformExpertDevice
+SWEET AKS: coreduetd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+ifnet_attach: Waiting for all kernel threads created for interface utun0 to get scheduled at least once.
+ifnet_attach: All kernel threads created for interface utun0 have been scheduled at least once. Proceeding.
+SWEET AKS: nanoregistryd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: nanoregistryd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+_dlil_attach_flowswitch_nexus: not attaching flowswitch to utun0
+SWEET Sandbox: rapportd privilege 12000 granted
+SWEET NET: configd lo0 add address 127.0.0.1
+SWEET NET: configd route add 127.0.0.0 gw 127.0.0.1 ifindex 0 flags 0x901
+IOK MobileGestaltHelper: path IOService:/ -> IOPlatformExpertDevice
+exec xpcproxy
+exec chronod
+exec xpcproxy
+exec aggregated
+exec securityd
+IOK securityd: path IOService:/IOResources/AppleKeyStore -> AppleKeyStore
+IOK securityd: open AppleKeyStore type 0 -> 0x0
+SWEET AKS: securityd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: securityd sel 14 arg0 0 in 0/0 out 1/0 -> 0x0
+SWEET AKS: sleepd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: sleepd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: sleepd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: sleepd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec audioclocksyncd
+exec analyticsd
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec mDNSResponder
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec liveactivitiesd
+exec CloudKeychainProxy
+exec xpcproxy
+SWEET Sandbox: mDNSResponder op 22
+SWEET Sandbox: mDNSResponder op 1
+exec awdd
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">IOPlatformExpertDevice</string><key>IOServiceNotificationUser</key><true/></dict> -> IOPlatformExpertDevice
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">IOPlatformExpertDevice</string><key>IOServiceNotificationUser</key><true/></dict> -> IOPlatformExpertDevice
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">IOPlatformExpertDevice</string><key>IOServiceNotificationUser</key><true/></dict> -> IOPlatformExpertDevice
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">IOPlatformExpertDevice</string><key>IOServiceNotificationUser</key><true/></dict> -> IOPlatformExpertDevice
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">IOPlatformExpertDevice</string><key>IOServiceNotificationUser</key><true/></dict> -> IOPlatformExpertDevice
+exec xpcproxy
+SWEET AKS: securityd sel 11 arg0 0 in 2/40 out 0/32 -> 0x0
+SWEET AKS: UserEventAgent sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: UserEventAgent sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: UserEventAgent sel 103 arg0 0 in 0/0 out 1/0 -> 0x0
+SWEET AKS: UserEventAgent sel 102 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET NET: configd route add 224.0.0.0 gw 0.0.0.0 ifindex 0 flags 0x901
+exec xpcproxy
+exec donotdisturbd
+exec xpcproxy
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">bluetooth</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+exec accountsd
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec navd
+exec xpcproxy
+exec siriactionsd
+exec seserviced
+exec xpcproxy
+SWEET AKS: liveactivitiesd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: liveactivitiesd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec CircleJoinRequested
+exec xpcproxy
+exec profiled
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec installcoordinationd
+exec xpcproxy
+exec ind
+exec assistantd
+exec remotepairingdeviced
+exec xpcproxy
+SWEET AKS: backboardd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec dmd
+exec corespeechd
+exec xpcproxy
+exec calaccessd
+SWEET AKS: containermanagerd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec appleaccountd
+exec ScreenTimeAgent
+exec akd
+exec adprivacyd
+exec mapspushd
+exec amsaccountsd
+exec xpcproxy
+SWEET AKS: donotdisturbd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: donotdisturbd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec syncdefaultsd
+exec xpcproxy
+SWEET AKS: securityd sel 11 arg0 0 in 2/40 out 0/32 -> 0x0
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+exec mobileactivationd
+exec safetyalertsd
+SWEET AKS: adprivacyd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: adprivacyd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+exec findmydeviced
+SWEET AKS: CloudKeychainProxy sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: CloudKeychainProxy sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: remotepairingdeviced sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: remotepairingdeviced sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 26 arg0 0 in 3/0 out 0/0 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec kbd
+SWEET AKS: dmd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: dmd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dmd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec amsengagementd
+exec healthd
+SWEET AKS: calaccessd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: calaccessd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec transparencyd
+exec siriknowledged
+SWEET AKS: corespeechd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: corespeechd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+exec coreidvd
+exec suggestd
+SWEET AKS: navd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: navd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: navd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: passd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: passd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: passd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: kbd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: kbd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+SWEET AKS: passd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec CallHistorySyncHelper
+exec xpcproxy
+exec symptomsd-diag
+exec xpcproxy
+exec xpcproxy
+exec SafariBookmarksSyncAgent
+exec triald
+SWEET AKS: ind sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: ind sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec askpermissiond
+exec xpcproxy
+exec xpcproxy
+exec FamilyControlsAgent
+SWEET AKS: ScreenTimeAgent sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: ScreenTimeAgent sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec fmfd
+exec xpcproxy
+exec xpcproxy
+exec geod
+exec xpcproxy
+exec familycircled
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: IOServiceFirstMatch <dict ID="0"><key>IOProviderClass</key><string ID="1">IOMobileFramebuffer</string><key>IOServiceNotificationUser</key><true/></dict> -> notify
+exec sociallayerd
+IOK MobileGestaltHelper: open AppleCLCD type 0 -> 0x0
+SWEET FB: MobileGestaltHelper sel 8 in 0/0 out 2/0 -> 0x0
+SWEET FB: MobileGestaltHelper sel 28 in 0/0 out 1/0 -> 0x0
+SWEET AKS: seserviced sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: seserviced sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: cloudpaird sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: cloudpaird sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: cloudpaird sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec cloudd
+SWEET AKS: identityservicesd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: identityservicesd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: identityservicesd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: identityservicesd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: safetyalertsd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: safetyalertsd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: safetyalertsd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: triald sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: triald sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">bluetooth</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+SWEET AKS: imagent sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: imagent sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: imagent sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: imagent sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: fmfd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: fmfd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: suggestd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: suggestd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+exec ManagedSettingsAgent
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec IMDPersistenceAgent
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: profiled sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: familycircled sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: familycircled sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: IMDPersistenceAgent sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: IMDPersistenceAgent sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: IMDPersistenceAgent sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: IMDPersistenceAgent sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+SWEET AKS: aggregated sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: aggregated sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: aggregated sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec ContextService
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec tccd
+SWEET AKS: lockdownd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: lockdownd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: CallHistorySyncHelper sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: CallHistorySyncHelper sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: tccd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: tccd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 11 arg0 0 in 2/40 out 0/32 -> 0x0
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+exec xpcproxy
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+exec ckdiscretionaryd
+SWEET AKS: ContextService sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: ContextService sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: ContextService sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: ContextService sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: biomed sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: ContextService sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: ContextService sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec duetexpertd
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+SWEET AKS: healthd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: healthd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: healthd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: biomed sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: securityd sel 11 arg0 0 in 2/40 out 0/32 -> 0x0
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: keybagd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec com.apple.siri.embeddedspeech
+SWEET AKS: CircleJoinRequested sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: CircleJoinRequested sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: duetexpertd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: duetexpertd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+exec symptomsd
+SWEET AKS: akd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: akd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+SWEET AKS: duetexpertd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: duetexpertd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec adid
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: profiled sel 31 arg0 0 in 1/0 out 0/32768 -> 0xe00002c7
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">bluetooth</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec fmflocatord
+exec misagent
+SWEET Sandbox: tccd op 5
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+Failed to open swap file 2
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec coreauthd
+exec cdpd
+exec xpcproxy
+SWEET AKS: akd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: bluetoothuserd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: bluetoothuserd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec deleted
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+exec followupd
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">bluetooth</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec pfd
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreidvd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: coreidvd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: donotdisturbd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: donotdisturbd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+ifnet_attach: Waiting for all kernel threads created for interface utun1 to get scheduled at least once.
+ifnet_attach: All kernel threads created for interface utun1 have been scheduled at least once. Proceeding.
+SWEET Sandbox: identityservicesd privilege 12001 granted
+_dlil_attach_flowswitch_nexus: not attaching flowswitch to utun1
+SWEET AKS: transparencyd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: transparencyd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">bluetooth</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: coreidvd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreidvd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: siriactionsd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: siriactionsd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: siriactionsd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: siriactionsd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET Sandbox: identityservicesd privilege 12000 granted
+ifnet_attach: Waiting for all kernel threads created for interface utun2 to get scheduled at least once.
+ifnet_attach: All kernel threads created for interface utun2 have been scheduled at least once. Proceeding.
+_dlil_attach_flowswitch_nexus: not attaching flowswitch to utun2
+ifnet_attach: Waiting for all kernel threads created for interface utun3 to get scheduled at least once.
+ifnet_attach: All kernel threads created for interface utun3 have been scheduled at least once. Proceeding.
+_dlil_attach_flowswitch_nexus: not attaching flowswitch to utun3
+SWEET AKS: coreidvd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreidvd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+ifnet_attach: All kernel threads created for interface utun4 have been scheduled at least once. Proceeding.
+_dlil_attach_flowswitch_nexus: not attaching flowswitch to utun4
+_dlil_attach_flowswitch_nexus: not attaching flowswitch to utun4
+exec xpcproxy
+exec contactsd
+IOK MobileGestaltHelper: path IODeviceTree:/product -> IOPlatformDevice
+IOK MobileGestaltHelper: path IODeviceTree:/product -> IOPlatformDevice
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">als</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">als</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK backboardd: IOServiceFirstPublish <dict ID="0"><key>IONameMatch</key><string ID="1">usb-drd,t8027</string><key>IOServiceNotificationUser</key><true/></dict> -> notify
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">als</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">als</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK MobileGestaltHelper: path IODeviceTree:/chosen -> IOService
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">als</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK MobileGestaltHelper: matching1 <dict ID="0"><key>IONameMatch</key><string ID="1">als</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK backboardd: path IODeviceTree:/product -> IOPlatformDevice
+IOK backboardd: path IODeviceTree:/product -> IOPlatformDevice
+IOK backboardd: path IODeviceTree:/arm-io -> IOPlatformDevice
+IOK backboardd: children of arm-io in IODeviceTree
+exec xpcproxy
+exec xpcproxy
+SWEET AKS: mediaserverd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: mediaserverd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: IOServiceFirstMatch <dict ID="0"><key>IOProviderClass</key><string ID="1">IOMobileFramebuffer</string><key>IOServiceNotificationUser</key><true/></dict> -> notify
+exec announced
+IOK backboardd: open AppleCLCD type 0 -> 0x0
+SWEET FB: backboardd sel 57 in 0/0 out 1/0 -> 0x0
+IOK backboardd: path IODeviceTree:/product -> IOPlatformDevice
+SWEET FB: backboardd sel 15 in 2/0 out 1/0 -> 0x0
+exec homed
+SWEET FB: backboardd sel 22 in 1/0 out 0/0 -> 0x0
+SWEET FB: backboardd sel 29 in 0/0 out 0/8 -> 0x0
+SWEET FB: backboardd sel 33 in 1/0 out 0/0 -> 0x0
+SWEET FB: backboardd sel 79 in 2/0 out 0/1580 -> 0x0
+IOK backboardd: path IODeviceTree:/chosen -> IOService
+IOK backboardd: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">AppleM2ScalerCSCDriver</string><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK backboardd: matching1 <dict ID="0"><key>IOPropertyMatch</key><dict ID="1"><key>backlight-control</key><true/></dict><key>IOServiceNotificationUser</key><true/></dict> -> none
+IOK backboardd: path IODeviceTree:/arm-io/disp0 -> IOPlatformDevice
+IOK backboardd: matching1 <dict ID="0"><key>IOProviderClass</key><string ID="1">AppleCLCD</string><key>IOServiceNotificationUser</key><true/></dict> -> AppleCLCD
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET Sandbox: backboardd privilege 1008 granted
+SWEET FB: backboardd sel 74 in 1/0 out 1/64 -> 0x0
+IOK backboardd: path IODeviceTree:/backlight -> none
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK MobileGestaltHelper: path IOService:/ -> IOPlatformExpertDevice
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: geod sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: geod sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: amsengagementd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: amsengagementd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: homed sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: homed sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contactsd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: contactsd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec mediaremoted
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK MobileGestaltHelper: path IODeviceTree:/product -> IOPlatformDevice
+IOK MobileGestaltHelper: path IODeviceTree:/ -> IOPlatformExpertDevice
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: routined sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: routined sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: routined sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET Sandbox: healthd privilege 1002 granted
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: locationd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: locationd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec nearbyd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAccessoryManager</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: geod sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: biomed sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: biomed sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec UsageTrackingAgent
+SWEET AKS: symptomsd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: symptomsd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: nearbyd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: nearbyd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+process duetexpertd[154] crossed thread count high watermark (32), EXC_RESOURCE supressed, internal diagnostics disabled.
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: locationd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: locationd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+process healthd[34] crossed thread count high watermark (32), EXC_RESOURCE supressed, internal diagnostics disabled.
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: symptomsd-diag sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: symptomsd-diag sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec searchpartyd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: cloudd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: cloudd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec countryd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec pipelined
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET Sandbox: cloudd privilege 1002 granted
+exec xpcproxy
+exec bluetoothd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: pipelined sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: pipelined sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: pipelined sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec fairplayd.H2
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec softwareupdated
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec aggregated
+exec xpcproxy
+exec coresymbolicationd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: aggregated sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: aggregated sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: aggregated sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec peopled
+exec xpcproxy
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec ReportMemoryException
+exec nanoprefsyncd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec watchdogd
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+SWEET AKS: CloudKeychainProxy sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+exec ProtectedCloudKeySyncing
+exec backupd
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 27 arg0 0 in 2/0 out 0/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: backupd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: backupd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec swcd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: FamilyControlsAgent sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: FamilyControlsAgent sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: duetexpertd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec sosd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec familynotificationd
+exec axassetsd
+exec callservicesd
+exec privacyaccountingd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: securityd sel 26 arg0 0 in 3/0 out 0/0 -> 0x0
+SWEET AKS: securityd sel 27 arg0 0 in 2/0 out 0/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: securityd sel 11 arg0 0 in 2/40 out 0/32 -> 0x0
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: corespeechd sel 17 arg0 18446744073709551115 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET Sandbox: symptomsd privilege 10003 granted
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: securityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: backupd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: wcd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: wcd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: symptomsd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec xpcproxy
+exec linkd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec nanoregistrylaunchd
+SWEET AKS: privacyaccountingd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+exec xpcproxy
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec fitnesscoachingd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: privacyaccountingd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec networkserviceproxy
+exec xpcproxy
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec com.apple.MobileSoftwareUpdate.C
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: peopled sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: peopled sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: networkserviceproxy sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: networkserviceproxy sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec xpcproxy
+exec UARPUpdaterServiceUSBPD
+exec UARPUpdaterServiceHID
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec UARPUpdaterServiceLegacyAudio
+exec UARPUpdaterServiceAFU
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: ScreenTimeAgent sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: nanoregistryd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: nanoregistryd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec nesessionmanager
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: sharingd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: sharingd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+SWEET AKS: mediaserverd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: mediaserverd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec CAReportingService
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: sharingd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec com.apple.siri.embeddedspeech
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+process contextstored[55] crossed thread count high watermark (32), EXC_RESOURCE supressed, internal diagnostics disabled.
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec xpcproxy
+exec searchd
+exec intelligenceplatformd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: callservicesd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: callservicesd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+SWEET AKS: assistantd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: assistantd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: assistantd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: assistantd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: assistantd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: assistantd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec xpcproxy
+exec siriinferenced
+SWEET AKS: assistantd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: assistantd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: assistantd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: assistantd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec parsec-fbf
+exec contactsdonationagent
+SWEET AKS: searchd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: searchd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec fileproviderd
+SWEET Sandbox: dasd privilege 1005 granted
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: fileproviderd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: fileproviderd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: fileproviderd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: fileproviderd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: fileproviderd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: fileproviderd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: fileproviderd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec pkd
+SWEET AKS: IMDPersistenceAgent sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET Sandbox: dasd privilege 10001 granted
+SWEET AKS: sosd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: sosd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+process suggestd[139] crossed thread count high watermark (32), EXC_RESOURCE supressed, internal diagnostics disabled.
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec com.apple.FaceTime.FTConversatio
+SWEET AKS: callservicesd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: callservicesd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: com.apple.FaceTime.FTConversati sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: com.apple.FaceTime.FTConversati sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET Sandbox: kernel_task privilege 10001 granted
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec xpcproxy
+exec useractivityd
+exec carkitd
+SWEET AKS: useractivityd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: useractivityd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: useractivityd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: carkitd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: carkitd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: carkitd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: carkitd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: carkitd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: carkitd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec parsecd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET Sandbox: cloudd privilege 10001 granted
+SWEET AKS: searchpartyd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: searchpartyd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+exec xpcproxy
+SWEET AKS: searchpartyd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec maild
+exec financed
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchpartyd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: financed sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: financed sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: financed sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec itunescloudd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: parsecd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: parsecd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+exec xpcproxy
+exec mmaintenanced
+exec xpcproxy
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: assistantd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec mediaanalysisd
+SWEET AKS: profiled sel 31 arg0 0 in 1/0 out 0/32768 -> 0xe00002c7
+exec xpcproxy
+SWEET AKS: profiled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec bluetoothd
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec fairplayd.H2
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec xpcproxy
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec osanalyticshelper
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: mediaanalysisd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: mediaanalysisd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+exec PowerUIAgent
+exec xpcproxy
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec voiced
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: remindd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: remindd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: com.apple.siri.embeddedspeech sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: com.apple.siri.embeddedspeech sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: siriinferenced sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: siriinferenced sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: siriinferenced sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+SWEET AKS: siriinferenced sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: remindd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: remindd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: ReportCrash sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: contextstored sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: coreduetd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: rapportd sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: rapportd sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET Sandbox: rapportd privilege 1002 granted
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: securityd sel 10 arg0 0 in 2/32 out 1/40 -> 0x0
+SWEET AKS: securityd sel 11 arg0 0 in 2/40 out 0/32 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: securityd sel 11 arg0 0 in 2/40 out 0/32 -> 0x0
+SWEET AKS: securityd sel 11 arg0 0 in 2/40 out 0/32 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: homed sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: homed sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: peopled sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: dasd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: findmydeviced sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: findmydeviced sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+exec remotepairingdeviced
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: remotepairingdeviced sel 0 arg0 0 in 0/0 out 0/0 -> 0x0
+SWEET AKS: remotepairingdeviced sel 7 arg0 0 in 1/0 out 1/0 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec xpcproxy
+SWEET AKS: homed sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: homed sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+SWEET Sandbox: ReportMemoryExcepti privilege 1002 granted
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+exec rtcreportingd
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: homed sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: suggestd sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: homed sel 17 arg0 0 in 1/0 out 0/4096 -> 0x0
+SWEET AKS: searchd sel 35 arg0 0 in 1/0 out 0/4096 -> 0x0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+GAUGUIN GPU: mapping GCC/GPUCC
+GAUGUIN GPU: pre-state gcc_gpu_ahb=0x9 gpucc_ahb=0x80000001 cx_gdsc=0x222001
+GAUGUIN GPU: cx_gdsc=0x222001 -> collapsing off
+GAUGUIN GPU: cx_gdsc=0xf8222000 powered=1
+GAUGUIN GPU: gpucc xo=0 gmu_cbcr=0x80004220 gfx3d_src=0x80000000 gfx3d_cbcr=0x80004220
+GAUGUIN GPU: L2 start
+GAUGUIN SMMU: GMEM pa=0xcb860000 dummy=0x60000000 hfi=0x60100000 dump=0x60200000 log=0x60300000
+GAUGUIN GPU: smmu_clk snoc_dvm=0x1 memnoc=0x4221
+GAUGUIN SCAN: gmu gsa_cfg (in win2) @0x3d6a014 reading...
+GAUGUIN SCAN: gmu gsa_cfg (in win2) = 0
+GAUGUIN SCAN: smmu impl_def1 +0x6000 @0x3d46000 reading...
+GAUGUIN SCAN: smmu impl_def1 +0x6000 = 0x2378
+GAUGUIN SCAN: smmu cb0 +0x8000 @0x3d48000 reading...
+GAUGUIN SCAN: smmu cb0 +0x8000 = 0
+GAUGUIN SCAN: smmu gr0 +0x0 @0x3d40000 reading...
+GAUGUIN SCAN: smmu gr0 +0x0 = 0x200626
+GAUGUIN SMMU: reading GR0...
+GAUGUIN RP: sCR0 @0 reading...
+GAUGUIN RP: sCR0 = 0x200626
+GAUGUIN RP: IDR0 @0x20 reading...
+GAUGUIN RP: IDR0 = 0x48016605
+GAUGUIN RP: IDR1 @0x24 reading...
+GAUGUIN RP: IDR1 = 0x20008005
+GAUGUIN RP: IDR2 @0x28 reading...
+GAUGUIN RP: IDR2 = 0x7511
+GAUGUIN RP: GFSR @0x48 reading...
+GAUGUIN RP: GFSR = 0
+GAUGUIN RP: GFSYNR0 @0x50 reading...
+GAUGUIN RP: GFSYNR0 = 0
+GAUGUIN RP: GFSYNR1 @0x54 reading...
+GAUGUIN RP: GFSYNR1 = 0
+GAUGUIN RP: SMR0 @0x800 reading...
+GAUGUIN RP: SMR0 = 0
+GAUGUIN RP: S2CR0 @0xc00 reading...
+GAUGUIN RP: S2CR0 = 0x200ff
+GAUGUIN RP: MICRO_MMU @0x6000 reading...
+GAUGUIN RP: MICRO_MMU = 0x2378
+GAUGUIN RP: GR1+0 @0x1000 reading...
+GAUGUIN RP: GR1+0 = 0
+GAUGUIN RP: GR1+CBAR0 @0x1800 reading...
+GAUGUIN RP: GR1+CBAR0 = 0
+GAUGUIN RP: CB0+SCTLR @0x8000 reading...
+GAUGUIN RP: CB0+SCTLR = 0
+GAUGUIN RP: CB0+TTBR0 @0x8020 reading...
+GAUGUIN RP: CB0+TTBR0 = 0
+GAUGUIN RP: CB0+TCR @0x8030 reading...
+GAUGUIN RP: CB0+TCR = 0
+GAUGUIN RP: CB0+FSR @0x8058 reading...
+GAUGUIN RP: CB0+FSR = 0
+GAUGUIN RP: all individual reads done
+GAUGUIN SMMU: sCR0=0x200626
+GAUGUIN SMMU: IDR0=0x48016605
+GAUGUIN SMMU: IDR1=0x20008005
+GAUGUIN SMMU: IDR2=0x7511
+GAUGUIN SMMU: micro=0x2378
+GAUGUIN SMMU: gfsr=0
+GAUGUIN SMMU: gfsynr0=0
+GAUGUIN SMMU: gfsynr1=0
+GAUGUIN SMMU: SMR0=0 S2CR0=0x200ff
+GAUGUIN SMMU: SMR4=0 S2CR4=0x200ff
+GAUGUIN SMMU: cbar0=0
+GAUGUIN SMMU: cba2r0=0
+GAUGUIN SMMU: cb0 sctlr=0
+GAUGUIN SMMU: cb0 tcr2=0 tcr=0
+GAUGUIN SMMU: cb0 mair0=0 mair1=0
+GAUGUIN SMMU: cb0 fsr=0
+GAUGUIN GPU: gpll0_div_src=0x1 -> /1
+GAUGUIN GPU: clocks cxo=0x1 src_cmd=0 src_cfg=0x602 gmu_cbcr=0x4221 memnoc=0x4221 axi=0x1 snoc_dvm=0x1
+GAUGUIN GPU: pre dtcm_ff8=0x77b7df6a sysreset=0x1 fw_init=0
+IOK backboardd: matching <dict ID="0"><key>IOProviderClass</key><string ID="1">IOAcceleratorES</string><key>IOServiceNotificationUser</key><true/></dict> -> 0 found
+GAUGUIN GPU: fw loaded itcm0=0x43f80 itcm_last=0 dtcm_ff8=0x77b7df6a
+GAUGUIN SMMU: verified (CB0 LPAE ttbr0=0x10000cb860000 SMR0=sid5 SMR1=sid4)
+GAUGUIN GX: cmd-db mapped=0xfffffe4ab0f60000
+GAUGUIN GX: pdc cmd-db offs mx=0x2c0 cx=0x2a0 gfx=0x340
+GAUGUIN GX: rsc sequencer written (seq0=0xa7a506a0)
+GAUGUIN GX: pdc sequencer + tcs written (enable=0x80000001)
+GAUGUIN GPU: rpmh ctrl 0 -> 0xf11
+GAUGUIN GPU: CM3 released (dtcm_ff8=0x77b7df6a), polling fw_init
+GAUGUIN GPU: fw_init=0xbabeface booted=1
+GAUGUIN GPU: hfi started=1 status=0x1
+GAUGUIN GPU: HFI send id=0 hdr=0x100500
+GAUGUIN GPU: HFI resp hdr=0x2047e ret=0x100000 err=0 p0=0xe550e55 p1=0
+GAUGUIN GPU: HFI send id=1 hdr=0x200201
+GAUGUIN GPU: HFI resp hdr=0x12047e ret=0x200001 err=0 p0=0x10110000 p1=0
+GAUGUIN GPU: HFI send id=4 hdr=0x302b04
+GAUGUIN GPU: HFI resp hdr=0x22047e ret=0x300004 err=0 p0=0xe550e55 p1=0
+GAUGUIN GPU: HFI send id=3 hdr=0x40a003
+GAUGUIN GPU: HFI resp hdr=0x32047e ret=0x400003 err=0 p0=0xe550e55 p1=0
+GAUGUIN GPU: HFI send id=5 hdr=0x500105
+GAUGUIN GPU: HFI resp hdr=0x42047e ret=0x500005 err=0 p0=0xe550e55 p1=0
+GAUGUIN GPU: post fw_init=0xbabeface hfi_st=0x1 intr=0 sptprac=0xd4
+GAUGUIN GPU: cmd hdr rw=211/211 resp rw=20/20
+GAUGUIN GPU: log[0..3]=0 0 0 0 log[12..15]=0 0 0 0
+GAUGUIN SMMU: faults gfsr=0
+GAUGUIN SMMU: faults gfsynr0=0 gfsynr1=0
+GAUGUIN SMMU: faults cb0_fsr=0x400 cb0_fsynr0=0
+GAUGUIN GPU: L2 done
+GAUGUIN GX: cmd-db mapped=0xfffffe4ab0f8c000
+GAUGUIN GX: gfx.lvl n=16: 0 64 128 192 256 320 384 416 0 0 0 0 0 0 0 0
+GAUGUIN GX: mx.lvl n=16: 0 16 64 128 192 256 320 384 0 0 0 0 0 0 0 0
+GAUGUIN GX: votes pri=7(416) sec=7(384)
+GAUGUIN GX: oob info=0x40000000 acked=1
+GAUGUIN GX: sptprac=0x28 on=1
+GAUGUIN GX: reading RBBM_STATUS...
+GAUGUIN GX: rbbm_status=0x1
+GAUGUIN GX: rbbm_status3=0
+GAUGUIN GX: GX ALIVE (L3 next: ringbuffer + CP_BLIT)
+GAUGUIN CP: mem setup start
+GAUGUIN CP: block pa=0xcb870000 ring=0x40000000 sqe=0x40010000 scratch=0x40020000
+GAUGUIN CP: gap pte0=0 (want 0)
+GAUGUIN CP: target pa=0xcd9cc000 va=0x40200000 512x512 pitch=2048 pte0=0xcd9cce43 pte255=0xcdacbe43
+GAUGUIN CP: panel 1080x2400 pitch=4320 pa=0xa0000000 bytes=10368000 pages=2532 tables=5
+GAUGUIN CP: panel mapped va=0x40400000 tables=5 pages=2532 pte0=0xa0000e43 pte2531=0xa09e3e43
