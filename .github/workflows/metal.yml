@@ -73,6 +73,7 @@ jobs:
             bergamota/gpu/freedreno-sweet/sweet_drm.c -o libdrm.2.dylib \
             -framework IOKit -framework CoreFoundation
           codesign --force --sign - libdrm.2.dylib
+          ln -sf libdrm.2.dylib libdrm.dylib
           file libdrm.2.dylib
 
       - name: Cross file and libdrm.pc
