@@ -1,10 +1,7 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
-
 +++ b/bsd/dev/gauguin_gpu.c
-
-@@ -2674,6 +2674,159 @@
-
+@@ -2674,6 +2674,2679 @@
  	} else {
  		printf("GAUGUIN GPU: kernel_thread_start failed %d\n", kr);
  	}
@@ -162,6 +159,10 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +	(void)iova; (void)size;
 +}
 +
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+@@ -2676,4 +2828,2830 @@
+ 	}
+ }
  #endif /* ARM64_BOARD_CONFIG_SWEET */
 -
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
