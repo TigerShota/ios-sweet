@@ -2,7 +2,25 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-07 (latest): v80 = 0128 SweetAdreno630 ABI + REAL SweetBGMTL BUNDLE <<<
+### >>> UPDATE 2026-11-07 (latest): v81 BLACK SCREEN ROOT-CAUSED - METAL DEVICE WORKS, SURFACE_BO MISSING; 0129 ADDS IT <<<
+- **v81 identity**: xnu `42380138423` (commit `91db2d6`, arm64 SweetBGMTL bundle via metal run `42379837691`), shim `42380792981`, boot `out\v81-shim\shim\out\shim-boot.img` (27,783,168 B). The system **does boot** (SpringBoard and the daemon set run), but the screen stays black.
+- **Log** `out\logs-v81\boot.txt` (670,074 B, flush #544). The important lines:
+  - `GAUGUIN INJECT: PASS files=6 ok=6 failed=0` (SweetBGMTL.bundle written);
+  - `IOK backboardd: open SweetAdreno630 type 0 -> 0x0`;
+  - `|backboardd| rwa_device_open: FD615` - **the Metal device was created**;
+  - QuartzCore/HDRProcessing/MPSImage `default.metallib` AIR slices loaded (shader translation works);
+  - `SweetAdreno: submit 1/2: fence=0x6000003/4 first_iova=0x5326a000 words=143` - Mesa submits reach the kernel and retire;
+  - then, forever: `SweetAdreno: SURFACE_BO id=2/3 handle=0 (not implemented)` and `|backboardd| texture refused: the kernel would not describe IOSurface 2/3 (error -78 ...): it knows nothing of an ID that was never made shareable`.
+- **Conclusion**: the black screen is **not** a GPU/Metal failure - BGMTLDevice is alive and submitting. CoreAnimation cannot get render targets because `SURFACE_BO` is a stub. This is the last kernel piece before the compositor can draw.
+- **0129 (`xnu/patches/0129-gauguin-surface-bo.patch`, 248 lines, verified on v80)**:
+  - includes the in-kernel `SweetSurface.h` and uses `sweet_surface_copy(id)` (our IOSurface implementation) to find the surface;
+  - fills the 48-byte V1 `sweet_gpu_surface_bo`: geometry, `bytesPerRow`, `pixelFormat`, `offset`, plane count;
+  - creates a `gpu_buffer` that **wraps the surface's own IOMemoryDescriptor** (retained) and maps every physical run into the GEM window with `map_bo_pages()` (factored out of `gemNew`), returning `handle`, `iova`, page-rounded `size`;
+  - `DESCRIBE_ONLY` returns geometry without a BO;
+  - the old `surfaceBuffer` stub and its selector are replaced by `surfaceBo`.
+- **Expected next log**: `SweetAdreno: SURFACE_BO id=2 handle=... iova=0x... 1080x2400 ...` and no `texture refused` lines; CA should composite the first frame. If textures are refused for another reason (format/plane), the log names it.
+
+### >>> UPDATE 2026-11-07 (v80): SweetAdreno630 ABI + REAL SweetBGMTL BUNDLE <<<
 - **Userland bundle**: `metal.yml` builds `SweetBGMTL.bundle` (BGMTLDevice + libbgair 9.99 MB + libdrm.2.dylib 93 KB) from Mesa 25.0.7 + Bergamota/Chlorophyll patches with the iPhoneOS SDK; run `42376964258` green in 3 min, artifact `sweetbgmtl-bundle`. The workflow also adds the missing pixel-format **551** entry (`PIPE_FORMAT_B8G8R8A8_SRGB`) to `air_metal.c`, the fajita fix for CA's deep-colour pipeline.
 - **0128 (`xnu/patches/0128-gauguin-sweetadreno630-abi.patch`, 519 lines, verified on v79)**:
   - the IOAcceleratorES subclass is now `SweetAdreno630` (what `libdrm.2.dylib` opens) and publishes `MetalPluginName=SweetBGMTL`, `MetalPluginClassName=BGMTLDevice`;

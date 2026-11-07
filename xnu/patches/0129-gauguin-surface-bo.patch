@@ -1,0 +1,248 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -44,6 +44,8 @@
+ #include <sys/time.h>
+ #include <kern/thread.h>
+ 
++#include "SweetSurface.h"         /* in-kernel IOSurface table (0129) */
++
+ /* ---- Structures matching Linux include/uapi/drm/msm_drm.h ---- */
+ 
+ struct msm_timespec {
+@@ -342,7 +344,7 @@ public:
+ 	IOReturn             gemNew(struct msm_gem_new * request);
+ 	IOReturn             gemInfo(struct msm_gem_info * request);
+ 	IOReturn             submit(struct msm_gem_submit * request);
+-	IOReturn             surfaceBuffer(struct hakios_surface * request);
++	IOReturn             surfaceBo(struct sweet_gpu_surface_bo * request);
+ 	IOReturn             gemClose(uint32_t handle);
+ 
+ 	virtual bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
+@@ -457,6 +459,34 @@ SweetAdrenoUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options,
+ 	return kIOReturnBadArgument;
+ }
+ 
++/* Map every physical run of a descriptor into the GEM window, 4 KiB at a time. */
++static IOReturn
++map_bo_pages(uint64_t iova, IOMemoryDescriptor * memory, uint64_t size,
++    uint32_t flags)
++{
++	IOByteCount off = 0;
++
++	while (off < size) {
++		IOByteCount len = 0;
++		addr64_t pa = memory->getPhysicalSegment(off, &len,
++		    kIOMemoryMapperNone);
++
++		if (pa == 0 || len == 0) {
++			gauguin_gem_unmap(iova, size);
++			return kIOReturnNoMemory;
++		}
++		for (IOByteCount p = 0; p + 0x1000 <= len; p += 0x1000) {
++			if (!gauguin_gem_map(iova + off + p, pa + p, flags)) {
++				gauguin_gem_unmap(iova, size);
++				return kIOReturnNoMemory;
++			}
++		}
++		off += len;
++	}
++	gauguin_gem_tlb_flush();
++	return kIOReturnSuccess;
++}
++
+ /* ---- gemNew: allocate a BO (phys contig + SMMU iova) ---- */
+ 
+ IOReturn
+@@ -500,44 +530,15 @@ SweetAdrenoUserClient::gemNew(struct msm_gem_new * request)
+ 	}
+ 	/*
+ 	 * The BO is not guaranteed physically contiguous, and the GPU walks
+-	 * 4 KiB PTEs: map every physical run the descriptor reports, one GPU
+-	 * page at a time. A single 16 KiB XNU page still needs four PTEs.
++	 * 4 KiB PTEs: map every physical run the descriptor reports.
+ 	 */
+-	{
+-		IOByteCount off = 0;
+-		bool mapped = true;
+-
+-		while (off < size) {
+-			IOByteCount len = 0;
+-			addr64_t pa = memory->getPhysicalSegment(off, &len,
+-			    kIOMemoryMapperNone);
+-
+-			if (pa == 0 || len == 0) {
+-				mapped = false;
+-				break;
+-			}
+-			for (IOByteCount p = 0; p + 0x1000 <= len; p += 0x1000) {
+-				if (!gauguin_gem_map(iova + off + p, pa + p,
+-				    request->flags & MSM_BO_GPU_READONLY)) {
+-					mapped = false;
+-					break;
+-				}
+-			}
+-			if (!mapped) {
+-				break;
+-			}
+-			off += len;
+-		}
+-		if (mapped) {
+-			gauguin_gem_tlb_flush();
+-		} else {
+-			gauguin_gem_unmap(iova, size);
+-			gauguin_gem_address_free(iova, size);
+-			IOLockUnlock(gGPULock);
+-			memory->release();
+-			IOLog("SweetAdreno: gem map failed for %llu bytes\n", size);
+-			return kIOReturnNoMemory;
+-		}
++	if (map_bo_pages(iova, memory, size,
++	    request->flags & MSM_BO_GPU_READONLY) != kIOReturnSuccess) {
++		gauguin_gem_address_free(iova, size);
++		IOLockUnlock(gGPULock);
++		memory->release();
++		IOLog("SweetAdreno: gem map failed for %llu bytes\n", size);
++		return kIOReturnNoMemory;
+ 	}
+ 	bzero(b, sizeof(*b));
+ 	b->memory = memory;
+@@ -742,22 +743,102 @@ out:
+ 	return ret;
+ }
+ 
+-/* ---- surfaceBuffer: IOSurface as a GP buffer ---- */
++/* ---- surfaceBo: an IOSurface's memory as a GPU buffer (0129) ---- */
+ 
+ IOReturn
+-SweetAdrenoUserClient::surfaceBuffer(struct hakios_surface * request)
++SweetAdrenoUserClient::surfaceBo(struct sweet_gpu_surface_bo * request)
+ {
+-	/* Simplified: only describe, do not wire IOSurface yet
+-	 * (the full bridge requires MiniIOSurface which we don't have
+-	 * available in Sweet build for A615). Return an invalid handle
+-	 * so callers fall back to GEM buffers. */
+-	if (request->handle != kHakiosDescribe) {
+-		return kIOReturnUnsupported;
+-	}
+-	request->handle = 0;
+-	request->size = 0;
+-	request->offset = 0;
+-	request->rowBytes = 0;
++	SweetSurface * s;
++	struct gpu_buffer * b = NULL;
++	uint64_t size, iova = 0;
++	uint32_t idx = 0;
++
++	s = sweet_surface_copy(request->surface_id);
++	if (s == NULL) {
++		return kIOReturnNotFound;
++	}
++	size = s->memory ? s->memory->getLength() : 0;
++	if (size == 0) {
++		s->release();
++		return kIOReturnBadArgument;
++	}
++	size = (size + 0xfffu) & ~(uint64_t) 0xfffu;
++
++	request->bytes_per_row = s->bytesPerRow;
++	request->width = s->width;
++	request->height = s->height;
++	request->pixel_format = s->pixelFormat;
++	request->offset = s->offset;
++	request->planes = s->planeCount;
++	for (uint32_t p = 0; p < 3 && p < s->planeCount; p++) {
++		request->plane[p * 4 + 0] = s->planes[p].offset;
++		request->plane[p * 4 + 1] = s->planes[p].bytesPerRow;
++		request->plane[p * 4 + 2] = s->planes[p].width;
++		request->plane[p * 4 + 3] = s->planes[p].height;
++	}
++	request->tiling = 0;
++	request->ubwc = 0;
++	request->flags = 0;
++
++	if (request->handle == kHakiosDescribe) {
++		request->handle = 0;
++		request->size = size;
++		request->iova = 0;
++		s->release();
++		return kIOReturnSuccess;
++	}
++
++	IOLockLock(gGPULock);
++	for (uint32_t n = 0; n < GPU_BUFFERS; n++) {
++		uint32_t h = (fNextBuffer + n) % GPU_BUFFERS;
++		if (fBuffers[h].memory == NULL) {
++			idx = h;
++			b = &fBuffers[h];
++			break;
++		}
++	}
++	if (b == NULL) {
++		IOLockUnlock(gGPULock);
++		s->release();
++		return kIOReturnNoMemory;
++	}
++	iova = gauguin_gem_address(size);
++	if (iova == 0) {
++		IOLockUnlock(gGPULock);
++		s->release();
++		return kIOReturnNoMemory;
++	}
++	bzero(b, sizeof(*b));
++	b->memory = s->memory;
++	b->memory->retain();
++	b->kernel = (uint8_t *) s->kernelAddress();
++	b->address = iova;
++	b->size = size;
++	b->flags = s->pixelFormat;
++	b->handle = idx + 1;
++	fNextBuffer = idx + 1;
++	fBufferCount++;
++	IOLockUnlock(gGPULock);
++
++	if (map_bo_pages(iova, s->memory, size, 0) != kIOReturnSuccess) {
++		IOLockLock(gGPULock);
++		gauguin_gem_address_free(iova, size);
++		b->memory->release();
++		bzero(b, sizeof(*b));
++		fBufferCount--;
++		IOLockUnlock(gGPULock);
++		s->release();
++		return kIOReturnNoMemory;
++	}
++
++	request->handle = idx + 1;
++	request->iova = iova;
++	request->size = size;
++	IOLog("SweetAdreno: SURFACE_BO id=%u handle=%u iova=%#llx %ux%u"
++	    " bpr=%u fmt=%#x planes=%u\n", request->surface_id,
++	    request->handle, iova, s->width, s->height, s->bytesPerRow,
++	    s->pixelFormat, s->planeCount);
++	s->release();
+ 	return kIOReturnSuccess;
+ }
+ 
+@@ -807,6 +888,9 @@ SweetAdrenoUserClient::externalMethod(uint32_t selector, IOExternalMethodArgumen
+ 		struct drm_gem_close close;
+ 		struct hakios_surface surface;
+ 		struct hakios_show show;
++		struct sweet_gpu_surface_bo surfaceBo;
++		struct sweet_gpu_bo_sync boSync;
++		struct sweet_gpu_info info;
+ 	} r;
+ 	size_t size = args->structureInputSize;
+ 	IOReturn ret = kIOReturnSuccess;
+@@ -894,11 +978,7 @@ SweetAdrenoUserClient::externalMethod(uint32_t selector, IOExternalMethodArgumen
+ 		break;
+ 	}
+ 	case kSweetSurfaceBo: {
+-		struct sweet_gpu_surface_bo * sb = (struct sweet_gpu_surface_bo *)&r;
+-
+-		IOLog("SweetAdreno: SURFACE_BO id=%u handle=%#x (not implemented)\n",
+-		    sb->surface_id, sb->handle);
+-		ret = kIOReturnUnsupported;
++		ret = surfaceBo((struct sweet_gpu_surface_bo *)&r);
+ 		break;
+ 	}
+ 	case kSweetBoSync: {
