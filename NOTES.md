@@ -13,6 +13,7 @@
   - `gauguin_gem_address` / `_free` are now a **bitmap allocator** over 4 KiB pages (`gem_used[16 KiB]`), so `GEM_CLOSE` reuses VA instead of leaking it;
   - `SURFACE_BO` reports `planes=0` (plane 0 describes the surface) so Chlorophyll's importer accepts it; the pixel plane is imported at `bytesPerRow=4544`.
 - **Expected next**: `SURFACE_BO ... planes=0` and no `texture refused`; CA starts compositing. The surface is the 2-plane `b3a8` format imported as the Metal texture format (551 -> BGRA8) - colours may be wrong if plane 0 is really 10-bit, but the first frame will tell.
+- **v83 boot result**: surfaces are accepted and CA builds its first render pipelines (`render pipeline fixed_vert_lph_spc + fixed_frag_lph_cpf`) with no `texture refused`, but then **no `submit` and no `SWEET FB: swap`** - backboardd stalls in userspace (sampler shows the same dylib PC across two samples). 0131 adds driver-side call tracing (`trace map`, `gem_new`, `gem_info`, `bo_sync start/done`, `submit`, `submit cp done`, `gem_close`) to identify the last call that entered the kernel.
 
 ### >>> UPDATE 2026-11-07 (v81): BLACK SCREEN ROOT-CAUSED - METAL DEVICE WORKS, SURFACE_BO MISSING; 0129 ADDS IT <<<
 - **v81 identity**: xnu `42380138423` (commit `91db2d6`, arm64 SweetBGMTL bundle via metal run `42379837691`), shim `42380792981`, boot `out\v81-shim\shim\out\shim-boot.img` (27,783,168 B). The system **does boot** (SpringBoard and the daemon set run), but the screen stays black.

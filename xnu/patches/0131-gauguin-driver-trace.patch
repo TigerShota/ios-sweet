@@ -1,0 +1,103 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -222,6 +222,9 @@ struct hakios_show {
+ 
+ static IOLock * gGPULock;
+ static uint32_t gGPUReportedSubmits;
++static uint32_t gGPUTraceCalls;   /* 0131: first N driver calls are logged */
++
++#define GPU_TRACE_LIMIT 200u
+ 
+ /* ---- gpu_buffer ---- */
+ 
+@@ -452,6 +455,11 @@ SweetAdrenoUserClient::clientMemoryForType(UInt32 type, IOOptionBits * options,
+ 		b->memory->retain();
+ 		*memory = b->memory;
+ 		*options = 0;
++		if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++			gGPUTraceCalls++;
++			IOLog("SweetAdreno: trace map type=%u handle=%u len=%llu\n",
++			    type, b->handle, b->memory->getLength());
++		}
+ 		IOLockUnlock(gGPULock);
+ 		return kIOReturnSuccess;
+ 	}
+@@ -550,6 +558,11 @@ SweetAdrenoUserClient::gemNew(struct msm_gem_new * request)
+ 	fNextBuffer = handle_idx + 1;
+ 	fBufferCount++;
+ 	request->handle = handle_idx + 1;
++	if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++		gGPUTraceCalls++;
++		IOLog("SweetAdreno: trace gem_new size=%llu handle=%u iova=%#llx\n",
++		    size, request->handle, iova);
++	}
+ 	IOLockUnlock(gGPULock);
+ 	return kIOReturnSuccess;
+ }
+@@ -582,6 +595,11 @@ SweetAdrenoUserClient::gemInfo(struct msm_gem_info * request)
+ 		request->value = 0;
+ 		break;
+ 	}
++	if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++		gGPUTraceCalls++;
++		IOLog("SweetAdreno: trace gem_info h=%u info=%u value=%#llx\n",
++		    request->handle, request->info, request->value);
++	}
+ 	IOLockUnlock(gGPULock);
+ 	return kIOReturnSuccess;
+ }
+@@ -601,6 +619,11 @@ SweetAdrenoUserClient::submit(struct msm_gem_submit * request)
+ 	    request->nr_bos == 0 || request->nr_bos > GPU_SUBMIT_BOS) {
+ 		return kIOReturnBadArgument;
+ 	}
++	if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++		gGPUTraceCalls++;
++		IOLog("SweetAdreno: trace submit bos=%u cmds=%u\n",
++		    request->nr_bos, request->nr_cmds);
++	}
+ 	bos = IONew(struct msm_gem_submit_bo, request->nr_bos);
+ 	cmds = IONew(struct msm_gem_submit_cmd, request->nr_cmds);
+ 	if (bos == NULL || cmds == NULL) {
+@@ -717,6 +740,11 @@ SweetAdrenoUserClient::submit(struct msm_gem_submit * request)
+ 	}
+ 	IOLockUnlock(gGPULock);
+ 	request->fence = gauguin_cp_submit(addresses, words, count);
++	if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++		gGPUTraceCalls++;
++		IOLog("SweetAdreno: trace submit cp done fence=%#x words=%u\n",
++		    request->fence, words[0]);
++	}
+ 	IOLockLock(gGPULock);
+ 	if (request->fence != 0) {
+ 		for (uint32_t i = 0; i < request->nr_bos; i++) {
+@@ -859,6 +887,10 @@ SweetAdrenoUserClient::gemClose(uint32_t handle)
+ 		IOLockUnlock(gGPULock);
+ 		return kIOReturnBadArgument;
+ 	}
++	if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++		gGPUTraceCalls++;
++		IOLog("SweetAdreno: trace gem_close h=%u\n", handle);
++	}
+ 	if (gauguin_cp_ready() && b->fence != 0) {
+ 		gauguin_cp_wait(b->fence, (uint64_t) GPU_PATIENCE_MS * NSEC_PER_MSEC);
+ 	}
+@@ -995,7 +1027,18 @@ SweetAdrenoUserClient::externalMethod(uint32_t selector, IOExternalMethodArgumen
+ 			uint64_t len = bs->size ? bs->size : (b->size - bs->offset);
+ 
+ 			if (bs->offset + len <= b->size) {
++				if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++					gGPUTraceCalls++;
++					IOLog("SweetAdreno: trace bo_sync h=%u off=%llu"
++					    " size=%llu start\n", bs->handle,
++					    bs->offset, len);
++				}
+ 				gauguin_gem_flush(b->address + bs->offset, len);
++				if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++					gGPUTraceCalls++;
++					IOLog("SweetAdreno: trace bo_sync h=%u done\n",
++					    bs->handle);
++				}
+ 			} else {
+ 				ret = kIOReturnBadArgument;
+ 			}
