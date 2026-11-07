@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetAdreno.cpp
-@@ -0,0 +1,708 @@
+@@ -0,0 +1,705 @@
 +/*
 + * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
 + * Ported from yfl520/hackios-raphael (MIT license), adapted for
@@ -37,6 +37,7 @@ new file mode 100644
 +#include <IOKit/IOService.h>
 +#include <IOKit/IOMapper.h>
 +#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOPlatformExpert.h>
 +#include <kern/clock.h>
 +#include <mach/mach_time.h>
 +#include <mach/vm_param.h>
@@ -167,10 +168,6 @@ new file mode 100644
 +#define GPU_SUBMIT_BOS          4096
 +#define GPU_PATIENCE_MS         5000
 +
-+#define NSEC_PER_SEC            1000000000ULL
-+#define NSEC_PER_MSEC           1000000ULL
-+#define NSEC_PER_USEC           1000ULL
-+
 +static IOLock * gGPULock;
 +static uint32_t gGPUReportedSubmits;
 +
@@ -231,7 +228,7 @@ new file mode 100644
 +HakiosGPU::stop(IOService * provider)
 +{
 +	IOLog("HakiosGPU: stop\n");
-+	super::stop(provider);
++	IOService::stop(provider);
 +}
 +
 +/* ============================================================
@@ -688,7 +685,7 @@ new file mode 100644
 +extern "C" void
 +sweet_adreno_init(void)
 +{
-+	IOService * provider;
++	IOPlatformExpert * provider;
 +	HakiosGPU * gpu;
 +
 +	if (gGPULock == NULL) {
