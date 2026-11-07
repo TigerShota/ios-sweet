@@ -2,7 +2,21 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-07 (latest): v79 = 0127 METAL PLUGIN PROBE (SweetMetalProbe) <<<
+### >>> UPDATE 2026-11-07 (LATEST): v79 MILESTONE - METAL LOADS OUR PLUGIN IN BACKBOARDD AND SPRINGBOARD <<<
+- **v79 identity**: xnu `42373971460` (commit `df45a91`, 0127 applied, green), shim `42374470819`, boot `D:\hackios\out\v79-shim\shim-boot.img` (17,641,472 B, sha256 `8117df09...38cd93`). System boots normally, bands unchanged, no blur (the probe declines).
+- **Log** `out\logs-v79\boot.txt` (236,229 B, flush #41):
+  - `GAUGUIN INJECT: /System/Library/Extensions/SweetMetalProbe.bundle/Info.plist 818 bytes ... OK`
+  - `GAUGUIN INJECT: .../SweetMetalProbe 68560 bytes ... OK`
+  - `GAUGUIN INJECT: .../_CodeSignature/CodeResources 1798 bytes ... OK`
+  - `GAUGUIN INJECT: PASS files=4 ok=4 failed=0` (the first use of `VNOP_MKDIR` works too)
+  - `|backboardd| SWEET METAL: bundle loaded, SweetMetalDevice registered (_MTLDevice subclass)` (1075)
+  - `|backboardd| SWEET METAL: -initWithAcceleratorPort: called, declining (nil)` (1076)
+  - the same two lines from `|SpringBoard|` (1355-1356)
+  - `GAUGUIN GEM: selftest ... PASS` (1983)
+- **Meaning**: on gauguin/iOS 16.7.16, Metal's `_getMetalPluginClassForService` reads `MetalPluginName` from our `IOAcceleratorES`, dlopens `/System/Library/Extensions/<name>.bundle`, instantiates the class and calls `-initWithAcceleratorPort:`. The fajita C1 result reproduces here. Everything needed to *deliver* a Metal driver is now in place; the remaining work is to make that driver real.
+- **Next**: (1) align the `SweetAdreno` ABI with Bergamota's `xnu/gpu-abi/sweet_adreno_abi.h` (service name `SweetAdreno630`, `msm_param.pipe`, `wait_fence.queueid`, relative timeouts, reloc application in submit, `INFO`/`SURFACE_BO`/`BO_SYNC`); (2) build Chlorophyll's `libbgair.dylib`, the `sweet_drm.c` libdrm stand-in and `BGMTLDevice.bundle` in macOS CI (the iPhoneOS SDK is already used for the probe); (3) inject `SweetBGMTL.bundle` + `/usr/local/lib/{libbgair.dylib,libdrm.2.dylib}` and set `MetalPluginName=SweetBGMTL`, `MetalPluginClassName=BGMTLDevice`; (4) iterate on `surfaceBuffer`/IOSurface import (CA drawables).
+
+### >>> UPDATE 2026-11-07 (v79 design): 0127 METAL PLUGIN PROBE, AND THE PROBE LOADS <<<
 - **0127 (`xnu/patches/0127-gauguin-metal-plugin-name.patch`, 21 lines, verified on v78)**: `HakiosGPU` now sets `MetalPluginName=SweetMetalProbe` and `MetalPluginClassName=SweetMetalDevice` instead of the empty placeholder.
 - **Bundle**: `tools/metal-probe/sweet_metal_probe.m` + `Info.plist`; the xnu.yml inject step cross-builds it for `arm64-apple-ios16.0` with the iPhoneOS SDK into `inject-root/System/Library/Extensions/SweetMetalProbe.bundle/`, ad-hoc signs it, and packs it into the same INJT archive as the marker file. The installer therefore also exercises `VNOP_MKDIR` (the bundle is a new directory; the marker file's parents already existed).
 - **Probe behaviour**: at load time it creates `SweetMetalDevice` as an `objc_allocateClassPair` subclass of `_MTLDevice`, logs `SWEET METAL: bundle loaded ...` to stderr (console ring) and `/private/var/tmp/sweet-metal-probe.log`, and `-initWithAcceleratorPort:` logs and returns nil so CA stays on the CPU renderer.
