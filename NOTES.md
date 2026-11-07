@@ -2,7 +2,13 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-07 (latest): v78 ROOT INSTALL PATH WORKS - INJECT PASS <<<
+### >>> UPDATE 2026-11-07 (latest): v79 = 0127 METAL PLUGIN PROBE (SweetMetalProbe) <<<
+- **0127 (`xnu/patches/0127-gauguin-metal-plugin-name.patch`, 21 lines, verified on v78)**: `HakiosGPU` now sets `MetalPluginName=SweetMetalProbe` and `MetalPluginClassName=SweetMetalDevice` instead of the empty placeholder.
+- **Bundle**: `tools/metal-probe/sweet_metal_probe.m` + `Info.plist`; the xnu.yml inject step cross-builds it for `arm64-apple-ios16.0` with the iPhoneOS SDK into `inject-root/System/Library/Extensions/SweetMetalProbe.bundle/`, ad-hoc signs it, and packs it into the same INJT archive as the marker file. The installer therefore also exercises `VNOP_MKDIR` (the bundle is a new directory; the marker file's parents already existed).
+- **Probe behaviour**: at load time it creates `SweetMetalDevice` as an `objc_allocateClassPair` subclass of `_MTLDevice`, logs `SWEET METAL: bundle loaded ...` to stderr (console ring) and `/private/var/tmp/sweet-metal-probe.log`, and `-initWithAcceleratorPort:` logs and returns nil so CA stays on the CPU renderer.
+- **Expected log on the next boot**: `GAUGUIN INJECT: ... SweetMetalProbe.bundle/SweetMetalProbe ... OK` (×2 files) then, under backboardd, `SWEET METAL: bundle loaded, SweetMetalDevice registered` and possibly `SWEET METAL: -initWithAcceleratorPort: called, declining (nil)`. If Metal never loads it, the log names the bundle but no `SWEET METAL:` line - then the hook point is different on 16.7.16.
+
+### >>> UPDATE 2026-11-07 (v78): ROOT INSTALL PATH WORKS - INJECT PASS <<<
 - **v78 identity**: xnu `42370076517` (commit `dec04a5`, 0126 applied, green), shim `42370799726`, boot `D:\hackios\out\v78-shim\shim\out\shim-boot.img` (17,575,936 B, sha256 `d5678ba2...a8d503`). `fastboot boot` OK, system boots, bands unchanged.
 - **Log** `out\logs-v78\boot.txt` (223,185 B, flush #27):
   - `GAUGUIN INJECT: /private/var/tmp/sweet-inject-test.txt 21 bytes crc=0x90df36c9 OK`

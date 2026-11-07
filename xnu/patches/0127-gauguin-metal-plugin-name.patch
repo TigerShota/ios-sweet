@@ -1,0 +1,21 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -246,7 +246,16 @@ HakiosGPU::start(IOService * provider)
+ 		return false;
+ 	}
+ 	setProperty("IOUserClientClass", "SweetAdrenoUserClient");
+-	setProperty("MetalPluginName", "");      /* not Metal yet; placeholder for future */
++	/*
++	 * 0127: let Metal load our probe bundle. On iOS 16.7.16 Metal's
++	 * _getMetalPluginClassForService reads this property, dlopens
++	 * /System/Library/Extensions/<name>.bundle and instantiates the class
++	 * named here (the path is built by Metal, not by us). The probe logs
++	 * and returns nil, so CoreAnimation stays on SWContext until the real
++	 * Chlorophyll device is installed.
++	 */
++	setProperty("MetalPluginName", "SweetMetalProbe");
++	setProperty("MetalPluginClassName", "SweetMetalDevice");
+ 	setName("HakiosGPU");
+ 	registerService();
+ 	IOLog("HakiosGPU: service registered\n");

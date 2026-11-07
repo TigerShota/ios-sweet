@@ -43,13 +43,22 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build inject blob
-        # 0126: the kernel installer reads an archive embedded in the kernel.
-        # build.sh only unpacks the XNU tree later, and our patches are copied
-        # to dxb/patches by the next step, so generate the C array and ship it
-        # as a new-file patch here.
+        # 0126/0127: the kernel installer reads an archive embedded in the
+        # kernel. build.sh only unpacks the XNU tree later, and our patches are
+        # copied to dxb/patches by the next step, so generate the C array and
+        # ship it as a new-file patch here.
         run: |
           mkdir -p inject-root/private/var/tmp
           printf 'sweet inject test v1\n' > inject-root/private/var/tmp/sweet-inject-test.txt
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          B=inject-root/System/Library/Extensions/SweetMetalProbe.bundle
+          mkdir -p "$B"
+          xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -isysroot "$SDK" \
+            -bundle -O2 -framework Foundation \
+            -o "$B/SweetMetalProbe" tools/metal-probe/sweet_metal_probe.m
+          cp tools/metal-probe/Info.plist "$B/Info.plist"
+          codesign --force --sign - "$B" 2>/dev/null || true
+          file "$B/SweetMetalProbe"
           python3 tools/mkinject.py inject-root xnu/inject.bin
           python3 tools/mkblob.py xnu/inject.bin inject-blob.c gauguin_inject_blob gauguin_inject_size
           python3 tools/mknewfilepatch.py inject-blob.c bsd/dev/gauguin_inject_blob.c xnu/patches/0126a-gauguin-inject-blob.patch
