@@ -2,7 +2,17 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-07 (LATEST): v76 = 0124 REAL GEM + INDIRECT-BUFFER SUBMISSION + KERNEL SELF-TEST <<<
+### >>> UPDATE 2026-11-07 (LATEST): v76 SELF-TEST FAILED - CP_INDIRECT_BUFFER NEEDS THREE DWORDS ON A6XX (0125) <<<
+- **v76 identity**: xnu `42358804849` (commit `ae76fce`, 0124 applied, green), shim `42360922874` (two extra dispatches `42360912854`/`42360916652` happened because the GitHub API POST succeeded but its response read died and the retry resent - check for an existing run before dispatching), boot `D:\hackios\out\v76-shim\shim\out\shim-boot.img` (17,559,552 B, sha256 `76adcb0e...1df6fe`). Booted, system reached SpringBoard, orange/blue band still correct, **no blur** (expected: no MetalPluginName).
+- **v76 log** (`out\logs-v76\boot.txt`, 215,820 B, flush #15): `gem va=0x50000000..0x5fffffff l3 pa=0xcca18000 tables=128` (the window and all 128 L3 tables exist), step22/panel still retire, then:
+  - `GAUGUIN CP: submit fence=0x6000002 STUCK (rptr=1792 wptr=1792)`
+  - `GAUGUIN GEM: selftest fence=0 ib=0x50000000 data=0x50001000 memwrite=0 event=0 FAIL`
+  RPTR reached WPTR (= after the 3-dword IB + 5-dword fence packet) but the fence word was never written, i.e. the CP's front end consumed the ring and the ME stalled inside the IB.
+- **Root cause**: kgsl's `cp_gpuaddr()` on a6xx (non-legacy PM4) writes a **64-bit** address, and `cp_mem_packet(..., CP_INDIRECT_BUFFER_PFE, 2, 1)` therefore emits **3 payload dwords: address low, address high, size**. 0124 wrote only two (low + size), so the CP took the size as address bits 32..63 and fetched `0x900000000`, stalling. The existing step22 `CP_MEM_WRITE`/`EVENT_WRITE` packets already write address hi explicitly, which is the same rule and why they work.
+- **0125 (`xnu/patches/0125-gauguin-ib-64bit-addr.patch`, 105 lines, verified on v75+0124)**: IB packet is now `gg_pkt7(CP_INDIRECT_BUFFER, 3u)` + `[lo, hi, dwords]`, room check `4*count+5`; the STUCK path now dumps `ib1/ib2` base+remaining, CP protect/fault/int, CB1 FSR/FAR and the first ring words; `gauguin_gem_tlb_flush()` also does the global `TLBIALLNSNH` + `sTLBGSYNC` (the setup path does both); the self-test prints the IB/data PAs and the L2/L3 entries.
+- **Next**: xnu build -> shim -> boot -> expect `GAUGUIN GEM: selftest ... memwrite=0x600dbeef event=0x600df00d PASS`, or the new dump names the next stall.
+
+### >>> UPDATE 2026-11-07 (v76 first boot): GEM WINDOW UP, IB SUBMISSION STALLED <<<
 - **Why**: v75 proved the CP executes our packets and that `IOAcceleratorES` is matched, but `gauguin_cp_submit()` only advanced `CP_RB_WPTR` - it never put the submitted commands in the ring - and `gauguin_gem_map()` was a no-op with IOVAs at `0x800000000` (outside the CP's 32-bit window). Userspace (Mesa/Chlorophyll) could not have run anything.
 - **0124 (`xnu/patches/0124-gauguin-gem-submit.patch`, 629 lines, verified to apply to the v75 tree and reproduce the edited tree byte-for-byte)**:
   - kernel GEM window `0x50000000..0x5fffffff` (256 MiB, L2 entries 0x80..0xbf of the existing CP LPAE table); 64 L3 tables live in a separate 256 KiB physically-contiguous block, because the cpmem tail has only two free tables;

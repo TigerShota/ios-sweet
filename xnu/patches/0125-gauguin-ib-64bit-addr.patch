@@ -1,0 +1,105 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3141,13 +3141,13 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ {
+ 	uint32_t ring_dw = CPMEM_RING / 4u;
+ 	volatile uint32_t *ring;
+-	uint32_t need, wp, rp, fence, i, tries;
++	uint32_t need, wp, rp, fence, i, tries, start;
+ 
+ 	if (gg.gpu == 0 || !cp_started || addresses == NULL || words == NULL ||
+ 	    count == 0 || count > 64) {
+ 		return 0;
+ 	}
+-	need = 3u * count + 5u;
++	need = 4u * count + 5u;
+ 	if (need >= ring_dw / 2u) {
+ 		return 0;
+ 	}
+@@ -3172,14 +3172,24 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	}
+ 
+ 	fence = ++gg_next_fence;
++	start = wp;
+ 	*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) = 0u;
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+ 
+ 	for (i = 0; i < count; i++) {
+-		ring[wp % ring_dw] = gg_pkt7(CP_INDIRECT_BUFFER, 2u);
++		/*
++		 * a6xx (non-legacy PM4) cp_gpuaddr writes a 64-bit address, so
++		 * CP_INDIRECT_BUFFER_PFE carries THREE dwords: address low,
++		 * address high, size in dwords. Writing only two (the old
++		 * v76 bug) makes the CP treat the size as address bits 32..63
++		 * and it stalls inside the IB fetch with RPTR already at WPTR.
++		 */
++		ring[wp % ring_dw] = gg_pkt7(CP_INDIRECT_BUFFER, 3u);
+ 		wp++;
+ 		ring[wp % ring_dw] = (uint32_t)addresses[i];
+ 		wp++;
++		ring[wp % ring_dw] = (uint32_t)(addresses[i] >> 32);
++		wp++;
+ 		ring[wp % ring_dw] = words[i];
+ 		wp++;
+ 	}
+@@ -3204,9 +3214,31 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		}
+ 		delay(1);
+ 	}
+-	printf("GAUGUIN CP: submit fence=%#x STUCK (rptr=%u wptr=%u)\n",
++	printf("GAUGUIN CP: submit fence=%#x STUCK (rptr=%u wptr=%u)"
++	    " ib1=%#x/%#x ib2=%#x/%#x protect=%#x fault=%#x int=%#x\n",
+ 	    fence, gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
+-	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB1_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB2_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB2_REM_SIZE_DW)),
++	    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
++	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++	{
++		vm_offset_t s = gg_smmu_base();
++		if (s) {
++			vm_offset_t cb = s + SMMU_CB(GG_CB1);
++			printf("GAUGUIN CP: submit smmu cb1 fsr=%#x far=%#x\n",
++			    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR));
++		}
++	}
++	printf("GAUGUIN CP: submit ring[%u]=%#x %#x %#x %#x %#x\n", start,
++	    gm_rd32_raw(CPMEM_RING + 4u * (start % ring_dw)),
++	    gm_rd32_raw(CPMEM_RING + 4u * ((start + 1u) % ring_dw)),
++	    gm_rd32_raw(CPMEM_RING + 4u * ((start + 2u) % ring_dw)),
++	    gm_rd32_raw(CPMEM_RING + 4u * ((start + 3u) % ring_dw)),
++	    gm_rd32_raw(CPMEM_RING + 4u * ((start + 4u) % ring_dw)));
+ 	(void)sweet_log_flush_now();
+ 	return 0;
+ }
+@@ -3312,6 +3344,10 @@ gauguin_gem_tlb_flush(void)
+ 	cb = s + SMMU_CB(GG_CB1);
+ 	gg_wr(cb, SMMU_CB_TLBIALL, 0);
+ 	(void)gg_tlb_sync(cb, SMMU_CB_TLBSYNC, SMMU_CB_TLBSTATUS);
++	/* The stage-1 TLB on SMMU-500 also caches walks globally; the domain
++	 * setup invalidates it, so do the same after every new mapping. */
++	gg_wr(s, SMMU_TLBIALLNSNH, 0);
++	(void)gg_tlb_sync(s, SMMU_sTLBGSYNC, SMMU_sTLBGSTATUS);
+ }
+ 
+ /* Clean the CPU cache for a GEM range before/after the GPU touches it. */
+@@ -3419,6 +3455,14 @@ gauguin_gem_selftest(void)
+ 		return;
+ 	}
+ 	gauguin_gem_tlb_flush();
++	printf("GAUGUIN GEM: selftest map ib_pa=%#llx data_pa=%#llx"
++	    " l2=%#llx pte_ib=%#llx pte_data=%#llx\n",
++	    (unsigned long long)ptoa_64(ib_pn),
++	    (unsigned long long)ptoa_64(data_pn),
++	    (unsigned long long)gg_gem_entry(CPMEM_L2 + 8u * GEM_L2_FIRST),
++	    (unsigned long long)*(volatile uint64_t *)gem_l3,
++	    (unsigned long long)*(volatile uint64_t *)(gem_l3 + 8u));
++	(void)sweet_log_flush_now();
+ 
+ 	*(volatile uint32_t *)data_kva = 0u;
+ 	*(volatile uint32_t *)(data_kva + 4u) = 0u;
