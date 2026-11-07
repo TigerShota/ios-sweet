@@ -66,7 +66,7 @@ jobs:
         run: |
           set -eux
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          xcrun --sdk iphoneos clang -arch arm64e -miphoneos-version-min=16.0 \
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 \
             -isysroot "$SDK" -O2 -g -fvisibility=hidden \
             -dynamiclib -install_name @rpath/libdrm.2.dylib \
             -current_version 2.4.0 -compatibility_version 2.0.0 \
@@ -83,9 +83,9 @@ jobs:
           BISON="$(brew --prefix bison)/bin/bison"
           cat > ios.cross <<EOT
           [binaries]
-          c = ['xcrun','--sdk','iphoneos','clang','-arch','arm64e']
-          cpp = ['xcrun','--sdk','iphoneos','clang++','-arch','arm64e']
-          objc = ['xcrun','--sdk','iphoneos','clang','-arch','arm64e']
+          c = ['xcrun','--sdk','iphoneos','clang','-arch','arm64']
+          cpp = ['xcrun','--sdk','iphoneos','clang++','-arch','arm64']
+          objc = ['xcrun','--sdk','iphoneos','clang','-arch','arm64']
           ar = ['xcrun','--sdk','iphoneos','ar']
           strip = ['xcrun','--sdk','iphoneos','strip']
           ranlib = ['xcrun','--sdk','iphoneos','ranlib']
@@ -103,7 +103,7 @@ jobs:
           system = 'darwin'
           subsystem = 'ios'
           cpu_family = 'aarch64'
-          cpu = 'arm64e'
+          cpu = 'arm64'
           endian = 'little'
 
           [properties]
@@ -165,7 +165,7 @@ jobs:
         run: |
           set -eux
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          CC="xcrun --sdk iphoneos clang -arch arm64e -miphoneos-version-min=16.0 -isysroot $SDK"
+          CC="xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -isysroot $SDK"
           B="$PWD/SweetBGMTL.bundle"
           mkdir -p "$B"
           cp -f build-ios/src/gallium/drivers/freedreno/libbgair.dylib "$B/libbgair.dylib"
