@@ -85,18 +85,24 @@ jobs:
           BUILD_WERROR: "0"
         run: bash build.sh 2>&1 | tee build.log
 
-      - name: Fail if any patch was skipped
+      - name: Fail if any of our patches was skipped
         # build.sh logs a warning and continues when `git apply --check` fails,
         # so a stale hunk silently produces a kernel without that patch (0122/
-        # 0123 were lost this way in v74). Never let that pass again.
+        # 0123 were lost this way in v74). Four patches shipped by blacktop's
+        # darwin-xnu-build legitimately do not apply to this tree; everything
+        # else - all of our numbered gauguin/sweet patches - must apply.
         if: always()
         working-directory: dxb
         run: |
-          if [ -f build.log ] && grep -a "Skipping patch" build.log; then
-            echo "::error::a patch in xnu/patches did not apply; the kernel does not match the patch set"
+          if [ ! -f build.log ]; then echo "no build.log"; exit 1; fi
+          SKIPPED=$(grep -a "Skipping patch" build.log || true)
+          BAD=$(printf '%s\n' "$SKIPPED" | grep -avE '/(iobuffermemd_monterey|skywalk_sonoma|syntax_checker_sonoma|TrustCache)\.patch' || true)
+          if [ -n "$BAD" ]; then
+            echo "$BAD"
+            echo "::error::one of our patches did not apply; the kernel does not match xnu/patches"
             exit 1
           fi
-          echo "all patches applied"
+          echo "all of our patches applied (only the 4 known blacktop skips remain)"
 
       - name: Dump iig-generated code (Xcode 16 ABI check)
         if: always()
