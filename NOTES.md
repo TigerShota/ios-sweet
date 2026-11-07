@@ -2,7 +2,18 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-07 (LATEST): v76 SELF-TEST FAILED - CP_INDIRECT_BUFFER NEEDS THREE DWORDS ON A6XX (0125) <<<
+### >>> UPDATE 2026-11-07 (LATEST): v77 PASS - KERNEL GEM + IB SUBMISSION WORKS <<<
+- **v77 identity**: xnu `42361782254` (commit `924c3d8`, 0125 applied, green), shim `42362385771`, boot `D:\hackios\out\v77-shim\shim\out\shim-boot.img` (17,559,552 B, sha256 `4e117176...9eb368`). `fastboot boot` OK, system reaches SpringBoard, orange/blue band unchanged, no blur (still no MetalPluginName).
+- **Log** `out\logs-v77\boot.txt` (246,897 B, flush #60):
+  - `gem va=0x50000000..0x5fffffff l3 pa=0xccce4000 tables=128`
+  - `selftest map ib_pa=0xd1410000 data_pa=0xd1414000 l2=0xccce4003 pte_ib=0xd1410e43 pte_data=0xd1414e43`
+  - `selftest fence=0x6000002 ib=0x50000000 data=0x50001000 memwrite=0x600dbeef event=0x600df00d PASS`
+  - step22/panel still retire (`orange=32 blue=32 other=0`).
+- **Meaning**: the CP fetched a command buffer through our new SMMU window, executed `CP_MEM_WRITE` + `CP_EVENT_WRITE` into a second GEM BO, and the completion fence retired. The kernel side of the Mesa/Chlorophyll path (GEM iova + 4 KiB PTEs + `CP_INDIRECT_BUFFER_PFE` + fence + cache flush) is no longer guesswork.
+- **Note on the fence number**: `gg_next_fence` starts at `0x06000001`, so the first submit returns `0x6000002`; not a second submission.
+- **Next (userspace/Metal)**: align the IOKit ABI with Bergamota's `xnu/gpu-abi/sweet_adreno_abi.h` (selectors INFO 0x70, SURFACE_BO 0x71, BO_SYNC 0x72; exact struct layouts incl. `msm_param.pipe`, `wait_fence.queueid`, relative timeouts; reloc application in submit; service name `SweetAdreno630`); then set `MetalPluginName`, build Chlorophyll/libbgair/libdrm and get the bundle into the iOS root. References are now local: `out\refs\ry-diffusion-Bergamota-37a7a7a\gpu\freedreno-sweet\sweet_drm.c` and `...\xnu\gpu-abi\sweet_adreno_abi.h`, `out\refs\ry-diffusion-Chlorophyll-787338f`.
+
+### >>> UPDATE 2026-11-07 (v76): SELF-TEST STALLED - CP_INDIRECT_BUFFER NEEDS THREE DWORDS ON A6XX (0125) <<<
 - **v76 identity**: xnu `42358804849` (commit `ae76fce`, 0124 applied, green), shim `42360922874` (two extra dispatches `42360912854`/`42360916652` happened because the GitHub API POST succeeded but its response read died and the retry resent - check for an existing run before dispatching), boot `D:\hackios\out\v76-shim\shim\out\shim-boot.img` (17,559,552 B, sha256 `76adcb0e...1df6fe`). Booted, system reached SpringBoard, orange/blue band still correct, **no blur** (expected: no MetalPluginName).
 - **v76 log** (`out\logs-v76\boot.txt`, 215,820 B, flush #15): `gem va=0x50000000..0x5fffffff l3 pa=0xcca18000 tables=128` (the window and all 128 L3 tables exist), step22/panel still retire, then:
   - `GAUGUIN CP: submit fence=0x6000002 STUCK (rptr=1792 wptr=1792)`
