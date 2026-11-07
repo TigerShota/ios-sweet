@@ -83,7 +83,20 @@ jobs:
           # on Xcode 15; keep them non-fatal for this migration build (the log
           # still shows every warning for triage). Set to 1 to restore -Werror.
           BUILD_WERROR: "0"
-        run: bash build.sh
+        run: bash build.sh 2>&1 | tee build.log
+
+      - name: Fail if any patch was skipped
+        # build.sh logs a warning and continues when `git apply --check` fails,
+        # so a stale hunk silently produces a kernel without that patch (0122/
+        # 0123 were lost this way in v74). Never let that pass again.
+        if: always()
+        working-directory: dxb
+        run: |
+          if [ -f build.log ] && grep -a "Skipping patch" build.log; then
+            echo "::error::a patch in xnu/patches did not apply; the kernel does not match the patch set"
+            exit 1
+          fi
+          echo "all patches applied"
 
       - name: Dump iig-generated code (Xcode 16 ABI check)
         if: always()

@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -1216,6 +1216,18 @@
+@@ -1216,6 +1216,18 @@ gauguin_gx_pdc_rsc(void)
  #define TARGET_PITCH     2048u
  #define TARGET_SIZE      (TARGET_PITCH * TARGET_H)
  
@@ -20,7 +20,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  /* CP opcodes and a6xx 2D register numbers, all from the redwood reference
   * (out/refs/willow-redwood_adreno.c, step 22). a615 belongs to the same
   * a6xx block family, so the 2D pipe is addressed with the same numbers. */
-@@ -1266,6 +1278,18 @@
+@@ -1266,6 +1278,18 @@ static vm_offset_t cpmem;
  static uint64_t cp_pa;
  static vm_offset_t target;
  static uint64_t target_pa;
@@ -39,12 +39,10 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  
  static uint32_t
  gm_rd32_raw(uint32_t off)
-@@ -1393,6 +1417,92 @@
- 		    TARGET_W, TARGET_H, TARGET_PITCH, gm_rd32_raw(CPMEM_L3T),
- 		    gm_rd32_raw(CPMEM_L3T + 8u * 255u));
+@@ -1392,6 +1416,92 @@ gauguin_cp_mem_setup(void)
  		(void)sweet_log_flush_now();
-+	}
-+
+ 	}
+ 
 +	/*
 +	 * 0123: map the panel buffer the bootloader left scanning out (the same
 +	 * memory AppleCLCD wraps as its default IOSurface) into the CP's address
@@ -129,13 +127,15 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +				(void)sweet_log_flush_now();
 +			}
 +		}
- 	}
- 
++	}
++
  	/* SQE microcode: skip the container dword, copy, read back every word. */
-@@ -2648,6 +2758,195 @@
- 				(void)sweet_log_flush_now();
- 			}
- 		}
+ 	for (i = 1; i < SQE_DWORDS; i++) {
+ 		*(volatile uint32_t *)(cpmem + CPMEM_SQE + 4u * (i - 1u)) =
+@@ -2537,6 +2647,195 @@ gauguin_cp_start(void)
+ 		    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
+ 		    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)));
+ 		(void)sweet_log_flush_now();
 +
 +		/*
 +		 * 0123: prove the GPU -> panel path. The bottom 64 rows of the live

@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetAdreno.cpp
-@@ -0,0 +1,707 @@
+@@ -0,0 +1,737 @@
 +/*
 + * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
 + * Ported from yfl520/hackios-raphael (MIT license), adapted for
@@ -202,7 +202,37 @@ new file mode 100644
 + * HakiosGPU IOService
 + * ============================================================ */
 +
-+class HakiosGPU : public IOService {
++/*
++ * IOAcceleratorES - the class CoreAnimation/backboardd look for with
++ * IOServiceMatching("IOAcceleratorES"). IOService::matchPropertyTable
++ * resolves IOProviderClass through metaCast(), so a *subclass* satisfies
++ * the match while a plain IOService does not (v74: 302 x "0 found").
++ * Deliberately empty: MetalPluginName stays unset until a real Metal
++ * driver bundle exists, so Metal still falls back to the CPU renderer.
++ */
++class IOAcceleratorES : public IOService {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++
++public:
++	virtual bool start(IOService * provider) APPLE_KEXT_OVERRIDE;
++	virtual void stop(IOService * provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
++bool
++IOAcceleratorES::start(IOService * provider)
++{
++	return IOService::start(provider);
++}
++
++void
++IOAcceleratorES::stop(IOService * provider)
++{
++	IOService::stop(provider);
++}
++
++class HakiosGPU : public IOAcceleratorES {
 +	OSDeclareDefaultStructors(HakiosGPU);
 +
 +public:
@@ -210,12 +240,12 @@ new file mode 100644
 +	virtual void stop(IOService * provider) APPLE_KEXT_OVERRIDE;
 +};
 +
-+OSDefineMetaClassAndStructors(HakiosGPU, IOService);
++OSDefineMetaClassAndStructors(HakiosGPU, IOAcceleratorES);
 +
 +bool
 +HakiosGPU::start(IOService * provider)
 +{
-+	if (!IOService::start(provider)) {
++	if (!IOAcceleratorES::start(provider)) {
 +		return false;
 +	}
 +	setProperty("IOUserClientClass", "SweetAdrenoUserClient");
@@ -230,7 +260,7 @@ new file mode 100644
 +HakiosGPU::stop(IOService * provider)
 +{
 +	IOLog("HakiosGPU: stop\n");
-+	IOService::stop(provider);
++	IOAcceleratorES::stop(provider);
 +}
 +
 +/* ============================================================
@@ -713,7 +743,7 @@ new file mode 100644
 diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
 --- a/iokit/conf/files.arm64
 +++ b/iokit/conf/files.arm64
-@@ -17,6 +17,7 @@
+@@ -17,6 +17,7 @@ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitc
  iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
  iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp

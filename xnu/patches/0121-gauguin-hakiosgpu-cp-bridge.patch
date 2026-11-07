@@ -1,17 +1,21 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -2673,6 +2673,159 @@
- 		thread_deallocate(thread);
+@@ -2674,5 +2674,165 @@ gauguin_gpu_init(void)
  	} else {
  		printf("GAUGUIN GPU: kernel_thread_start failed %d\n", kr);
--	}
--}
-+	extern void sweet_adreno_init(void);
-+	sweet_adreno_init();
-+	printf("GAUGUIN GPU: sweet_adreno_init done\n");
+ 	}
++	/*
++	 * Publish the accelerator only after the CP thread really started.
++	 * v74 had this call inside the failure branch above, so it never ran
++	 * and backboardd found no IOAcceleratorES at all.
++	 */
++	{
++		extern void sweet_adreno_init(void);
++		sweet_adreno_init();
++		printf("GAUGUIN GPU: sweet_adreno_init done\n");
 +	}
-+}
+ }
 +
 +/* ============================================================
 + * SweetAdreno bridge functions (used by iokit/Kernel/arm/SweetAdreno.cpp).
