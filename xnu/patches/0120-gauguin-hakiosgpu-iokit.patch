@@ -1,7 +1,7 @@
-diff --git a/xnu/iokit/Kernel/arm/SweetAdreno.cpp b/xnu/iokit/Kernel/arm/SweetAdreno.cpp
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
 new file mode 100644
 --- /dev/null
-+++ b/xnu/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
 @@ -0,0 +1,709 @@
 +/*
 + * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
@@ -712,9 +712,9 @@ new file mode 100644
 +	IOLog("HakiosGPU: service registered\n");
 +}
 +
-diff --git a/xnu/iokit/conf/files.arm64 b/xnu/iokit/conf/files.arm64
---- --- a/xnu/iokit/conf/files.arm64
-+++ +++ b/xnu/iokit/conf/files.arm64
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+--- --- a/iokit/conf/files.arm64
++++ +++ b/iokit/conf/files.arm64
 @@ -15,6 +15,7 @@
  iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
  iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
