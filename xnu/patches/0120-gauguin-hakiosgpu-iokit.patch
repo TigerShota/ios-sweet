@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetAdreno.cpp
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,707 @@
 +/*
 + * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
 + * Ported from yfl520/hackios-raphael (MIT license), adapted for
@@ -185,6 +185,7 @@ new file mode 100644
 +
 +/* ---- Forward declarations (defined in gauguin_gpu.c) ---- */
 +
++extern "C" {
 +extern bool gauguin_cp_ready(void);
 +extern bool gauguin_cp_done(uint32_t fence);
 +extern bool gauguin_cp_wait(uint32_t fence, uint64_t patience_ns);
@@ -195,6 +196,7 @@ new file mode 100644
 +extern void gauguin_gem_address_free(uint64_t address, uint64_t size);
 +extern bool gauguin_gem_map(uint64_t iova, addr64_t phys, uint32_t flags);
 +extern void gauguin_gem_unmap(uint64_t iova, uint64_t size);
++}
 +
 +/* ============================================================
 + * HakiosGPU IOService
