@@ -1,3 +1,4 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 
 +++ b/bsd/dev/gauguin_gpu.c
