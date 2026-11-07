@@ -2,7 +2,18 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-07 (LATEST): v77 PASS - KERNEL GEM + IB SUBMISSION WORKS <<<
+### >>> UPDATE 2026-11-07 (latest): v78 = 0126 EMBEDDED INJECT ARCHIVE + KERNEL INSTALLER (root write path) <<<
+- **Why**: every userspace step (probe bundle, Chlorophyll) needs files in the iOS root, and the host has no HFS+ writer (WSL has no hfsplus module, no hfsprogs mount tool). Instead of a 16 GB reflash per iteration, the kernel now carries a small archive and writes it into the mounted root at boot.
+- **0126 (`xnu/patches/0126-gauguin-inject-installer.patch`, 399 lines, verified on v77)**:
+  - `tools/mkinject.py` packs a directory tree into `INJT` v1 (header + entries: path, mode, uid, gid, size, FNV-1a crc; 8-byte aligned); `tools/mkblob.py` turns the binary into `const unsigned char gauguin_inject_blob[]` + `gauguin_inject_size`.
+  - `xnu.yml` builds a first archive with `inject-root/private/var/tmp/sweet-inject-test.txt` and generates `dxb/bsd/dev/gauguin_inject_blob.c` before `build.sh`.
+  - `bsd/dev/gauguin_inject.c`: waits for `rootvnode` (root mounted; the GPU thread starts before bsd_init mounts it), creates missing parent directories with `VNOP_MKDIR` (LOOKUP + ISLASTCN + VA_EXCLUSIVE, mirroring `vfs_xattr.c`), writes each file with `vnode_open(O_CREAT|O_TRUNC|O_WRONLY)` + `vn_rdwr(UIO_WRITE, UIO_SYSSPACE)`, sets uid/gid/mode, then **reads it back** and compares the FNV-1a checksum. Logs `GAUGUIN INJECT: <path> ... OK` and a final `PASS/FAIL`. Boot arg `sweetinject=0` disables it.
+  - `gg_thread` calls the installer right after the "starting in N s" print and before the 30 s GPU delay, so the files exist long before backboardd (log line ~989).
+  - `bsd/conf/files` gains `bsd/dev/gauguin_inject.c` and `bsd/dev/gauguin_inject_blob.c`.
+- **Expected next log**: `GAUGUIN INJECT: /private/var/tmp/sweet-inject-test.txt 21 bytes crc=... OK` then `GAUGUIN INJECT: PASS files=1 ok=1 failed=0`. If it fails, the error code names the VFS call that refused.
+- **After that**: set `MetalPluginName`/`MetalPluginClassName` and put the probe/Chlorophyll bundle in the same archive; then align the IOKit ABI (see the v77 block's next step).
+
+### >>> UPDATE 2026-11-07 (v77 PASS): KERNEL GEM + IB SUBMISSION WORKS <<<
 - **v77 identity**: xnu `42361782254` (commit `924c3d8`, 0125 applied, green), shim `42362385771`, boot `D:\hackios\out\v77-shim\shim\out\shim-boot.img` (17,559,552 B, sha256 `4e117176...9eb368`). `fastboot boot` OK, system reaches SpringBoard, orange/blue band unchanged, no blur (still no MetalPluginName).
 - **Log** `out\logs-v77\boot.txt` (246,897 B, flush #60):
   - `gem va=0x50000000..0x5fffffff l3 pa=0xccce4000 tables=128`

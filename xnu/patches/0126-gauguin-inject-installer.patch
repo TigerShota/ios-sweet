@@ -1,0 +1,399 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -114,6 +114,8 @@ bsd/dev/sweet_usb.c			standard
+ bsd/dev/gauguin_touch.c			standard
+ bsd/dev/gauguin_touch_fw.c		standard
+ bsd/dev/gauguin_gpu.c			standard
++bsd/dev/gauguin_inject.c		standard
++bsd/dev/gauguin_inject_blob.c		standard
+ bsd/dev/gauguin_gmu_fw.c		standard
+ bsd/dev/gauguin_sqe_fw.c		standard
+ bsd/dev/gauguin_zap_fw.c		standard
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -25,6 +25,7 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern kern_return_t thread_terminate(thread_t);
+ extern void sweet_log_flush_now(void);
++extern void gauguin_inject_install(void);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
+ extern const unsigned int gauguin_gmu_fw[5120];
+@@ -112,6 +113,12 @@ gg_thread(void *arg, wait_result_t result)
+ 	(void)result;
+ 	(void)PE_parse_boot_argn("gauguingpudelay", &delay_s, sizeof(delay_s));
+ 	printf("GAUGUIN GPU: starting in %u s\n", delay_s);
++	/*
++	 * 0126: install the embedded bundle archive as soon as the BSD root is
++	 * mounted (rootvnode is set in bsd_init). Must happen before backboardd
++	 * asks Metal for a device; the installer polls for up to 30 s.
++	 */
++	gauguin_inject_install();
+ 	gg_wait(delay_s * 1000u);
+ 	printf("GAUGUIN GPU: mapping GCC/GPUCC\n");
+ 	(void)sweet_log_flush_now();
+diff --git a/bsd/dev/gauguin_inject.c b/bsd/dev/gauguin_inject.c
+new file mode 100755
+--- /dev/null
++++ b/bsd/dev/gauguin_inject.c
+@@ -0,0 +1,358 @@
++/*
++ * 0126: install a small archive embedded in the kernel image into the mounted
++ * iOS root, before backboardd starts looking for the Metal bundle.
++ *
++ * The archive is generated in CI by tools/mkinject.py (a directory tree of
++ * files) and turned into gauguin_inject_blob[] by tools/mkblob.py.  The
++ * installer polls until the root is mounted, writes every entry with the VFS
++ * (creating parent directories with VNOP_MKDIR), then reads each file back
++ * and compares an FNV-1a checksum.  It logs one line per file and a final
++ * PASS/FAIL, so an injected bundle can be verified from the console ring.
++ *
++ * Paths in the archive are root-relative (no leading slash).  Boot argument
++ * sweetinject=0 disables the installer; it defaults to on.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <sys/vnode.h>
++#include <sys/vnode_if.h>
++#include <sys/namei.h>
++#include <sys/uio.h>
++#include <sys/fcntl.h>
++#include <sys/kauth.h>
++#include <kern/clock.h>
++#include <kern/sched_prim.h>
++#include <vm/vm_kern.h>
++#include <pexpert/pexpert.h>
++
++extern const unsigned char gauguin_inject_blob[];
++extern const unsigned long gauguin_inject_size;
++extern vnode_t rootvnode;               /* set once the BSD root is mounted */
++extern void sweet_log_flush_now(void);
++
++#define INJ_MAGIC       0x544a4e49u     /* "INJT" */
++#define INJ_VERSION     1u
++#define INJ_HDR         16u
++#define INJ_ENT         32u
++#define INJ_PATH_MAX    512u
++#define INJ_BUF_SIZE    0x10000u
++#define INJ_POLL_MS     100u
++#define INJ_POLL_MAX    300u            /* 30 s */
++
++static int inj_wait_chan;
++
++static void
++inj_wait_ms(unsigned ms)
++{
++	uint64_t deadline;
++
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&inj_wait_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static uint32_t
++inj_rd32(const unsigned char *p)
++{
++	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++	    ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++static uint64_t
++inj_rd64(const unsigned char *p)
++{
++	return (uint64_t)inj_rd32(p) | ((uint64_t)inj_rd32(p + 4) << 32);
++}
++
++static uint32_t
++inj_crc(uint32_t h, const unsigned char *p, uint64_t n)
++{
++	while (n--) {
++		h ^= *p++;
++		h *= 16777619u;
++	}
++	return h;
++}
++
++static size_t
++inj_strlen(const char *s)
++{
++	size_t n = 0;
++
++	while (s[n] != 0) {
++		n++;
++	}
++	return n;
++}
++
++static int
++inj_mkdir_one(const char *path, vfs_context_t ctx)
++{
++	char parent[INJ_PATH_MAX];
++	const char *name;
++	vnode_t dvp = NULL, vp = NULL;
++	struct componentname cn;
++	struct vnode_attr va;
++	size_t n;
++	int err;
++
++	n = inj_strlen(path);
++	if (n >= sizeof(parent)) {
++		return ENAMETOOLONG;
++	}
++	bcopy(path, parent, n + 1);
++	name = NULL;
++	for (size_t i = n; i > 0; i--) {
++		if (parent[i - 1] == '/') {
++			name = &parent[i];
++			parent[i - 1] = 0;
++			break;
++		}
++	}
++	if (name == NULL || parent[0] == 0 || name[0] == 0) {
++		return EINVAL;
++	}
++
++	err = vnode_lookup(parent, 0, &dvp, ctx);
++	if (err) {
++		return err;
++	}
++	bzero(&cn, sizeof(cn));
++	cn.cn_nameiop = LOOKUP;
++	cn.cn_flags = ISLASTCN;
++	cn.cn_nameptr = (char *)name;
++	cn.cn_namelen = (int)inj_strlen(name);
++	cn.cn_pnbuf = parent;
++	cn.cn_pnlen = (int)sizeof(parent);
++#ifdef BSD_KERNEL_PRIVATE
++	cn.cn_context = ctx;
++#endif
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_mode, 0755);
++	VATTR_SET(&va, va_uid, 0);
++	VATTR_SET(&va, va_gid, 0);
++	VATTR_SET(&va, va_type, VDIR);
++	va.va_vaflags = VA_EXCLUSIVE;
++	err = VNOP_MKDIR(dvp, &vp, &cn, &va, ctx);
++	if (err == 0 && vp != NULL) {
++		vnode_put(vp);
++	}
++	vnode_put(dvp);
++	return err;
++}
++
++/* Create every missing directory component of an absolute path. */
++static int
++inj_mkdirs(const char *path, vfs_context_t ctx)
++{
++	char buf[INJ_PATH_MAX];
++	size_t n, i;
++	int err;
++
++	n = inj_strlen(path);
++	if (n >= sizeof(buf)) {
++		return ENAMETOOLONG;
++	}
++	bcopy(path, buf, n + 1);
++	for (i = 1; i < n; i++) {
++		vnode_t vp;
++
++		if (buf[i] != '/') {
++			continue;
++		}
++		buf[i] = 0;
++		if (vnode_lookup(buf, 0, &vp, ctx) == 0) {
++			vnode_put(vp);
++		} else {
++			err = inj_mkdir_one(buf, ctx);
++			if (err != 0 && err != EEXIST) {
++				buf[i] = '/';
++				return err;
++			}
++		}
++		buf[i] = '/';
++	}
++	return 0;
++}
++
++static int
++inj_write_file(const char *path, const unsigned char *data, uint32_t size,
++    uint32_t mode, uint32_t uid, uint32_t gid, vfs_context_t ctx)
++{
++	vnode_t vp = NULL;
++	struct vnode_attr va;
++	int resid = 0;
++	int err;
++
++	err = vnode_open(path, O_CREAT | O_TRUNC | O_WRONLY, (int)mode, 0,
++	    &vp, ctx);
++	if (err) {
++		return err;
++	}
++	if (size != 0) {
++		err = vn_rdwr(UIO_WRITE, vp, (caddr_t)(uintptr_t)data,
++		    (int)size, 0, UIO_SYSSPACE, IO_NODELOCKED | IO_NOAUTH,
++		    kauth_cred_get(), &resid, NULL);
++	}
++	vnode_close(vp, 0, ctx);
++	if (err) {
++		return err;
++	}
++	if (resid != 0) {
++		return EIO;
++	}
++	err = vnode_lookup(path, 0, &vp, ctx);
++	if (err) {
++		return err;
++	}
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_uid, uid);
++	VATTR_SET(&va, va_gid, gid);
++	VATTR_SET(&va, va_mode, mode);
++	(void)vnode_setattr(vp, &va, ctx);
++	vnode_put(vp);
++	return 0;
++}
++
++static int
++inj_verify_file(const char *path, uint64_t size, uint32_t want,
++    vfs_context_t ctx)
++{
++	vnode_t vp = NULL;
++	unsigned char *buf;
++	uint64_t off = 0;
++	uint32_t crc = 2166136261u;
++	int resid = 0;
++	int err;
++
++	err = vnode_lookup(path, 0, &vp, ctx);
++	if (err) {
++		return err;
++	}
++	buf = (unsigned char *)kmem_alloc(kernel_map, INJ_BUF_SIZE,
++	    VM_KERN_MEMORY_BSD);
++	if (buf == NULL) {
++		vnode_put(vp);
++		return ENOMEM;
++	}
++	while (off < size) {
++		uint32_t n = (uint32_t)MIN(size - off, (uint64_t)INJ_BUF_SIZE);
++
++		resid = 0;
++		err = vn_rdwr(UIO_READ, vp, (caddr_t)buf, (int)n, (off_t)off,
++		    UIO_SYSSPACE, IO_NODELOCKED | IO_NOAUTH, kauth_cred_get(),
++		    &resid, NULL);
++		if (err || resid) {
++			err = err ? err : EIO;
++			break;
++		}
++		crc = inj_crc(crc, buf, n);
++		off += n;
++	}
++	kmem_free(kernel_map, (vm_offset_t)buf, INJ_BUF_SIZE);
++	vnode_put(vp);
++	if (err) {
++		return err;
++	}
++	return crc == want ? 0 : EINVAL;
++}
++
++void
++gauguin_inject_install(void)
++{
++	const unsigned char *p = gauguin_inject_blob;
++	uint64_t total = gauguin_inject_size;
++	uint32_t magic, version, count, i;
++	uint64_t off;
++	vfs_context_t ctx;
++	unsigned ok = 0, bad = 0;
++	int enabled = 1;
++
++	(void)PE_parse_boot_argn("sweetinject", &enabled, sizeof(enabled));
++	if (!enabled || total < INJ_HDR) {
++		return;
++	}
++	magic = inj_rd32(p);
++	version = inj_rd32(p + 4);
++	count = inj_rd32(p + 8);
++	if (magic != INJ_MAGIC || version != INJ_VERSION || count > 4096 ||
++	    inj_rd32(p + 12) != total) {
++		printf("GAUGUIN INJECT: bad header magic=%#x version=%u"
++		    " count=%u size=%llu\n", magic, version, count,
++		    (unsigned long long)total);
++		(void)sweet_log_flush_now();
++		return;
++	}
++
++	/* The root is mounted early in bsd_init; the GPU thread runs before
++	 * that, so wait for rootvnode instead of touching the VFS too early. */
++	for (i = 0; i < INJ_POLL_MAX && rootvnode == NULL; i++) {
++		inj_wait_ms(INJ_POLL_MS);
++	}
++	if (rootvnode == NULL) {
++		printf("GAUGUIN INJECT: root never mounted\n");
++		(void)sweet_log_flush_now();
++		return;
++	}
++
++	ctx = vfs_context_create(NULL);
++	if (ctx == NULL) {
++		printf("GAUGUIN INJECT: no vfs context\n");
++		return;
++	}
++	off = INJ_HDR;
++	for (i = 0; i < count; i++) {
++		uint32_t plen, mode, uid, gid, crc;
++		uint64_t size;
++		char path[INJ_PATH_MAX];
++		int err;
++
++		if (off + INJ_ENT > total) {
++			break;
++		}
++		plen = inj_rd32(p + off);
++		mode = inj_rd32(p + off + 4);
++		uid = inj_rd32(p + off + 8);
++		gid = inj_rd32(p + off + 12);
++		size = inj_rd64(p + off + 16);
++		crc = inj_rd32(p + off + 24);
++		off += INJ_ENT;
++		if (plen == 0 || plen >= sizeof(path) - 1 ||
++		    off + plen + size > total) {
++			break;
++		}
++		path[0] = '/';
++		bcopy(p + off, path + 1, plen);
++		path[plen + 1] = 0;
++		off += plen;
++
++		err = inj_mkdirs(path, ctx);
++		if (err == 0) {
++			err = inj_write_file(path, p + off, (uint32_t)size,
++			    mode, uid, gid, ctx);
++		}
++		if (err == 0) {
++			err = inj_verify_file(path, size, crc, ctx);
++		}
++		if (err == 0) {
++			ok++;
++			printf("GAUGUIN INJECT: %s %llu bytes crc=%#x OK\n",
++			    path, (unsigned long long)size, crc);
++		} else {
++			bad++;
++			printf("GAUGUIN INJECT: %s FAILED err=%d\n", path, err);
++		}
++		(void)sweet_log_flush_now();
++		off += size;
++		off = (off + 7u) & ~(uint64_t)7u;
++	}
++	vfs_context_rele(ctx);
++	printf("GAUGUIN INJECT: %s files=%u ok=%u failed=%u\n",
++	    bad == 0 ? "PASS" : "FAIL", count, ok, bad);
++	(void)sweet_log_flush_now();
++}
++
++#endif /* ARM64_BOARD_CONFIG_SWEET */

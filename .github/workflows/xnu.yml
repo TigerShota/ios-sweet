@@ -74,6 +74,16 @@ jobs:
           xcodebuild -version
           xcrun --find iig
 
+      - name: Build inject blob
+        # 0126: the kernel installer reads an archive embedded in the kernel
+        # image. This first one is a marker file; the Metal bundle goes here.
+        run: |
+          mkdir -p inject-root/private/var/tmp
+          printf 'sweet inject test v1\n' > inject-root/private/var/tmp/sweet-inject-test.txt
+          python3 tools/mkinject.py inject-root xnu/inject.bin
+          python3 tools/mkblob.py xnu/inject.bin dxb/bsd/dev/gauguin_inject_blob.c gauguin_inject_blob gauguin_inject_size
+          ls -l dxb/bsd/dev/gauguin_inject_blob.c
+
       - name: Build
         working-directory: dxb
         env:
