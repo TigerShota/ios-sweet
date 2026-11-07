@@ -96,7 +96,9 @@ jobs:
           # on Xcode 15; keep them non-fatal for this migration build (the log
           # still shows every warning for triage). Set to 1 to restore -Werror.
           BUILD_WERROR: "0"
-        run: bash build.sh 2>&1 | tee build.log
+        run: |
+          set -o pipefail
+          bash build.sh 2>&1 | tee build.log
 
       - name: Fail if any of our patches was skipped
         # build.sh logs a warning and continues when `git apply --check` fails,
@@ -116,6 +118,15 @@ jobs:
             exit 1
           fi
           echo "all of our patches applied (only the 4 known blacktop skips remain)"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xnu-buildlog
+          path: dxb/build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Dump iig-generated code (Xcode 16 ABI check)
         if: always()
