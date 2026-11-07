@@ -1,0 +1,630 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -36,6 +36,7 @@ static void gauguin_gx_pdc_rsc(void);
+ static void gauguin_gx_rail_on(void);
+ static void gauguin_cp_mem_setup(void);
+ static void gauguin_cp_start(void);
++static void gauguin_gem_selftest(void);
+ void gauguin_gpu_init(void);
+ 
+ #define GPU_PA       0x03d00000u
+@@ -1228,11 +1229,26 @@ gauguin_gx_pdc_rsc(void)
+ #define PANEL_TABLES_MAX   7u
+ #define PANEL_BYTES_MAX    (PANEL_TABLES_MAX * 0x200000u)
+ 
++/*
++ * 0124: userspace GEM window. 256 MiB of CP VA at 0x50000000..0x5fffffff,
++ * i.e. L2 entries 0x80..0xff of the same LPAE table the CP windows use
++ * (L1[1] already covers 0x40000000..0x7fffffff; one 2 MiB L3 table per
++ * L2 entry, so 128 tables). The cpmem tail has only two free L3 tables
++ * left, so these live in a separate 512 KiB contiguous block.
++ */
++#define GEM_VA_BASE       0x50000000u
++#define GEM_VA_SIZE       0x10000000u
++#define GEM_L3_TABLES     (GEM_VA_SIZE >> 21)
++#define GEM_L3_SIZE       (GEM_L3_TABLES * 0x1000u)
++#define GEM_L2_FIRST      ((GEM_VA_BASE >> 21) & 0x1ffu)
++#define GEM_PAGE          0x1000u
++
+ /* CP opcodes and a6xx 2D register numbers, all from the redwood reference
+  * (out/refs/willow-redwood_adreno.c, step 22). a615 belongs to the same
+  * a6xx block family, so the 2D pipe is addressed with the same numbers. */
+ #define CP_WAIT_FOR_IDLE     0x26u
+ #define CP_BLIT              0x2cu
++#define CP_INDIRECT_BUFFER   0x3fu   /* CP_INDIRECT_BUFFER_PFE (a6xx) */
+ #define CP_EVENT_WRITE       0x46u
+ #define CP_SET_MARKER        0x65u
+ #define RB_CCU_CNTL          0x8e07u
+@@ -1291,6 +1307,13 @@ static uint64_t panel_pa;
+ static uint32_t panel_w, panel_h, panel_pitch, panel_bytes;
+ static uint32_t panel_probe_row;
+ 
++/* 0124: GEM/page-table state for the userspace window above. */
++static vm_offset_t gem_l3;        /* 128 x 4 KiB L3 tables, contiguous */
++static uint64_t gem_l3_pa;
++static uint64_t gem_next;         /* bump allocator inside the window */
++static bool gem_ready;
++static bool cp_started;           /* set after step22 + panel blit */
++
+ static uint32_t
+ gm_rd32_raw(uint32_t off)
+ {
+@@ -1369,6 +1392,32 @@ gauguin_cp_mem_setup(void)
+ 	printf("GAUGUIN CP: gap pte0=%#x (want 0)\n", val);
+ 	(void)sweet_log_flush_now();
+ 
++	/* 0124: L3 tables for the userspace GEM window (0x50000000..0x5fffffff).
++	 * This block is separate from cpmem: the cpmem tail has only two free
++	 * tables, and Metal/CoreAnimation need hundreds of MiB of GPU VA. */
++	pn = 0;
++	kr = kmem_alloc_contig(kernel_map, &gem_l3, GEM_L3_SIZE, 0,
++	    0xffffffffu, 0u, 0u, 1u);
++	if (kr == KERN_SUCCESS) {
++		pn = pmap_find_phys(kernel_pmap, (addr64_t)gem_l3);
++	}
++	if (kr == KERN_SUCCESS && pn != 0) {
++		gem_l3_pa = ptoa_64(pn);
++		for (i = 0; i < GEM_L3_SIZE / PAGE_SIZE; i++) {
++			pmap_set_cache_attributes(pn + i, VM_WIMG_WCOMB);
++		}
++		bzero((void *)gem_l3, GEM_L3_SIZE);
++		flush_dcache64((addr64_t)gem_l3_pa, GEM_L3_SIZE, TRUE);
++		gem_next = GEM_VA_BASE;
++		gem_ready = true;
++		printf("GAUGUIN CP: gem va=%#x..%#x l3 pa=%#llx tables=%u\n",
++		    GEM_VA_BASE, GEM_VA_BASE + GEM_VA_SIZE - 1u,
++		    gem_l3_pa, GEM_L3_TABLES);
++	} else {
++		printf("GAUGUIN CP: gem window alloc failed %d pn=%u\n", kr, pn);
++	}
++	(void)sweet_log_flush_now();
++
+ 	/* Step 22 target: 1 MiB of WCOMB memory the 2D pipe will fill.
+ 	 * L2 entry 1 (VA 0x40200000) points at the tail L3 table, whose 256
+ 	 * pages carry the same NC RW attributes as the ring. */
+@@ -2838,6 +2887,16 @@ gauguin_cp_start(void)
+ 		}
+ 	}
+ 
++	/*
++	 * 0124: step22 and the panel blit are done, so the ring belongs to the
++	 * userspace submission path from here on. Prove it from kernel space:
++	 * map two GEM buffers, put a CP_MEM_WRITE + CP_EVENT_WRITE command
++	 * stream in one, submit it through CP_INDIRECT_BUFFER, and check that
++	 * the GPU wrote the expected words into the other.
++	 */
++	cp_started = true;
++	gauguin_gem_selftest();
++
+ 	/* Release PAS 13 (fajita console76 shuts down after the test). */
+ 	{
+ 		int64_t st = gauguin_scm_call(ZAP_FN_SHUTDOWN, 0x1u,
+@@ -3006,6 +3065,8 @@ gauguin_gpu_init(void)
+  * that Mesa freedreno (fd/a6xx gallium) expects.
+  * ============================================================ */
+ 
++void gauguin_gem_tlb_flush(void);
++
+ bool
+ gauguin_cp_ready(void)
+ {
+@@ -3015,19 +3076,28 @@ gauguin_cp_ready(void)
+ bool
+ gauguin_cp_done(uint32_t fence)
+ {
+-	return fence != 0 && *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) == fence;
++	if (fence == 0) {
++		return false;
++	}
++	flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x140u), 8u, FALSE);
++	return *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) == fence;
+ }
+ 
+ bool
+ gauguin_cp_wait(uint32_t fence, uint64_t patience_ns)
+ {
+-	if (fence == 0)
++	uint32_t us;
++	uint32_t iters;
++
++	if (fence == 0) {
+ 		return true;
+-	uint32_t us = patience_ns > 0 ? (uint32_t)(patience_ns / 1000) : 2000;
+-	uint32_t iters = us / 10 + 1;
++	}
++	us = patience_ns > 0 ? (uint32_t)(patience_ns / 1000) : 2000;
++	iters = us / 10 + 1;
+ 	for (uint32_t i = 0; i < iters; ++i) {
+-		if (*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) == fence)
++		if (gauguin_cp_done(fence)) {
+ 			return true;
++		}
+ 		delay(10);
+ 	}
+ 	return false;
+@@ -3058,95 +3128,329 @@ gauguin_cp_parameter(uint32_t param, uint64_t * value)
+ 
+ static uint32_t gg_next_fence = 0x06000001u;
+ 
++/*
++ * 0124: submit real command buffers. The previous stub only advanced WPTR;
++ * the commands themselves were never put in the ring, so nothing the
++ * userspace stack submitted could ever execute. Each command buffer is now
++ * referenced with CP_INDIRECT_BUFFER_PFE (0x3f, kgsl's a6xx opcode) and the
++ * ring also carries a CACHE_FLUSH_TS completion fence, exactly like the
++ * step22 path that is proven on this device.
++ */
+ uint32_t
+ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t count)
+ {
+-	if (gg.gpu == 0 || addresses == NULL || words == NULL || count == 0)
+-		return 0;
+-
+-	uint32_t fence = ++gg_next_fence;
++	uint32_t ring_dw = CPMEM_RING / 4u;
++	volatile uint32_t *ring;
++	uint32_t need, wp, rp, fence, i, tries;
+ 
+-	uint32_t wp_before = gg_rd(gg.gpu, GR(CP_RB_WPTR_DW));
+-	uint32_t rp_before = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
+-
+-	uint32_t total_words = 0;
+-	for (uint32_t i = 0; i < count; ++i) {
+-		if (words[i] == 0 || words[i] > 0x4000)
+-			return 0;
+-		total_words += words[i];
++	if (gg.gpu == 0 || !cp_started || addresses == NULL || words == NULL ||
++	    count == 0 || count > 64) {
++		return 0;
+ 	}
+-	if (total_words == 0 || total_words > 0x3000)
++	need = 3u * count + 5u;
++	if (need >= ring_dw / 2u) {
+ 		return 0;
++	}
++	for (i = 0; i < count; i++) {
++		if (words[i] == 0 || words[i] > 0xfffffu ||
++		    addresses[i] >= 0x100000000ULL) {
++			return 0;
++		}
++	}
+ 
+-	uint32_t ring_size = CPMEM_RING / 4u;
+-	for (uint32_t tries = 0; tries < 4000; ++tries) {
+-		rp_before = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
+-		uint32_t avail = ring_size - (wp_before - rp_before);
+-		if (avail > total_words + 64)
++	ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
++	wp = gg_rd(gg.gpu, GR(CP_RB_WPTR_DW));
++	for (tries = 0; tries < 4000; tries++) {
++		rp = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++		if ((uint32_t)(wp - rp) + need < ring_dw) {
+ 			break;
++		}
+ 		delay(10);
+ 	}
++	if (tries == 4000) {
++		return 0;
++	}
+ 
++	fence = ++gg_next_fence;
+ 	*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) = 0u;
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+ 
+-	uint32_t wp = wp_before;
+-	uint32_t fence_pkt_iova = CP_VA_SCRATCH + 0x140u;
+-
+-	for (uint32_t i = 0; i < count; ++i) {
+-		wp += words[i];
+-	}
+-
+-	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * wp) = gg_pkt7(CP_EVENT_WRITE, 4u);
+-	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * (wp + 1u)) = 0x04u;
+-	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * (wp + 2u)) = fence_pkt_iova & 0xffffffffu;
+-	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * (wp + 3u)) = 0u;
+-	*(volatile uint32_t *)(cpmem + CPMEM_RING + 4u * (wp + 4u)) = fence;
+-
+-	wp += 5u;
++	for (i = 0; i < count; i++) {
++		ring[wp % ring_dw] = gg_pkt7(CP_INDIRECT_BUFFER, 2u);
++		wp++;
++		ring[wp % ring_dw] = (uint32_t)addresses[i];
++		wp++;
++		ring[wp % ring_dw] = words[i];
++		wp++;
++	}
++	/* Completion fence: this word lands after all the IBs above. */
++	ring[wp % ring_dw] = gg_pkt7(CP_EVENT_WRITE, 4u);
++	wp++;
++	ring[wp % ring_dw] = 0x04u;
++	wp++;
++	ring[wp % ring_dw] = CP_VA_SCRATCH + 0x140u;
++	wp++;
++	ring[wp % ring_dw] = 0u;
++	wp++;
++	ring[wp % ring_dw] = fence;
++	wp++;
+ 
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+ 	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wp);
+ 
+-	for (uint32_t i = 0; i < 10000; ++i) {
+-		uint32_t got = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u);
+-		if (got == fence)
++	for (i = 0; i < 10000; i++) {
++		if (gauguin_cp_done(fence)) {
+ 			return fence;
++		}
+ 		delay(1);
+ 	}
++	printf("GAUGUIN CP: submit fence=%#x STUCK (rptr=%u wptr=%u)\n",
++	    fence, gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++	(void)sweet_log_flush_now();
+ 	return 0;
+ }
+ 
+-#define GEM_IOVA_WINDOW_BASE   0x800000000ULL
++/* ---- GEM: page tables for the 0x50000000 window ---- */
+ 
+-static uint64_t gg_gem_iova_next = GEM_IOVA_WINDOW_BASE;
++static uint64_t
++gg_gem_entry(uint32_t off)
++{
++	uint64_t lo = gm_rd32_raw(off);
++	uint64_t hi = gm_rd32_raw(off + 4u);
+ 
+-uint64_t
+-gauguin_gem_address(uint64_t size)
++	return lo | (hi << 32);
++}
++
++static bool
++gg_gem_l2(uint64_t iova, uint32_t * tbl)
+ {
+-	uint64_t pgsz = round_page(size);
+-	uint64_t va = gg_gem_iova_next;
+-	gg_gem_iova_next += pgsz;
+-	return va;
++	uint32_t l2idx = (uint32_t)((iova >> 21) & 0x1ffu);
++	uint64_t want;
++
++	if (!gem_ready || iova < GEM_VA_BASE ||
++	    iova >= (uint64_t)GEM_VA_BASE + GEM_VA_SIZE) {
++		return false;
++	}
++	*tbl = l2idx - GEM_L2_FIRST;
++	if (*tbl >= GEM_L3_TABLES) {
++		return false;
++	}
++	want = (gem_l3_pa + 0x1000u * *tbl) & ~0xfffull;
++	return (gg_gem_entry(CPMEM_L2 + 8u * l2idx) & ~0xfffull) == want;
+ }
+ 
+-void
+-gauguin_gem_address_free(uint64_t address, uint64_t size)
++static void
++gg_gem_wr(uint32_t off, uint64_t v)
+ {
+-	(void)address; (void)size;
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint64_t *)(gem_l3 + off) = v;
++	__asm__ volatile("dsb osh" ::: "memory");
+ }
+ 
+ bool
+ gauguin_gem_map(uint64_t iova, addr64_t phys, uint32_t flags)
+ {
+-	(void)iova; (void)phys; (void)flags;
++	uint32_t l2idx, tbl, pte;
++	uint64_t want;
++
++	(void)flags;
++	if (!gem_ready || (iova & (GEM_PAGE - 1u)) || (phys & (GEM_PAGE - 1u))) {
++		return false;
++	}
++	if (iova < GEM_VA_BASE || iova >= (uint64_t)GEM_VA_BASE + GEM_VA_SIZE) {
++		return false;
++	}
++	l2idx = (uint32_t)((iova >> 21) & 0x1ffu);
++	tbl = l2idx - GEM_L2_FIRST;
++	if (tbl >= GEM_L3_TABLES) {
++		return false;
++	}
++	want = (gem_l3_pa + 0x1000u * tbl) & ~0xfffull;
++	if ((gg_gem_entry(CPMEM_L2 + 8u * l2idx) & ~0xfffull) != want) {
++		cp_wr64(CPMEM_L2 + 8u * l2idx, want | PTE_TABLE);
++	}
++	pte = (uint32_t)((iova >> 12) & 0x1ffu);
++	gg_gem_wr(0x1000u * tbl + 8u * pte, ((uint64_t)phys & ~0xfffull) | PTE_PAGE_NC);
+ 	return true;
+ }
+ 
+ void
+ gauguin_gem_unmap(uint64_t iova, uint64_t size)
+ {
+-	(void)iova; (void)size;
++	uint64_t a, end;
++
++	if (!gem_ready) {
++		return;
++	}
++	end = iova + size;
++	if (end < iova || end > (uint64_t)GEM_VA_BASE + GEM_VA_SIZE) {
++		end = (uint64_t)GEM_VA_BASE + GEM_VA_SIZE;
++	}
++	for (a = iova & ~(uint64_t)(GEM_PAGE - 1u); a < end; a += GEM_PAGE) {
++		uint32_t tbl;
++
++		if (gg_gem_l2(a, &tbl)) {
++			gg_gem_wr(0x1000u * tbl + 8u * ((a >> 12) & 0x1ffu), 0u);
++		}
++	}
++	gauguin_gem_tlb_flush();
++}
++
++void
++gauguin_gem_tlb_flush(void)
++{
++	vm_offset_t s, cb;
++
++	if (!gem_ready) {
++		return;
++	}
++	s = gg_smmu_base();
++	if (!s) {
++		return;
++	}
++	cb = s + SMMU_CB(GG_CB1);
++	gg_wr(cb, SMMU_CB_TLBIALL, 0);
++	(void)gg_tlb_sync(cb, SMMU_CB_TLBSYNC, SMMU_CB_TLBSTATUS);
++}
++
++/* Clean the CPU cache for a GEM range before/after the GPU touches it. */
++void
++gauguin_gem_flush(uint64_t iova, uint64_t size)
++{
++	uint64_t a, end;
++
++	if (!gem_ready) {
++		return;
++	}
++	end = iova + size;
++	if (end < iova) {
++		end = iova;
++	}
++	for (a = iova & ~(uint64_t)(GEM_PAGE - 1u); a < end; a += GEM_PAGE) {
++		uint32_t tbl;
++		uint64_t e;
++
++		if (!gg_gem_l2(a, &tbl)) {
++			continue;
++		}
++		e = *(volatile uint64_t *)(gem_l3 + 0x1000u * tbl +
++		    8u * ((a >> 12) & 0x1ffu));
++		if ((e & 3u) == 0u) {
++			continue;
++		}
++		flush_dcache64((addr64_t)(e & ~0xfffull), GEM_PAGE, TRUE);
++	}
++}
++
++uint64_t
++gauguin_gem_address(uint64_t size)
++{
++	uint64_t pgsz = (size + GEM_PAGE - 1u) & ~(uint64_t)(GEM_PAGE - 1u);
++	uint64_t va;
++
++	if (!gem_ready || pgsz == 0) {
++		return 0;
++	}
++	if (gem_next < GEM_VA_BASE) {
++		gem_next = GEM_VA_BASE;
++	}
++	va = gem_next;
++	if (pgsz > GEM_VA_SIZE ||
++	    va + pgsz > (uint64_t)GEM_VA_BASE + GEM_VA_SIZE) {
++		return 0;
++	}
++	gem_next += pgsz;
++	return va;
++}
++
++void
++gauguin_gem_address_free(uint64_t address, uint64_t size)
++{
++	(void)address;
++	(void)size;
++}
++
++/*
++ * 0124 self-test: the whole userspace path without userspace. Two GEM
++ * buffers, one command stream that writes two words through the GPU, one
++ * CP_INDIRECT_BUFFER submission, one fence. PASS means the SMMU mapping,
++ * the IB fetch and the completion fence all work.
++ */
++static void
++gauguin_gem_selftest(void)
++{
++	int enabled = 1;
++	vm_offset_t ib_kva = 0, data_kva = 0;
++	ppnum_t ib_pn = 0, data_pn = 0;
++	uint64_t ib_iova, data_iova;
++	uint32_t *ib;
++	uint32_t n = 0, words = 0, fence = 0;
++	uint32_t mw, ev;
++	kern_return_t kr;
++
++	(void)PE_parse_boot_argn("gauguingputest", &enabled, sizeof(enabled));
++	if (!enabled) {
++		return;
++	}
++	if (!gem_ready) {
++		printf("GAUGUIN GEM: selftest skipped (no window)\n");
++		(void)sweet_log_flush_now();
++		return;
++	}
++	kr = kmem_alloc_contig(kernel_map, &ib_kva, GEM_PAGE, 0,
++	    0xffffffffu, 0u, 0u, 1u);
++	kr = kr ? kr : kmem_alloc_contig(kernel_map, &data_kva, GEM_PAGE, 0,
++	    0xffffffffu, 0u, 0u, 1u);
++	if (kr != KERN_SUCCESS || ib_kva == 0 || data_kva == 0) {
++		printf("GAUGUIN GEM: selftest alloc failed %d\n", kr);
++		(void)sweet_log_flush_now();
++		return;
++	}
++	ib_pn = pmap_find_phys(kernel_pmap, (addr64_t)ib_kva);
++	data_pn = pmap_find_phys(kernel_pmap, (addr64_t)data_kva);
++	ib_iova = gauguin_gem_address(GEM_PAGE);
++	data_iova = gauguin_gem_address(GEM_PAGE);
++	if (!ib_pn || !data_pn || !ib_iova || !data_iova ||
++	    !gauguin_gem_map(ib_iova, ptoa_64(ib_pn), 0) ||
++	    !gauguin_gem_map(data_iova, ptoa_64(data_pn), 0)) {
++		printf("GAUGUIN GEM: selftest map failed\n");
++		(void)sweet_log_flush_now();
++		return;
++	}
++	gauguin_gem_tlb_flush();
++
++	*(volatile uint32_t *)data_kva = 0u;
++	*(volatile uint32_t *)(data_kva + 4u) = 0u;
++	flush_dcache64((addr64_t)ptoa_64(data_pn), GEM_PAGE, TRUE);
++
++	ib = (uint32_t *)ib_kva;
++	bzero(ib, GEM_PAGE);
++	ib[n++] = gg_pkt7(0x3du, 3u);          /* CP_MEM_WRITE */
++	ib[n++] = (uint32_t)data_iova;
++	ib[n++] = 0u;
++	ib[n++] = 0x600dbeefu;
++	ib[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++	ib[n++] = 0x04u;
++	ib[n++] = (uint32_t)(data_iova + 4u);
++	ib[n++] = 0u;
++	ib[n++] = 0x600df00du;
++	flush_dcache64((addr64_t)ptoa_64(ib_pn), GEM_PAGE, TRUE);
++
++	words = n;
++	fence = gauguin_cp_submit(&ib_iova, &words, 1u);
++	if (fence != 0) {
++		(void)gauguin_cp_wait(fence, 1000000000ULL);
++	}
++	flush_dcache64((addr64_t)ptoa_64(data_pn), GEM_PAGE, TRUE);
++	mw = *(volatile uint32_t *)data_kva;
++	ev = *(volatile uint32_t *)(data_kva + 4u);
++	printf("GAUGUIN GEM: selftest fence=%#x ib=%#x data=%#x"
++	    " memwrite=%#x event=%#x %s\n",
++	    fence, (uint32_t)ib_iova, (uint32_t)data_iova, mw, ev,
++	    (fence != 0 && mw == 0x600dbeefu && ev == 0x600df00du) ?
++	    "PASS" : "FAIL");
++	(void)sweet_log_flush_now();
+ }
+ 
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -191,6 +191,8 @@ extern uint64_t gauguin_gem_address(uint64_t size);
+ extern void gauguin_gem_address_free(uint64_t address, uint64_t size);
+ extern bool gauguin_gem_map(uint64_t iova, addr64_t phys, uint32_t flags);
+ extern void gauguin_gem_unmap(uint64_t iova, uint64_t size);
++extern void gauguin_gem_tlb_flush(void);
++extern void gauguin_gem_flush(uint64_t iova, uint64_t size);
+ }
+ 
+ /* ============================================================
+@@ -393,8 +395,6 @@ SweetAdrenoUserClient::gemNew(struct msm_gem_new * request)
+ 	IOBufferMemoryDescriptor * memory;
+ 	struct gpu_buffer * b = NULL;
+ 	uint32_t handle_idx;
+-	addr64_t phys;
+-	IOByteCount length = 0;
+ 
+ 	if (size == 0 || size > GPU_BUFFER_MAX) {
+ 		return kIOReturnBadArgument;
+@@ -406,12 +406,6 @@ SweetAdrenoUserClient::gemNew(struct msm_gem_new * request)
+ 		IOLog("SweetAdreno: no memory for BO %llu bytes\n", size);
+ 		return kIOReturnNoMemory;
+ 	}
+-	/* Get physical address and map into SMMU */
+-	phys = memory->getPhysicalSegment(0, &length, kIOMemoryMapperNone);
+-	if (phys == 0) {
+-		memory->release();
+-		return kIOReturnNoMemory;
+-	}
+ 	IOLockLock(gGPULock);
+ 	handle_idx = 0;
+ 	for (uint32_t n = 0; n < GPU_BUFFERS; n++) {
+@@ -433,11 +427,46 @@ SweetAdrenoUserClient::gemNew(struct msm_gem_new * request)
+ 		memory->release();
+ 		return kIOReturnNoMemory;
+ 	}
+-	if (!gauguin_gem_map(iova, phys, request->flags & MSM_BO_GPU_READONLY)) {
+-		gauguin_gem_address_free(iova, size);
+-		IOLockUnlock(gGPULock);
+-		memory->release();
+-		return kIOReturnNoMemory;
++	/*
++	 * The BO is not guaranteed physically contiguous, and the GPU walks
++	 * 4 KiB PTEs: map every physical run the descriptor reports, one GPU
++	 * page at a time. A single 16 KiB XNU page still needs four PTEs.
++	 */
++	{
++		IOByteCount off = 0;
++		bool mapped = true;
++
++		while (off < size) {
++			IOByteCount len = 0;
++			addr64_t pa = memory->getPhysicalSegment(off, &len,
++			    kIOMemoryMapperNone);
++
++			if (pa == 0 || len == 0) {
++				mapped = false;
++				break;
++			}
++			for (IOByteCount p = 0; p + 0x1000 <= len; p += 0x1000) {
++				if (!gauguin_gem_map(iova + off + p, pa + p,
++				    request->flags & MSM_BO_GPU_READONLY)) {
++					mapped = false;
++					break;
++				}
++			}
++			if (!mapped) {
++				break;
++			}
++			off += len;
++		}
++		if (mapped) {
++			gauguin_gem_tlb_flush();
++		} else {
++			gauguin_gem_unmap(iova, size);
++			gauguin_gem_address_free(iova, size);
++			IOLockUnlock(gGPULock);
++			memory->release();
++			IOLog("SweetAdreno: gem map failed for %llu bytes\n", size);
++			return kIOReturnNoMemory;
++		}
+ 	}
+ 	bzero(b, sizeof(*b));
+ 	b->memory = memory;
+@@ -533,6 +562,20 @@ SweetAdrenoUserClient::submit(struct msm_gem_submit * request)
+ 		addresses[count] = b->address + cmds[i].submit_offset;
+ 		words[count++] = cmds[i].size / 4;
+ 	}
++	/*
++	 * The GPU is not coherent with the CPU: clean the command streams and
++	 * every submitted BO before the CP fetches them. gauguin_gem_flush()
++	 * walks our own PTEs, so it also covers BOs that are not contiguous.
++	 */
++	for (uint32_t i = 0; i < count; i++) {
++		gauguin_gem_flush(addresses[i], (uint64_t) words[i] * 4u);
++	}
++	for (uint32_t i = 0; i < request->nr_bos; i++) {
++		struct gpu_buffer * b = buffer(bos[i].handle);
++		if (b != NULL) {
++			gauguin_gem_flush(b->address, b->size);
++		}
++	}
+ 	IOLockUnlock(gGPULock);
+ 	request->fence = gauguin_cp_submit(addresses, words, count);
+ 	IOLockLock(gGPULock);
