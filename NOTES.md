@@ -2,7 +2,17 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-07 (latest): v78 = 0126 EMBEDDED INJECT ARCHIVE + KERNEL INSTALLER (root write path) <<<
+### >>> UPDATE 2026-11-07 (latest): v78 ROOT INSTALL PATH WORKS - INJECT PASS <<<
+- **v78 identity**: xnu `42370076517` (commit `dec04a5`, 0126 applied, green), shim `42370799726`, boot `D:\hackios\out\v78-shim\shim\out\shim-boot.img` (17,575,936 B, sha256 `d5678ba2...a8d503`). `fastboot boot` OK, system boots, bands unchanged.
+- **Log** `out\logs-v78\boot.txt` (223,185 B, flush #27):
+  - `GAUGUIN INJECT: /private/var/tmp/sweet-inject-test.txt 21 bytes crc=0x90df36c9 OK`
+  - `GAUGUIN INJECT: PASS files=1 ok=1 failed=0`
+  - `GAUGUIN GEM: selftest ... memwrite=0x600dbeef event=0x600df00d PASS` (still green)
+- **Meaning**: the embedded archive, the VFS writer (`VNOP_MKDIR`, `vnode_open`, `vn_rdwr`), the ownership/mode setting and the read-back FNV check all work on the real iOS HFS+ root. Userspace files no longer need a 16 GB image rebuild: changing the bundle = changing the archive in the kernel, one `fastboot boot`.
+- **CI fixes that made this build possible**: the xnu Build step now uses `set -o pipefail` (the 0126 build had failed to link but looked green because `bash build.sh | tee` masks the status; `xnu-kernel` contained only KDK files), and `dxb/build.log` is uploaded as `xnu-buildlog` on every run. The only 0126 compile error was the `kmem_alloc` signature in this XNU (5 args, out pointer) - fixed with `kmem_alloc_contig`.
+- **Next**: build a `SweetMetalProbe.bundle` (a `_MTLDevice` subclass that logs and declines, like fajita's C1) in CI, put it and its Info.plist in the inject archive, and set `MetalPluginName=SweetMetalProbe` + `MetalPluginClassName=SweetMetalDevice` on `HakiosGPU`. Expected: `SWEET METAL: bundle loaded` / `-initWithAcceleratorPort:` in backboardd. After that, Chlorophyll + libbgair + libdrm and the ABI alignment.
+
+### >>> UPDATE 2026-11-07 (v78 design): 0126 EMBEDDED INJECT ARCHIVE + KERNEL INSTALLER <<<
 - **Why**: every userspace step (probe bundle, Chlorophyll) needs files in the iOS root, and the host has no HFS+ writer (WSL has no hfsplus module, no hfsprogs mount tool). Instead of a 16 GB reflash per iteration, the kernel now carries a small archive and writes it into the mounted root at boot.
 - **0126 (`xnu/patches/0126-gauguin-inject-installer.patch`, 399 lines, verified on v77)**:
   - `tools/mkinject.py` packs a directory tree into `INJT` v1 (header + entries: path, mode, uid, gid, size, FNV-1a crc; 8-byte aligned); `tools/mkblob.py` turns the binary into `const unsigned char gauguin_inject_blob[]` + `gauguin_inject_size`.
