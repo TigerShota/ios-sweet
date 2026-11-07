@@ -42,6 +42,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Build inject blob
+        # 0126: the kernel installer reads an archive embedded in the kernel.
+        # build.sh only unpacks the XNU tree later, and our patches are copied
+        # to dxb/patches by the next step, so generate the C array and ship it
+        # as a new-file patch here.
+        run: |
+          mkdir -p inject-root/private/var/tmp
+          printf 'sweet inject test v1\n' > inject-root/private/var/tmp/sweet-inject-test.txt
+          python3 tools/mkinject.py inject-root xnu/inject.bin
+          python3 tools/mkblob.py xnu/inject.bin inject-blob.c gauguin_inject_blob gauguin_inject_size
+          python3 tools/mknewfilepatch.py inject-blob.c bsd/dev/gauguin_inject_blob.c xnu/patches/0126a-gauguin-inject-blob.patch
+          head -5 xnu/patches/0126a-gauguin-inject-blob.patch
+
       - name: Fetch build script
         run: |
           git init -q dxb
@@ -73,16 +86,6 @@ jobs:
           sudo xcode-select -s "$XC"
           xcodebuild -version
           xcrun --find iig
-
-      - name: Build inject blob
-        # 0126: the kernel installer reads an archive embedded in the kernel
-        # image. This first one is a marker file; the Metal bundle goes here.
-        run: |
-          mkdir -p inject-root/private/var/tmp
-          printf 'sweet inject test v1\n' > inject-root/private/var/tmp/sweet-inject-test.txt
-          python3 tools/mkinject.py inject-root xnu/inject.bin
-          python3 tools/mkblob.py xnu/inject.bin dxb/bsd/dev/gauguin_inject_blob.c gauguin_inject_blob gauguin_inject_size
-          ls -l dxb/bsd/dev/gauguin_inject_blob.c
 
       - name: Build
         working-directory: dxb
