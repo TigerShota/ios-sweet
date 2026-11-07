@@ -1,0 +1,36 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -224,7 +224,7 @@ static IOLock * gGPULock;
+ static uint32_t gGPUReportedSubmits;
+ static uint32_t gGPUTraceCalls;   /* 0131: first N driver calls are logged */
+ 
+-#define GPU_TRACE_LIMIT 200u
++#define GPU_TRACE_LIMIT 2000u
+ 
+ /* ---- gpu_buffer ---- */
+ 
+@@ -963,6 +963,11 @@ SweetAdrenoUserClient::externalMethod(uint32_t selector, IOExternalMethodArgumen
+ 		patience_ns = (r.cpuPrep.op & MSM_PREP_NOSYNC) ? 0 :
+ 		    ((uint64_t) r.cpuPrep.timeout.tv_sec * NSEC_PER_SEC +
+ 		    (uint64_t) r.cpuPrep.timeout.tv_nsec);
++		if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++			gGPUTraceCalls++;
++			IOLog("SweetAdreno: trace cpu_prep h=%u op=%u ns=%llu\n",
++			    r.cpuPrep.handle, r.cpuPrep.op, patience_ns);
++		}
+ 		IOLockLock(gGPULock);
+ 		b = buffer(r.cpuPrep.handle);
+ 		IOLockUnlock(gGPULock);
+@@ -982,6 +987,11 @@ SweetAdrenoUserClient::externalMethod(uint32_t selector, IOExternalMethodArgumen
+ 	case kMsmWaitFence:
+ 		patience_ns = r.waitFence.timeout.tv_sec * NSEC_PER_SEC +
+ 		    r.waitFence.timeout.tv_nsec;
++		if (gGPUTraceCalls < GPU_TRACE_LIMIT) {
++			gGPUTraceCalls++;
++			IOLog("SweetAdreno: trace wait_fence f=%u ns=%llu\n",
++			    r.waitFence.fence, patience_ns);
++		}
+ 		ret = gauguin_cp_wait(r.waitFence.fence, patience_ns) ?
+ 		    kIOReturnSuccess : kIOReturnTimeout;
+ 		break;
