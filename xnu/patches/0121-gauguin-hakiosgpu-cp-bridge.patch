@@ -1,22 +1,15 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -2673,7 +2673,10 @@
- 		thread_deallocate(thread);
+@@ -3099,5 +3099,158 @@
  	} else {
  		printf("GAUGUIN GPU: kernel_thread_start failed %d\n", kr);
--	}
-+		extern void sweet_adreno_init(void);
-+		sweet_adreno_init();
-+		printf("GAUGUIN GPU: sweet_adreno_init done\n");
-+	}
- }
- #endif /* ARM64_BOARD_CONFIG_SWEET */
- 
-@@ -2675,4 +2675,152 @@
- 		printf("GAUGUIN GPU: kernel_thread_start failed %d\n", kr);
  	}
- }
++	extern void sweet_adreno_init(void);
++	sweet_adreno_init();
++	printf("GAUGUIN GPU: sweet_adreno_init done\n");
++}
++
 +/* ============================================================
 + * SweetAdreno bridge functions (used by iokit/Kernel/arm/SweetAdreno.cpp).
 + * These wrap our existing GP CP ring + SMMU into the msm GEM/submit API
@@ -165,4 +158,5 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +{
 +	(void)iova; (void)size;
 +}
+ 
  #endif /* ARM64_BOARD_CONFIG_SWEET */
