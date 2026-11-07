@@ -119,6 +119,27 @@ jobs:
           EOP
           cat ios.cross
 
+      - name: Patch air_metal.c (pixel format 551)
+        # CoreAnimation's deep-colour display pipeline asks for private
+        # MTLPixelFormat 551 (RGB10A8_2P_XR10_sRGB). Without an entry,
+        # BGMTLDevice refuses the colour attachment and CA aborts the render
+        # pipeline. Serve it as BGRA8 sRGB, like 550/555.
+        run: |
+          set -eux
+          F=chlorophyll/air/air_metal.c
+          if ! grep -q '551,' "$F"; then
+            python3 - "$F" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          old = '\t{ 550, "MTLPixelFormatRGB10A8_2P_XR10 (as BGRA8)",  PIPE_FORMAT_B8G8R8A8_UNORM },\n'
+          assert old in s, '550 entry not found in air_metal.c'
+          new = old + '\t{ 551, "MTLPixelFormatRGB10A8_2P_XR10_sRGB (as BGRA8 sRGB)", PIPE_FORMAT_B8G8R8A8_SRGB },\n'
+          open(p, 'w').write(s.replace(old, new, 1))
+          PY
+          fi
+          grep -n '550,\|551,' "$F"
+
       - name: Build libbgair
         run: |
           set -eux

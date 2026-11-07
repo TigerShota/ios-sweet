@@ -2,7 +2,21 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-07 (LATEST): v79 MILESTONE - METAL LOADS OUR PLUGIN IN BACKBOARDD AND SPRINGBOARD <<<
+### >>> UPDATE 2026-11-07 (latest): v80 = 0128 SweetAdreno630 ABI + REAL SweetBGMTL BUNDLE <<<
+- **Userland bundle**: `metal.yml` builds `SweetBGMTL.bundle` (BGMTLDevice + libbgair 9.99 MB + libdrm.2.dylib 93 KB) from Mesa 25.0.7 + Bergamota/Chlorophyll patches with the iPhoneOS SDK; run `42376964258` green in 3 min, artifact `sweetbgmtl-bundle`. The workflow also adds the missing pixel-format **551** entry (`PIPE_FORMAT_B8G8R8A8_SRGB`) to `air_metal.c`, the fajita fix for CA's deep-colour pipeline.
+- **0128 (`xnu/patches/0128-gauguin-sweetadreno630-abi.patch`, 519 lines, verified on v79)**:
+  - the IOAcceleratorES subclass is now `SweetAdreno630` (what `libdrm.2.dylib` opens) and publishes `MetalPluginName=SweetBGMTL`, `MetalPluginClassName=BGMTLDevice`;
+  - `msm_param` now has `pipe` first, `msm_gem_info` has `info/len/pad`, `msm_gem_cpu_prep` is 24 bytes, `msm_wait_fence` has `queueid`; `GET_OFFSET` returns the BO handle (the mmap memoryType);
+  - `GEM_CPU_PREP` waits on the BO's last fence (not on the handle as a fence);
+  - `submit` applies **relocations** (`msm 1.3` has no softpin) and accepts `CTX_RESTORE_BUF`;
+  - selectors `INFO 0x70` (ready, a615, VA 0x50000000+256 MiB), `SURFACE_BO 0x71` (explicit unsupported for now), `BO_SYNC 0x72`;
+  - `gauguin_cp_parameter` returns the standard `MSM_PARAM_*` set (GPU_ID 615, chip 0x06050001, VA_START/SIZE);
+  - `SweetAdrenoUserClient::start` now waits up to 60 s for `cp_started` instead of failing when Metal opens the service during the 30 s GPU delay.
+- **xnu.yml** gained `metal_run_id`: with it the inject archive carries `SweetBGMTL.bundle` from that metal run; without it, the probe. The kernel blob becomes ~10 MB in the bundle case.
+- **Expected next log**: `SweetAdreno630: service registered`, inject writes the bundle dylibs, `|backboardd| SWEET BUNDLE`-style BGMTL logs, `rwa_device_open` opens the user client, `GAUGUIN GEM: submit ...` from userspace, and then either a working Metal device or a specific libdrm/Mesa refusal to fix.
+- **Note**: `SURFACE_BO` is still unimplemented; CA drawables will need it after the device comes up, so the first SweetBGMTL boot is about `rwa_device_open` + GEM/submit, not blur yet.
+
+### >>> UPDATE 2026-11-07 (v79): METAL LOADS OUR PLUGIN IN BACKBOARDD AND SPRINGBOARD <<<
 - **v79 identity**: xnu `42373971460` (commit `df45a91`, 0127 applied, green), shim `42374470819`, boot `D:\hackios\out\v79-shim\shim-boot.img` (17,641,472 B, sha256 `8117df09...38cd93`). System boots normally, bands unchanged, no blur (the probe declines).
 - **Log** `out\logs-v79\boot.txt` (236,229 B, flush #41):
   - `GAUGUIN INJECT: /System/Library/Extensions/SweetMetalProbe.bundle/Info.plist 818 bytes ... OK`
