@@ -1,0 +1,173 @@
+name: metal
+
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_tag:
+        description: Mesa tag
+        default: "mesa-25.0.7"
+      chlorophyll_ref:
+        description: Chlorophyll branch/tag
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps
+        run: |
+          brew install meson ninja pkg-config bison
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          python3 -m pip install --user mako pyyaml packaging
+          python3 --version
+          meson --version
+          bison --version | head -1
+
+      - name: Fetch Chlorophyll and Bergamota gpu
+        run: |
+          git clone --depth 1 --branch "${{ inputs.chlorophyll_ref }}" \
+            https://github.com/ry-diffusion/Chlorophyll.git chlorophyll
+          git clone --depth 1 --branch develop \
+            https://github.com/ry-diffusion/Bergamota.git bergamota
+          ls chlorophyll/air | head
+          ls bergamota/gpu/freedreno-sweet
+
+      - name: Fetch Mesa and libdrm
+        run: |
+          git clone --depth 1 --branch "${{ inputs.mesa_tag }}" \
+            https://gitlab.freedesktop.org/mesa/mesa.git mesa
+          git clone --depth 1 --branch libdrm-2.4.124 \
+            https://gitlab.freedesktop.org/mesa/drm.git libdrm
+          git -C mesa log --oneline -1
+
+      - name: Patch Mesa
+        run: |
+          set -eux
+          git -C mesa apply "$PWD/bergamota/gpu/eagl/mesa/bergamota-mesa-25.0.7.patch"
+          for p in chlorophyll/patches/*.patch; do
+            git -C mesa apply "$PWD/$p"
+          done
+          mkdir -p mesa/src/compiler/air
+          for f in chlorophyll/air/*; do
+            ln -sf "$PWD/$f" "mesa/src/compiler/air/$(basename "$f")"
+          done
+
+      - name: Build libdrm stand-in
+        run: |
+          set -eux
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang -arch arm64e -miphoneos-version-min=16.0 \
+            -isysroot "$SDK" -O2 -g -fvisibility=hidden \
+            -dynamiclib -install_name @rpath/libdrm.2.dylib \
+            -current_version 2.4.0 -compatibility_version 2.0.0 \
+            bergamota/gpu/freedreno-sweet/sweet_drm.c -o libdrm.2.dylib \
+            -framework IOKit -framework CoreFoundation
+          codesign --force --sign - libdrm.2.dylib
+          file libdrm.2.dylib
+
+      - name: Cross file and libdrm.pc
+        run: |
+          set -eux
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          BISON="$(brew --prefix bison)/bin/bison"
+          cat > ios.cross <<EOT
+          [binaries]
+          c = ['xcrun','--sdk','iphoneos','clang','-arch','arm64e']
+          cpp = ['xcrun','--sdk','iphoneos','clang++','-arch','arm64e']
+          objc = ['xcrun','--sdk','iphoneos','clang','-arch','arm64e']
+          ar = ['xcrun','--sdk','iphoneos','ar']
+          strip = ['xcrun','--sdk','iphoneos','strip']
+          ranlib = ['xcrun','--sdk','iphoneos','ranlib']
+          bison = '$BISON'
+          pkg-config = '$(command -v pkg-config)'
+
+          [built-in options]
+          pkg_config_path = ['$PWD/pc']
+          c_args = ['-miphoneos-version-min=16.0','-isysroot','$SDK']
+          cpp_args = ['-miphoneos-version-min=16.0','-isysroot','$SDK']
+          c_link_args = ['-miphoneos-version-min=16.0','-isysroot','$SDK']
+          cpp_link_args = ['-miphoneos-version-min=16.0','-isysroot','$SDK']
+
+          [host_machine]
+          system = 'darwin'
+          subsystem = 'ios'
+          cpu_family = 'aarch64'
+          cpu = 'arm64e'
+          endian = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+          EOT
+          mkdir -p pc
+          cat > pc/libdrm.pc <<EOP
+          Name: libdrm
+          Description: Bergamota libdrm stand-in
+          Version: 2.4.124
+          Cflags: -I$PWD/libdrm/include/drm -I$PWD/libdrm
+          Libs: -L$PWD -ldrm
+          EOP
+          cat ios.cross
+
+      - name: Build libbgair
+        run: |
+          set -eux
+          export PKG_CONFIG_PATH="$PWD/pc"
+          meson setup build-ios mesa --cross-file ios.cross --buildtype=release \
+            -Dgallium-drivers=softpipe,freedreno -Dfreedreno-kmds=msm \
+            -Dgallium-xa=disabled -Dtools= -Dvulkan-drivers= -Dllvm=disabled \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dplatforms= \
+            -Dosmesa=false -Dopengl=true -Dgles1=disabled -Dgles2=enabled \
+            -Dshared-glapi=enabled -Dvalgrind=disabled -Dlibunwind=disabled \
+            -Dzstd=disabled -Dxmlconfig=disabled -Dbuild-tests=false \
+            -Dglvnd=disabled -Dlmsensors=disabled -Dgallium-opencl=disabled \
+            -Dgallium-rusticl=false -Dshader-cache=disabled -Dprefix=/
+          ninja -j"${JOBS:-4}" -C build-ios src/gallium/drivers/freedreno/libbgair.dylib
+          ls -l build-ios/src/gallium/drivers/freedreno/libbgair.dylib
+
+      - name: Build SweetBGMTL.bundle
+        run: |
+          set -eux
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC="xcrun --sdk iphoneos clang -arch arm64e -miphoneos-version-min=16.0 -isysroot $SDK"
+          B="$PWD/SweetBGMTL.bundle"
+          mkdir -p "$B"
+          cp -f build-ios/src/gallium/drivers/freedreno/libbgair.dylib "$B/libbgair.dylib"
+          cp -f libdrm.2.dylib "$B/libdrm.2.dylib"
+          $CC -O1 -g -fno-objc-arc -Wall -Wno-deprecated-declarations \
+            -I chlorophyll/air -c chlorophyll/src/bgmtl.m -o bgmtl.o
+          $CC -bundle -o "$B/SweetBGMTL" bgmtl.o "$B/libbgair.dylib" "$B/libdrm.2.dylib" \
+            -framework Foundation -framework Metal -framework IOSurface -framework IOKit \
+            -Wl,-rpath,@loader_path
+          cat > "$B/Info.plist" <<'EOP'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>CFBundleDevelopmentRegion</key><string>en</string>
+          	<key>CFBundleExecutable</key><string>SweetBGMTL</string>
+          	<key>CFBundleIdentifier</key><string>com.hackios.SweetBGMTL</string>
+          	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+          	<key>CFBundleName</key><string>SweetBGMTL</string>
+          	<key>CFBundlePackageType</key><string>BNDL</string>
+          	<key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+          	<key>CFBundleVersion</key><string>1</string>
+          	<key>NSPrincipalClass</key><string>BGMTLDevice</string>
+          </dict>
+          </plist>
+          EOP
+          codesign --force --sign - "$B" || true
+          ls -l "$B"
+          otool -L "$B/SweetBGMTL" | head -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweetbgmtl-bundle
+          path: SweetBGMTL.bundle
+          if-no-files-found: error
+          retention-days: 7
