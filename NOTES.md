@@ -2,7 +2,19 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-07 (latest): v81 BLACK SCREEN ROOT-CAUSED - METAL DEVICE WORKS, SURFACE_BO MISSING; 0129 ADDS IT <<<
+### >>> UPDATE 2026-11-08 (latest): v82 SURFACE_BO WORKS BUT CA REFUSES 2-PLANE SURFACES AND THE 256 MiB WINDOW RUNS OUT; 0130 FIXES BOTH <<<
+- **v82 identity**: xnu `42386588768` (commit `865f241`, 0129), shim `42387505354`, boot `out\v82-shim\shim\out\shim-boot.img`. Still black, but the log is now extremely informative:
+  - `SweetAdreno: SURFACE_BO id=2 handle=149 iova=0x51256000 1125x2436 bpr=4544 fmt=0x62336138 planes=2` (the kernel maps the surface correctly);
+  - `|backboardd| texture refused: ... (error 0, planes 2, 4544 bytes a row)` - Chlorophyll's importer refuses `planes > 1` (`air_metal.c:1666`);
+  - after ~14 surfaces, `error -12` (ENOMEM): each 1125x2436 surface is 13.8 MB and the 256 MiB GEM window was a bump allocator, so it ran out after a few frames.
+  - `rwa_device_open: FD615` and `submit 1/2` still succeed; the GPU/Metal stack itself is healthy.
+- **0130 (`xnu/patches/0130-gauguin-gem-bitmap.patch`, 170 lines, verified on v82)**:
+  - GEM window grows to **512 MiB** (`0x50000000..0x6fffffff`, 256 L3 tables, L2 0x80..0x17f, 1 MiB table block);
+  - `gauguin_gem_address` / `_free` are now a **bitmap allocator** over 4 KiB pages (`gem_used[16 KiB]`), so `GEM_CLOSE` reuses VA instead of leaking it;
+  - `SURFACE_BO` reports `planes=0` (plane 0 describes the surface) so Chlorophyll's importer accepts it; the pixel plane is imported at `bytesPerRow=4544`.
+- **Expected next**: `SURFACE_BO ... planes=0` and no `texture refused`; CA starts compositing. The surface is the 2-plane `b3a8` format imported as the Metal texture format (551 -> BGRA8) - colours may be wrong if plane 0 is really 10-bit, but the first frame will tell.
+
+### >>> UPDATE 2026-11-07 (v81): BLACK SCREEN ROOT-CAUSED - METAL DEVICE WORKS, SURFACE_BO MISSING; 0129 ADDS IT <<<
 - **v81 identity**: xnu `42380138423` (commit `91db2d6`, arm64 SweetBGMTL bundle via metal run `42379837691`), shim `42380792981`, boot `out\v81-shim\shim\out\shim-boot.img` (27,783,168 B). The system **does boot** (SpringBoard and the daemon set run), but the screen stays black.
 - **Log** `out\logs-v81\boot.txt` (670,074 B, flush #544). The important lines:
   - `GAUGUIN INJECT: PASS files=6 ok=6 failed=0` (SweetBGMTL.bundle written);

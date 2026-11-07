@@ -1,0 +1,170 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1237,18 +1237,22 @@ gauguin_gx_pdc_rsc(void)
+ #define PANEL_BYTES_MAX    (PANEL_TABLES_MAX * 0x200000u)
+ 
+ /*
+- * 0124: userspace GEM window. 256 MiB of CP VA at 0x50000000..0x5fffffff,
+- * i.e. L2 entries 0x80..0xff of the same LPAE table the CP windows use
+- * (L1[1] already covers 0x40000000..0x7fffffff; one 2 MiB L3 table per
+- * L2 entry, so 128 tables). The cpmem tail has only two free L3 tables
+- * left, so these live in a separate 512 KiB contiguous block.
++ * 0124/0130: userspace GEM window. 512 MiB of CP VA at
++ * 0x50000000..0x6fffffff, i.e. L2 entries 0x80..0x17f of the same LPAE table
++ * the CP windows use (L1[1] already covers 0x40000000..0x7fffffff; one 2 MiB
++ * L3 table per L2 entry, so 256 tables). The cpmem tail has only two free
++ * L3 tables left, so these live in a separate 1 MiB contiguous block.
++ * 0130 also gives the window a bitmap allocator: CoreAnimation creates and
++ * destroys many full-screen surfaces, and a bump allocator exhausted 256 MiB
++ * in a few frames (SURFACE_BO then returned ENOMEM).
+  */
+ #define GEM_VA_BASE       0x50000000u
+-#define GEM_VA_SIZE       0x10000000u
++#define GEM_VA_SIZE       0x20000000u
+ #define GEM_L3_TABLES     (GEM_VA_SIZE >> 21)
+ #define GEM_L3_SIZE       (GEM_L3_TABLES * 0x1000u)
+ #define GEM_L2_FIRST      ((GEM_VA_BASE >> 21) & 0x1ffu)
+ #define GEM_PAGE          0x1000u
++#define GEM_PAGES         (GEM_VA_SIZE / GEM_PAGE)
+ 
+ /* CP opcodes and a6xx 2D register numbers, all from the redwood reference
+  * (out/refs/willow-redwood_adreno.c, step 22). a615 belongs to the same
+@@ -1314,12 +1318,12 @@ static uint64_t panel_pa;
+ static uint32_t panel_w, panel_h, panel_pitch, panel_bytes;
+ static uint32_t panel_probe_row;
+ 
+-/* 0124: GEM/page-table state for the userspace window above. */
+-static vm_offset_t gem_l3;        /* 128 x 4 KiB L3 tables, contiguous */
++/* 0124/0130: GEM/page-table state for the userspace window above. */
++static vm_offset_t gem_l3;        /* 256 x 4 KiB L3 tables, contiguous */
+ static uint64_t gem_l3_pa;
+-static uint64_t gem_next;         /* bump allocator inside the window */
+ static bool gem_ready;
+ static bool cp_started;           /* set after step22 + panel blit */
++static uint8_t gem_used[GEM_PAGES / 8];  /* 4 KiB page bitmap (16 KiB) */
+ 
+ static uint32_t
+ gm_rd32_raw(uint32_t off)
+@@ -1415,7 +1419,6 @@ gauguin_cp_mem_setup(void)
+ 		}
+ 		bzero((void *)gem_l3, GEM_L3_SIZE);
+ 		flush_dcache64((addr64_t)gem_l3_pa, GEM_L3_SIZE, TRUE);
+-		gem_next = GEM_VA_BASE;
+ 		gem_ready = true;
+ 		printf("GAUGUIN CP: gem va=%#x..%#x l3 pa=%#llx tables=%u\n",
+ 		    GEM_VA_BASE, GEM_VA_BASE + GEM_VA_SIZE - 1u,
+@@ -3410,32 +3413,73 @@ gauguin_gem_flush(uint64_t iova, uint64_t size)
+ 	}
+ }
+ 
++static bool
++gem_bit(uint32_t p)
++{
++	return (gem_used[p >> 3] >> (p & 7)) & 1u;
++}
++
++static void
++gem_set(uint32_t p, bool used)
++{
++	if (used) {
++		gem_used[p >> 3] |= (uint8_t)(1u << (p & 7));
++	} else {
++		gem_used[p >> 3] &= (uint8_t)~(1u << (p & 7));
++	}
++}
++
+ uint64_t
+ gauguin_gem_address(uint64_t size)
+ {
+ 	uint64_t pgsz = (size + GEM_PAGE - 1u) & ~(uint64_t)(GEM_PAGE - 1u);
+-	uint64_t va;
++	uint32_t pages, p, run = 0;
+ 
+-	if (!gem_ready || pgsz == 0) {
++	if (!gem_ready || pgsz == 0 || pgsz > GEM_VA_SIZE) {
+ 		return 0;
+ 	}
+-	if (gem_next < GEM_VA_BASE) {
+-		gem_next = GEM_VA_BASE;
+-	}
+-	va = gem_next;
+-	if (pgsz > GEM_VA_SIZE ||
+-	    va + pgsz > (uint64_t)GEM_VA_BASE + GEM_VA_SIZE) {
++	pages = (uint32_t)(pgsz >> 12);
++	if (pages == 0) {
+ 		return 0;
+ 	}
+-	gem_next += pgsz;
+-	return va;
++	for (p = 0; p < GEM_PAGES; p++) {
++		if (gem_bit(p)) {
++			run = 0;
++			continue;
++		}
++		if (++run == pages) {
++			uint32_t start = p + 1u - pages;
++			for (uint32_t q = start; q <= p; q++) {
++				gem_set(q, true);
++			}
++			return (uint64_t)GEM_VA_BASE + (uint64_t)start * GEM_PAGE;
++		}
++	}
++	return 0;
+ }
+ 
+ void
+ gauguin_gem_address_free(uint64_t address, uint64_t size)
+ {
+-	(void)address;
+-	(void)size;
++	uint64_t pgsz = (size + GEM_PAGE - 1u) & ~(uint64_t)(GEM_PAGE - 1u);
++	uint64_t off;
++	uint32_t pages, p;
++
++	if (!gem_ready || address < GEM_VA_BASE || pgsz == 0) {
++		return;
++	}
++	off = address - GEM_VA_BASE;
++	if (off & (GEM_PAGE - 1u)) {
++		return;
++	}
++	pages = (uint32_t)(pgsz >> 12);
++	p = (uint32_t)(off >> 12);
++	if (p + pages > GEM_PAGES) {
++		return;
++	}
++	for (uint32_t q = p; q < p + pages; q++) {
++		gem_set(q, false);
++	}
+ }
+ 
+ /*
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -769,13 +769,17 @@ SweetAdrenoUserClient::surfaceBo(struct sweet_gpu_surface_bo * request)
+ 	request->height = s->height;
+ 	request->pixel_format = s->pixelFormat;
+ 	request->offset = s->offset;
+-	request->planes = s->planeCount;
+-	for (uint32_t p = 0; p < 3 && p < s->planeCount; p++) {
+-		request->plane[p * 4 + 0] = s->planes[p].offset;
+-		request->plane[p * 4 + 1] = s->planes[p].bytesPerRow;
+-		request->plane[p * 4 + 2] = s->planes[p].width;
+-		request->plane[p * 4 + 3] = s->planes[p].height;
+-	}
++	/*
++	 * 0130: report a single-plane surface. Chlorophyll's importer refuses
++	 * planes > 1, and CoreAnimation's display surfaces are the 2-plane
++	 * b3a8 format; plane 0 carries the pixels at bytesPerRow, which is what
++	 * the Metal texture import uses. The alpha plane is not consumed.
++	 */
++	request->planes = 0;
++	request->plane[0] = s->offset;
++	request->plane[1] = s->bytesPerRow;
++	request->plane[2] = s->width;
++	request->plane[3] = s->height;
+ 	request->tiling = 0;
+ 	request->ubwc = 0;
+ 	request->flags = 0;
