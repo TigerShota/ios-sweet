@@ -38,7 +38,7 @@ diff --git a/bsd/dev/gauguin_inject.c b/bsd/dev/gauguin_inject.c
 new file mode 100755
 --- /dev/null
 +++ b/bsd/dev/gauguin_inject.c
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,362 @@
 +/*
 + * 0126: install a small archive embedded in the kernel image into the mounted
 + * iOS root, before backboardd starts looking for the Metal bundle.
@@ -73,6 +73,8 @@ new file mode 100755
 +extern const unsigned long gauguin_inject_size;
 +extern vnode_t rootvnode;               /* set once the BSD root is mounted */
 +extern void sweet_log_flush_now(void);
++
++void gauguin_inject_install(void);
 +
 +#define INJ_MAGIC       0x544a4e49u     /* "INJT" */
 +#define INJ_VERSION     1u
@@ -133,7 +135,7 @@ new file mode 100755
 +inj_mkdir_one(const char *path, vfs_context_t ctx)
 +{
 +	char parent[INJ_PATH_MAX];
-+	const char *name;
++	char *name;
 +	vnode_t dvp = NULL, vp = NULL;
 +	struct componentname cn;
 +	struct vnode_attr va;
@@ -164,7 +166,7 @@ new file mode 100755
 +	bzero(&cn, sizeof(cn));
 +	cn.cn_nameiop = LOOKUP;
 +	cn.cn_flags = ISLASTCN;
-+	cn.cn_nameptr = (char *)name;
++	cn.cn_nameptr = name;
 +	cn.cn_namelen = (int)inj_strlen(name);
 +	cn.cn_pnbuf = parent;
 +	cn.cn_pnlen = (int)sizeof(parent);
@@ -252,7 +254,7 @@ new file mode 100755
 +	VATTR_INIT(&va);
 +	VATTR_SET(&va, va_uid, uid);
 +	VATTR_SET(&va, va_gid, gid);
-+	VATTR_SET(&va, va_mode, mode);
++	VATTR_SET(&va, va_mode, (mode_t)mode);
 +	(void)vnode_setattr(vp, &va, ctx);
 +	vnode_put(vp);
 +	return 0;
@@ -266,6 +268,8 @@ new file mode 100755
 +	unsigned char *buf;
 +	uint64_t off = 0;
 +	uint32_t crc = 2166136261u;
++	vm_offset_t kva = 0;
++	kern_return_t kr;
 +	int resid = 0;
 +	int err;
 +
@@ -273,12 +277,13 @@ new file mode 100755
 +	if (err) {
 +		return err;
 +	}
-+	buf = (unsigned char *)kmem_alloc(kernel_map, INJ_BUF_SIZE,
-+	    VM_KERN_MEMORY_BSD);
-+	if (buf == NULL) {
++	kr = kmem_alloc_contig(kernel_map, &kva, INJ_BUF_SIZE, 0,
++	    0xffffffffu, 0u, 0u, 1u);
++	if (kr != KERN_SUCCESS || kva == 0) {
 +		vnode_put(vp);
 +		return ENOMEM;
 +	}
++	buf = (unsigned char *)kva;
 +	while (off < size) {
 +		uint32_t n = (uint32_t)MIN(size - off, (uint64_t)INJ_BUF_SIZE);
 +
@@ -293,8 +298,7 @@ new file mode 100755
 +		crc = inj_crc(crc, buf, n);
 +		off += n;
 +	}
-+	kmem_free(kernel_map, (vm_offset_t)buf, INJ_BUF_SIZE);
-+	vnode_put(vp);
++	kmem_free(kernel_map, (vm_offset_t)buf, INJ_BUF_SIZE);	vnode_put(vp);
 +	if (err) {
 +		return err;
 +	}
@@ -305,25 +309,25 @@ new file mode 100755
 +gauguin_inject_install(void)
 +{
 +	const unsigned char *p = gauguin_inject_blob;
-+	uint64_t total = gauguin_inject_size;
-+	uint32_t magic, version, count, i;
++	uint64_t inj_total = gauguin_inject_size;
++	uint32_t magic, inj_version, count, i;
 +	uint64_t off;
 +	vfs_context_t ctx;
 +	unsigned ok = 0, bad = 0;
 +	int enabled = 1;
 +
 +	(void)PE_parse_boot_argn("sweetinject", &enabled, sizeof(enabled));
-+	if (!enabled || total < INJ_HDR) {
++	if (!enabled || inj_total < INJ_HDR) {
 +		return;
 +	}
 +	magic = inj_rd32(p);
-+	version = inj_rd32(p + 4);
++	inj_version = inj_rd32(p + 4);
 +	count = inj_rd32(p + 8);
-+	if (magic != INJ_MAGIC || version != INJ_VERSION || count > 4096 ||
-+	    inj_rd32(p + 12) != total) {
++	if (magic != INJ_MAGIC || inj_version != INJ_VERSION || count > 4096 ||
++	    inj_rd32(p + 12) != inj_total) {
 +		printf("GAUGUIN INJECT: bad header magic=%#x version=%u"
-+		    " count=%u size=%llu\n", magic, version, count,
-+		    (unsigned long long)total);
++		    " count=%u size=%llu\n", magic, inj_version, count,
++		    (unsigned long long)inj_total);
 +		(void)sweet_log_flush_now();
 +		return;
 +	}
@@ -351,7 +355,7 @@ new file mode 100755
 +		char path[INJ_PATH_MAX];
 +		int err;
 +
-+		if (off + INJ_ENT > total) {
++		if (off + INJ_ENT > inj_total) {
 +			break;
 +		}
 +		plen = inj_rd32(p + off);
@@ -362,7 +366,7 @@ new file mode 100755
 +		crc = inj_rd32(p + off + 24);
 +		off += INJ_ENT;
 +		if (plen == 0 || plen >= sizeof(path) - 1 ||
-+		    off + plen + size > total) {
++		    off + plen + size > inj_total) {
 +			break;
 +		}
 +		path[0] = '/';
