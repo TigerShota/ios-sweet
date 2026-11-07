@@ -718,7 +718,7 @@ diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
  iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
  iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
-+SweetAdreno.cpp	optional	iokitcpp
++iokit/Kernel/arm/SweetAdreno.cpp                                 optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEventServiceUserClient.cpp             optional iokitcpp
