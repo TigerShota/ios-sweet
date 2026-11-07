@@ -127,17 +127,22 @@ jobs:
         run: |
           set -eux
           F=chlorophyll/air/air_metal.c
-          if ! grep -q '551,' "$F"; then
-            python3 - "$F" <<'PY'
-          import sys
+          python3 - "$F" <<'PY'
+          import re, sys
           p = sys.argv[1]
           s = open(p).read()
-          old = '\t{ 550, "MTLPixelFormatRGB10A8_2P_XR10 (as BGRA8)",  PIPE_FORMAT_B8G8R8A8_UNORM },\n'
-          assert old in s, '550 entry not found in air_metal.c'
-          new = old + '\t{ 551, "MTLPixelFormatRGB10A8_2P_XR10_sRGB (as BGRA8 sRGB)", PIPE_FORMAT_B8G8R8A8_SRGB },\n'
-          open(p, 'w').write(s.replace(old, new, 1))
+          if '551,' not in s:
+              m = re.search(r'^[ \t]*\{[ \t]*550,.*PIPE_FORMAT_B8G8R8A8_UNORM[ \t]*\},[ \t]*$', s, re.M)
+              assert m, '550 entry not found in air_metal.c'
+              line = m.group(0)
+              indent = line[:len(line) - len(line.lstrip())]
+              add = '\n' + indent + '{ 551, "MTLPixelFormatRGB10A8_2P_XR10_sRGB (as BGRA8 sRGB)", PIPE_FORMAT_B8G8R8A8_SRGB },'
+              s = s[:m.end()] + add + s[m.end():]
+              open(p, 'w').write(s)
+              print('added pixel format 551')
+          else:
+              print('pixel format 551 already present')
           PY
-          fi
           grep -n '550,\|551,' "$F"
 
       - name: Build libbgair
