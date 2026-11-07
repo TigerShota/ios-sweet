@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetAdreno.cpp
-@@ -0,0 +1,709 @@
+@@ -0,0 +1,708 @@
 +/*
 + * SweetAdreno.cpp - HakiosGPU IOService + IOKit UserClient.
 + * Ported from yfl520/hackios-raphael (MIT license), adapted for
@@ -711,13 +711,12 @@ new file mode 100644
 +	gpu->release();
 +	IOLog("HakiosGPU: service registered\n");
 +}
-+
 diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
 --- a/iokit/conf/files.arm64
 +++ b/iokit/conf/files.arm64
-@@ -20,4 +20,5 @@
+@@ -20,3 +20,5 @@
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEventServiceUserClient.cpp             optional iokitcpp
- 
 +SweetAdreno.cpp	optional	iokitcpp
++
