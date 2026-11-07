@@ -1,14 +1,16 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -3099,6 +3099,159 @@
+@@ -2673,7 +2673,160 @@
+ 		thread_deallocate(thread);
  	} else {
  		printf("GAUGUIN GPU: kernel_thread_start failed %d\n", kr);
- 	}
+-	}
 -}
 +	extern void sweet_adreno_init(void);
 +	sweet_adreno_init();
 +	printf("GAUGUIN GPU: sweet_adreno_init done\n");
++	}
 +}
 +
 +/* ============================================================
