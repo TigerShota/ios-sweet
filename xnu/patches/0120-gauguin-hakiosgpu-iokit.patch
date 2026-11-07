@@ -715,8 +715,6 @@ new file mode 100644
 
 diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
 --- a/iokit/conf/files.arm64
-+++ b/iokit/conf/files.arm64
---- a/iokit/conf/files.arm64
 
 +++ b/iokit/conf/files.arm64
 
