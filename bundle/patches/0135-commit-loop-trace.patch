@@ -1,0 +1,148 @@
+--- chlorophyll/src/bgmtl.m
++++ chlorophyll/src/bgmtl.m
+@@ -1096,6 +1096,9 @@
+    char why[512] = { 0 };
+    bg_lock();
+    for (BGWork *w in _work) {
++      static unsigned bg_commit_n;
++      unsigned bgi = bg_commit_n++;
++      BG_TRACE("  work %lu kind %d\n", (unsigned long)bgi, (int)w->kind);
+       if (w->kind == BG_WORK_DISPATCH) {
+          struct rwa_buffer *bufs[BG_MAX_BINDINGS] = { NULL };
+          struct rwa_buffer_bind table[BG_MAX_BINDINGS] = { { NULL, 0 } };
+@@ -1110,7 +1113,9 @@
+          for (unsigned i = 0; i < w->sampler_count; i++) smps[i] = [(BGMTLSampler *)w->samplers[i] rwaSampler];
+          struct rwa_bindings b = { .buffers = bufs, .buffer_count = w->count, .textures = texs, .texture_count = w->texture_count,
+                                    .samplers = smps, .sampler_count = w->sampler_count };
+-         if (rwa_dispatch_buffers(w->pipeline->_compute, &b, table, w->count, w->groups, w->group_size, why, sizeof(why)) != 0) {
++         int d_r = rwa_dispatch_buffers(w->pipeline->_compute, &b, table, w->count, w->groups, w->group_size, why, sizeof(why));
++         BG_TRACE("   work %lu dispatch rc %d\n", (unsigned long)bgi, d_r);
++         if (d_r != 0) {
+             [self bgFailWith:[NSString stringWithUTF8String:why] code:2];
+             break;
+          }
+@@ -1124,7 +1129,9 @@
+          if (w->depth) cl.depth = [(BGMTLTexture *)w->depth rwaTexture];
+          if (w->clear_depth_set) cl.clear_depth = &w->clear_depth;
+          if (w->clear_stencil_set) cl.clear_stencil = &w->clear_stencil;
+-         if (rwa_render_clear([dev rwa], &cl, why, sizeof(why)) != 0)
++         int c_r = rwa_render_clear([dev rwa], &cl, why, sizeof(why));
++         BG_TRACE("   work %lu clear rc %d\n", (unsigned long)bgi, c_r);
++         if (c_r != 0)
+             BG_LOG("clear skipped: %s\n", why);   // one bad clear no longer drops the rest of the frame (see the draw below)
+       } else if (w->kind == BG_WORK_DRAW) {
+          BGMTLRenderPipeline *rp = (BGMTLRenderPipeline *)w->render;
+@@ -1169,7 +1176,9 @@
+          /* A draw the runtime refuses is skipped and logged, and the rest of the command buffer still runs. Failing the
+           * whole command buffer left the frame's later passes undrawn (the wallpaper area black or grey, stale wedges in
+           * the poster editor) and counted towards the watchdog that switches Metal off. */
+-         if (rwa_render_draw(rp->_render, &dr, why, sizeof(why)) != 0)
++         int w_r = rwa_render_draw(rp->_render, &dr, why, sizeof(why));
++         BG_TRACE("   work %lu draw rc %d\n", (unsigned long)bgi, w_r);
++         if (w_r != 0)
+             BG_LOG("draw skipped: %s\n", why);
+          // debugging (/private/var/tmp/bgmtl.dumpatt with the trace): colour 0 right after each blur-chain draw, before any
+          // later draw of the pass touches it
+@@ -1192,7 +1201,9 @@
+             }
+          }
+       } else if (w->kind == BG_WORK_MIPMAPS) {
+-         if (rwa_texture_generate_mipmaps([(BGMTLTexture *)w->dst rwaTexture]) != 0)
++         int m_r = rwa_texture_generate_mipmaps([(BGMTLTexture *)w->dst rwaTexture]);
++         BG_TRACE("   work %lu mipmaps rc %d\n", (unsigned long)bgi, m_r);
++         if (m_r != 0)
+             BG_LOG("blit: generateMipmapsForTexture: no mip chain made\n");
+       } else if (w->kind == BG_WORK_TEXCOPY &&
+                  rwa_texture_copy([(BGMTLTexture *)w->src rwaTexture], (unsigned)w->t_slevel, (unsigned)w->t_sslice,
+@@ -1203,7 +1214,10 @@
+          // copied on the GPU, in order with the draws
+       } else {
+          // CPU blit on shared memory: everything dispatched so far must be done first
+-         if (rwa_finish([dev rwa], why, sizeof(why)) != 0) { [self bgFailWith:[NSString stringWithUTF8String:why] code:3]; break; }
++         BG_TRACE("   work %lu cpu blit kind %d\n", (unsigned long)bgi, (int)w->kind);
++         int f_r = rwa_finish([dev rwa], why, sizeof(why));
++         BG_TRACE("   work %lu finish rc %d\n", (unsigned long)bgi, f_r);
++         if (f_r != 0) { [self bgFailWith:[NSString stringWithUTF8String:why] code:3]; break; }
+          if (w->kind == BG_WORK_TEXCOPY || w->kind == BG_WORK_BUF2TEX || w->kind == BG_WORK_TEX2BUF) {
+             [self bgApplyTextureBlit:w];
+          } else if (w->kind == BG_WORK_COPY)
+@@ -1229,7 +1243,9 @@
+    if (defer_scheduled < 0) defer_scheduled = getenv("BGMTL_DEFER_SCHEDULED") && getenv("BGMTL_DEFER_SCHEDULED")[0] == '1';
+    if (_status != 5 && !defer_scheduled)
+       _status = 3;   // Scheduled
++   BG_TRACE("  commit work done\n");
+    struct rwa_fence *fence = _status != 5 ? rwa_flush([dev rwa]) : NULL;
++   BG_TRACE("  commit flushed\n");
+    uint64_t t_flushed = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    bg_unlock();
+    if (!defer_scheduled) {
+--- chlorophyll/air/air_metal.c
++++ chlorophyll/air/air_metal.c
+@@ -3516,7 +3516,10 @@
+                   char *why, size_t why_size)
+ {
+    struct pipe_fence_handle *fence = NULL;
++   static int fsow_n;
++   if (fsow_n < 240) { fsow_n++; fprintf(stderr, "air: fsow %s enter\n", what); }
+    device->pipe->flush(device->pipe, &fence, 0);
++   if (fsow_n <= 240) { fprintf(stderr, "air: fsow %s flushed fence=%p\n", what, fence); }
+    if (!fence) {
+       if (!required)
+          return 0;
+@@ -4337,6 +4340,8 @@
+    struct rwa_device *device = compute->device;
+    struct pipe_context *pipe = device->pipe;
+    const char *name = compute->info.entry_point ? compute->info.entry_point : "the shader";
++   static int dbuf_n;
++   if (dbuf_n < 240) { dbuf_n++; fprintf(stderr, "air: dispatch %s\n", name); }
+ 
+    /* A caller with nothing to bind may say so with NULL rather than with a zeroed
+     * struct. A shader that declares anything is then refused by the counts below,
+@@ -4420,6 +4425,8 @@
+ int
+ rwa_finish(struct rwa_device *device, char *why, size_t why_size)
+ {
++   static int fin_n;
++   if (fin_n < 240) { fin_n++; fprintf(stderr, "air: rwa_finish enter\n"); }
+    return finish_or_say_why(device, false, "work", why, why_size);
+ }
+ 
+@@ -7168,6 +7175,8 @@
+ rwa_render_clear(struct rwa_device *device, const struct rwa_clear *clear, char *why, size_t why_size)
+ {
+    struct pipe_context *pipe = device->pipe;
++   static int clr_n;
++   if (clr_n < 240) { clr_n++; fprintf(stderr, "air: render_clear enter\n"); }
+    if (!clear || (clear->color_count == 0 && !clear->depth)) {
+       say(why, why_size, "a clear of nothing");
+       return -1;
+@@ -7245,6 +7254,13 @@
+    struct pipe_context *pipe = device->pipe;
+    const char *fname = render->finfo.entry_point ? render->finfo.entry_point
+                                                  : "the fragment shader";
++   static int rdraw_n;
++   if (rdraw_n < 480) {
++      rdraw_n++;
++      fprintf(stderr, "air: render_draw enter render=%p prim=%u verts=%u idx=%u\n",
++          render, (unsigned)draw->primitive, (unsigned)draw->vertex_count,
++          (unsigned)!!draw->index_buffer);
++   }
+ 
+    if (!draw) {
+       say(why, why_size, "a draw with no description");
+@@ -7581,6 +7597,7 @@
+       fd_mesa_debug |= (1 << 9);
+ 
+    fb_bind(device, &fb, draw->color, draw->color_count, draw->depth);
++   if (rdraw_n <= 480) { fprintf(stderr, "air: render_draw fb_bound\n"); }
+ 
+    /* Chlorophyll: Metal's framebuffer fetch is coherent -- a fetching draw sees what the draws before it in the pass wrote.
+     * In sysmem freedreno reads the attachment through the texture path, so without a barrier the fetch saw memory the
+@@ -7794,6 +7811,7 @@
+       };
+       pipe->draw_vbo(pipe, &info, 0, NULL, &sc, 1);
+    }
++   if (rdraw_n <= 480) { fprintf(stderr, "air: render_draw drew verts=%u\n", (unsigned)draw->vertex_count); }
+ 
+    /* Waited for here, on the same grounds as a dispatch: a picture that was never drawn
+     * must not read as a result, and this is the call that can say which draw did not
