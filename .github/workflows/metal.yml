@@ -51,7 +51,7 @@ jobs:
           shopt -s nullglob
           for p in bundle/patches/*.patch; do
             echo "applying $p"
-            patch -p1 -i "$p"
+            patch -p0 -i "$p"
           done
 
       - name: Fetch Mesa and libdrm
