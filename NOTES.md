@@ -2,7 +2,19 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-08 (latest): v82 SURFACE_BO WORKS BUT CA REFUSES 2-PLANE SURFACES AND THE 256 MiB WINDOW RUNS OUT; 0130 FIXES BOTH <<<
+### >>> UPDATE 2026-11-08 (latest): v85 KERNEL TRACE LIMITS ATTRIBUTION; 0133 ARMS CHLOROPHYLL'S OWN BG_TRACE + bgmtl.perf <<<
+- **v85 identity**: xnu `42399955948` (0132), shim `42484567743`, boot `out\v85-shim\shim\out\shim-boot.img` sha256 `54a46a77...e8ff948`. No desktop; touch still alive.
+- **v85 trace facts** (581 lines, limit 2000 not reached, `out\logs-v85\boot.txt`):
+  - driver calls seen: only `gem_new`/`gem_info`/`map` (handles 1..157) plus `bo_sync h=149 off=0 size=13893632 start/done` right after `SURFACE_BO id=2 handle=149`;
+  - **no `submit`, no `wait_fence`, no `cpu_prep` at all**, and `SURFACE_BO id=3` never arrives;
+  - neither is the trace exhausted - the userspace simply stops calling into the kernel;
+  - sampler: all ~18 backboardd threads sit at libsystem wait points (mach_msg/semaphore variants, stable PCs like `0x206ddd87c`/`0x206ddd4f0`/`0x206ddd030`), not in a busy loop.
+  - rwa_device_open `FD615` at log line 1955; two render pipelines (`fixed_vert_lph_spc + fixed_frag_lph_cpf`, 2639/2662) compiled via MTLCompilerService; `SWEET FB: backboardd sel 4` (out 1 record) right after - then silence.
+- **Conclusion**: the stall is in userspace between Metal pipeline creation and the first `-commit`/`rwa_flush` (no kernel engagement afterwards), and the kernel driver is not the blocker.
+- **0133** (`xnu.yml` change, no kernel patch needed - CI rebuilds the inject blob): the injector now also writes `/private/var/tmp/bgmtl.trace` and `/private/var/tmp/bgmtl.perf`. Chlorophyll's `BG_TRACE` (`src/bgmtl.m:99-106`) then logs one line per commit/render pass/draw through stderr (the ring captures `|backboardd| bgmtl[56]: ...`), and `bg_perf_note` (`1061-1085`) adds a per-second timing line once frames flow. This tells us whether CA reaches `-commit` at all and what it records before it.
+- Chlorophyll also has dead-man/failure watchdogs (`inject/bgmtl_inject.m`), but they are only active when the inject dylib is linked in (bgl-launch/MercuryPoster flows) - not in our IOKit-service path; `bgmtl_note_failure` is a weak import answered by no-op here, so no auto-shutdown expected.
+
+### >>> UPDATE 2026-11-08: v82 SURFACE_BO WORKS BUT CA REFUSES 2-PLANE SURFACES AND THE 256 MiB WINDOW RUNS OUT; 0130 FIXES BOTH <<<
 - **v82 identity**: xnu `42386588768` (commit `865f241`, 0129), shim `42387505354`, boot `out\v82-shim\shim\out\shim-boot.img`. Still black, but the log is now extremely informative:
   - `SweetAdreno: SURFACE_BO id=2 handle=149 iova=0x51256000 1125x2436 bpr=4544 fmt=0x62336138 planes=2` (the kernel maps the surface correctly);
   - `|backboardd| texture refused: ... (error 0, planes 2, 4544 bytes a row)` - Chlorophyll's importer refuses `planes > 1` (`air_metal.c:1666`);
