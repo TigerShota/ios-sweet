@@ -1,0 +1,87 @@
+--- bergamota/gpu/freedreno-sweet/sweet_drm.c
++++ bergamota/gpu/freedreno-sweet/sweet_drm.c
+@@ -56,6 +56,25 @@
+ static dev_t g_null_rdev;
+ static int g_trace;
+ 
++/* 0134 (Chlorophyll/Bergamota userspace trace): every IOConnectCallStructMethod
++ * round trip this process makes is echoed to stderr, which the kernel console
++ * redirect captures per process in the boot ring ("bgmtl[<pid>]:" lines), so the
++ * boot log shows exactly where Mesa stopped between the ring mmap and a submit.
++ * v86b ended on gem_new(map of the 16 KiB ring) with zero submits in the kernel,
++ * but the calls between are unobservable without this. Capped so that once
++ * frames actually flow the 4 MiB ring is not crowded by the happy path. */
++static int g_slog;
++#define SWD_SLOG_LIMIT 2560
++static void
++swd_slog(uint32_t sel, kern_return_t kr, size_t want, size_t outsz)
++{
++	if (g_slog < SWD_SLOG_LIMIT) {
++		g_slog++;
++		fprintf(stderr, "swd: call sel=%#x want=%zu kr=%#x out=%zu\n",
++		    sel, want, kr, outsz);
++	}
++}
++
+ /*
+  * Buffer log (Chlorophyll, GPU fault hunting): when /private/var/tmp/drm-bolog exists at connect time, every BO this
+  * process creates, imports, gets a GPU address for and closes, and every submit (its fence and BO handles), is appended
+@@ -341,6 +360,7 @@
+ 		clock_gettime(CLOCK_MONOTONIC, &t0);
+ 	}
+ 	kern_return_t kr = IOConnectCallStructMethod(g_conn, sel, in, want, out, &outsz);
++	swd_slog(sel, kr, want, outsz);
+ 	if (sel == SWEET_GPU_SEL_WAIT_FENCE && kr != KERN_SUCCESS) {
+ 		wait_failed((struct sweet_msm_wait_fence *)in, kr, &t0);
+ 	}
+@@ -804,6 +824,11 @@
+ 	if (size < sizeof(*req)) {
+ 		return -EINVAL;
+ 	}
++	if (g_slog < SWD_SLOG_LIMIT) {
++		g_slog++;
++		fprintf(stderr, "swd: submit size=%lu nr_cmds=%u nr_bos=%u flags=%#x\n",
++		    (unsigned long)size, req->nr_cmds, req->nr_bos, req->flags);
++	}
+ 	if (req->flags & (MSM_SUBMIT_SYNCOBJ_IN | MSM_SUBMIT_SYNCOBJ_OUT)) {
+ 		stride = req->syncobj_stride ? req->syncobj_stride : sizeof(struct msm_submit_syncobj);
+ 		if (req->flags & MSM_SUBMIT_SYNCOBJ_IN) {
+@@ -820,12 +845,20 @@
+ 		uint32_t h = ((const struct msm_submit_syncobj *)((const uint8_t *)in + i * stride))->handle;
+ 		if (!sobj_valid(h) || g_sobj[h].state == SOBJ_UNSIGNALED) {
+ 			pthread_mutex_unlock(&g_sobj_lock);
++			if (g_slog < SWD_SLOG_LIMIT) {
++				g_slog++;
++				fprintf(stderr, "swd: submit rejected in-syncobj %u\n", h);
++			}
+ 			return -EINVAL;   /* what msm answers for a syncobj with no fence */
+ 		}
+ 	}
+ 	for (uint32_t i = 0; i < nout; i++) {
+ 		if (!sobj_valid(((const struct msm_submit_syncobj *)((const uint8_t *)out + i * stride))->handle)) {
+ 			pthread_mutex_unlock(&g_sobj_lock);
++			if (g_slog < SWD_SLOG_LIMIT) {
++				g_slog++;
++				fprintf(stderr, "swd: submit rejected out-syncobj\n");
++			}
+ 			return -EINVAL;
+ 		}
+ 	}
+--- chlorophyll/air/air_metal.c
++++ chlorophyll/air/air_metal.c
+@@ -4430,7 +4430,15 @@
+ rwa_flush(struct rwa_device *device)
+ {
+    struct pipe_fence_handle *fence = NULL;
++   static int flush_log_n;
++   if (flush_log_n < 4) {
++      flush_log_n++;
++      fprintf(stderr, "air: flush enter device=%p pipe=%p\n", device, device->pipe);
++   }
+    device->pipe->flush(device->pipe, &fence, 0);
++   if (flush_log_n <= 4) {
++      fprintf(stderr, "air: flush exit device=%p fence=%p\n", device, fence);
++   }
+    return (struct rwa_fence *)fence;
+ }
+ 

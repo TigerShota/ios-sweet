@@ -42,6 +42,18 @@ jobs:
           ls chlorophyll/air | head
           ls bergamota/gpu/freedreno-sweet
 
+      # 0134: userspace submit-path trace (sweet_drm.c call/submit logs, rwa_flush
+      # enter/exit). Patch paths are prefixed with bergamota/ and chlorophyll/,
+      # applied from the bundle root against the two freshly cloned trees.
+      - name: ios-sweet bundle patches
+        run: |
+          set -eux
+          shopt -s nullglob
+          for p in bundle/patches/*.patch; do
+            echo "applying $p"
+            patch -p1 -i "$p"
+          done
+
       - name: Fetch Mesa and libdrm
         run: |
           git clone --depth 1 --branch "${{ inputs.mesa_tag }}" \

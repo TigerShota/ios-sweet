@@ -2,6 +2,20 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-11-09: v86b BREAKTHROUGH - CA REACHES -commit, STALL IS IN THE MESA FLUSH->SUBMIT PATH; 0134 INSTRUMENTS USERSPACE <<<
+- **v86b identity**: xnu `42491012276` (0133 redo, commit `64b59aab` - the earlier 0133 push had written a file literally named `.github\workflows\xnu.yml` with a backslash path, never updated the workflow; redone 2026-11-08, the bogus root file is still in the repo, harmless), shim `42491775352`, boot `out\v86b-shim2\shim\out\shim-boot.img` sha256 `a0e6700a...b79558`. GAUGUIN INJECT now files=8 (bgmtl.trace + bgmtl.perf included).
+- **v86b results** (`out\logs-v86b\boot.txt`, 8342 lines): **CoreAnimation reaches -[commit] for the first time** (`|backboardd| bgmtl[56]: commit: 4 recorded commands` at log line 7537) after encoding 3 real draws (fullscreen quad, 194x237 replaceRegion upload, luma_boost), 19 render passes, ~34 pipelines. Kernel trace: `SWEET FB: backboardd sel 4` (swap record query, 1 record) right before commit.
+- **Stall located**: right after commit the Mesa flush begins - `gem_new size=16384 handle=157 iova=0x52baa000` + gem_info + map - then nothing. **Zero user submits in the kernel** (`SweetAdreno: submit` absent; that print is wired to `fSubmits < 4`, not the 2000-call trace cap, and v81 had 4 submits from chronod). ~40 more 16 KiB rings had been allocated during the earlier phases with the same pattern.
+- **Userspace MESA source matches**: metal.yml clones Bergamota `develop` - its `sweet_drm.c` is byte-identical to local `out\refs\ry-diffusion-Bergamota-37a7a7a`. Chlorophyll main = 787338f.
+- **Key userspace facts now established**:
+  - `SweetAdreno: submit` print lives at `SweetAdreno.cpp:758` gated `fSubmits < 4` -> absence means the submit ioctl was truly never dispatched, not log loss;
+  - `swd`-level: v83..v86b all have 0 user submits; v81 had 4 (from chronod, first_iova=0x5326a000, fence 0x6000003/4, words=143) - the break appeared with the 0129 SURFACE_BO-era kernels, but the stall itself is userspace;
+  - `sweet_drm.c:sweet_submit` (line 796): only early rejects before the ioctl are syncobj validation (flags MSM_SUBMIT_SYNCOBJ_IN/OUT) and `nr_cmds==0` (which calls INFO for last_fence and still "submits" with last_fence) - after that `sweet_call` -> IOConnectCallStructMethod directly.
+- **0134** (`bundle/patches/0134-userspace-submit-trace.patch`, applied by metal.yml with `patch -p1` from the bundle root - patch paths prefixed `bergamota/` / `chlorophyll/`):
+  - `sweet_drm.c`: `swd_slog` (stderr, cap 2560) after every IOConnectCallStructMethod in `sweet_call` (selector, kr, sizes) - the last `swd: call` line before the silence names the exact selector Mesa stalled on; `swd: submit size= nr_cmds= nr_bos= flags=` at `sweet_submit` entry; explicit logs for the two syncobj rejections;
+  - `air_metal.c rwa_flush`: `air: flush enter/exit ...` (first 4 flushes) - proves whether CA's commit actually reaches Gallium's pipe->flush and whether it returns.
+- **Next after v87 boot**: read `out\logs-v87\boot.txt` for `air: flush enter` and the final `swd: call sel=...`. If the last selector is e.g. GET_IOVA/GEM_INFO/SUBMITQUEUE_QUERY, the kernel answer is wrong; if nothing after flush enter, the stall is inside Mesa's msm.c/batch code and patch 0135 goes into mesa's `src/freedreno/drm/msm.c` the same way. Watch for bgmtl.perf lines: if `perf:` appears, frames ARE flowing and the desktop should show.
+
 ### >>> UPDATE 2026-11-08 (latest): v85 KERNEL TRACE LIMITS ATTRIBUTION; 0133 ARMS CHLOROPHYLL'S OWN BG_TRACE + bgmtl.perf <<<
 - **v85 identity**: xnu `42399955948` (0132), shim `42484567743`, boot `out\v85-shim\shim\out\shim-boot.img` sha256 `54a46a77...e8ff948`. No desktop; touch still alive.
 - **v85 trace facts** (581 lines, limit 2000 not reached, `out\logs-v85\boot.txt`):
