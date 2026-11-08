@@ -57,6 +57,14 @@ jobs:
           set -eux
           mkdir -p inject-root/private/var/tmp
           printf 'sweet inject test v1\n' > inject-root/private/var/tmp/sweet-inject-test.txt
+          # 0133: Chlorophyll userspace trace markers. bgmtl.trace makes
+          # BG_TRACE log one line per command buffer, render pass, draw and
+          # commit through stderr (the driver ring captures it); bgmtl.perf
+          # adds one timing line per second once frames flow. The bundle's
+          # SIGPIPE-era code also opens /private/var/tmp/bgmtl-trace-<pid>.txt
+          # when it exists, so a marker here yields the same data on file.
+          printf 'trace\n' > inject-root/private/var/tmp/bgmtl.trace
+          printf 'perf\n' > inject-root/private/var/tmp/bgmtl.perf
           if [ -n "${{ inputs.metal_run_id }}" ]; then
             B=inject-root/System/Library/Extensions/SweetBGMTL.bundle
             mkdir -p "$B"
