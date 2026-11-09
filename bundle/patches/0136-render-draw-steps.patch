@@ -1,0 +1,222 @@
+--- chlorophyll/air/air_metal.c
++++ chlorophyll/air/air_metal.c
+@@ -3987,6 +3987,13 @@
+            size_t why_size)
+ {
+    struct pipe_context *pipe = device->pipe;
++   static int bst_n;
++   int bst_id = -1;
++   if (bst_n < 64) {
++      bst_id = bst_n++;
++      fprintf(stderr, "air: bind_stage enter stage=%d resources=%u\n",
++          (int)stage, info->num_resources);
++   }
+ 
+    /* Each buffer bound as whatever the shader declared the index to be. Metal has one
+     * [[buffer(n)]] index space and Gallium has two, so a `constant` parameter is a UBO
+@@ -4014,6 +4021,10 @@
+       struct rwa_texture *t = NULL;
+       struct rwa_sampler *sm = NULL;
+       size_t boffset = 0;
++
++      if (bst_id >= 0)
++         fprintf(stderr, "air: bs r%u kind=%d index=%u argbuf=%d\n", i, (int)r->kind,
++             r->index, r->argbuf_set != ~0u);
+ 
+       /* A member of an argument buffer comes from the encoder's record; everything
+        * below binds it exactly as a direct argument, at the index the frontend gave it.
+@@ -4125,6 +4136,9 @@
+             cb.buffer_offset = 0;
+             cb.buffer_size = (unsigned)want;
+          }
++         if (bst_id >= 0)
++            fprintf(stderr, "air: bs r%u set_constant_buffer idx=%u user=%d size=%u\n", i,
++                r->index, cb.user_buffer != NULL, cb.buffer_size);
+          pipe->set_constant_buffer(pipe, stage, r->index, false, &cb);
+          break;
+       }
+@@ -4136,7 +4150,12 @@
+          if (!t->view) {
+             struct pipe_sampler_view tmpl = { 0 };
+             u_sampler_view_default_template(&tmpl, t->res, t->res->format);
++            if (bst_id >= 0)
++               fprintf(stderr, "air: bs r%u create_sampler_view enter res=%p fmt=%u\n", i,
++                   (void *)t->res, (unsigned)t->res->format);
+             t->view = pipe->create_sampler_view(pipe, t->res, &tmpl);
++            if (bst_id >= 0)
++               fprintf(stderr, "air: bs r%u create_sampler_view -> %p\n", i, (void *)t->view);
+             if (!t->view) {
+                say(why, why_size, "%s would not make a sampler view of the %s bound at "
+                                   "texture %u", rwa_device_name(device), t->format_name,
+@@ -4262,30 +4281,43 @@
+       struct pipe_constant_buffer dcb = { .user_buffer = cb_deltas, .buffer_size = sizeof(cb_deltas) };
+       pipe->set_constant_buffer(pipe, stage, info->cb_delta_ubo - 1, false, &dcb);
+    }
+-   if (num_ssbo)
++   if (num_ssbo) {
++      if (bst_id >= 0) fprintf(stderr, "air: bs stage=%d set_shader_buffers n=%u\n", (int)stage, num_ssbo);
+       pipe->set_shader_buffers(pipe, stage, 0, num_ssbo, sb, writable);
++      if (bst_id >= 0) fprintf(stderr, "air: bs stage=%d set_shader_buffers done\n", (int)stage);
++   }
+    if (num_views || device->n_bound_views[stage]) {
+       unsigned had = device->n_bound_views[stage];
+       if (num_views != had || memcmp(views, device->bound_views[stage], num_views * sizeof(views[0]))) {
++         if (bst_id >= 0) fprintf(stderr, "air: bs stage=%d set_sampler_views n=%u\n", (int)stage, num_views);
+          pipe->set_sampler_views(pipe, stage, 0, num_views, had > num_views ? had - num_views : 0, false, views);
++         if (bst_id >= 0) fprintf(stderr, "air: bs stage=%d set_sampler_views done\n", (int)stage);
+          memset(device->bound_views[stage], 0, sizeof(device->bound_views[stage]));
+          memcpy(device->bound_views[stage], views, num_views * sizeof(views[0]));
+          device->n_bound_views[stage] = num_views;
+       }
+    }
+-   if (num_images)
++   if (num_images) {
++      if (bst_id >= 0) fprintf(stderr, "air: bs stage=%d set_shader_images n=%u\n", (int)stage, num_images);
+       pipe->set_shader_images(pipe, stage, 0, num_images, 0, images);
++      if (bst_id >= 0) fprintf(stderr, "air: bs stage=%d set_shader_images done\n", (int)stage);
++   }
+    if (num_samplers || device->n_bound_samplers[stage]) {
+       unsigned had = device->n_bound_samplers[stage];
+       if (num_samplers != had || memcmp(samplers, device->bound_samplers[stage], num_samplers * sizeof(samplers[0]))) {
+          void *all[RWA_MAX_TEXTURES] = { 0 };
+          memcpy(all, samplers, num_samplers * sizeof(samplers[0]));
++         if (bst_id >= 0) fprintf(stderr, "air: bs stage=%d bind_sampler_states n=%u\n", (int)stage, MAX2(num_samplers, had));
+          pipe->bind_sampler_states(pipe, stage, 0, MAX2(num_samplers, had), all);
++         if (bst_id >= 0) fprintf(stderr, "air: bs stage=%d bind_sampler_states done\n", (int)stage);
+          memset(device->bound_samplers[stage], 0, sizeof(device->bound_samplers[stage]));
+          memcpy(device->bound_samplers[stage], samplers, num_samplers * sizeof(samplers[0]));
+          device->n_bound_samplers[stage] = num_samplers;
+       }
+    }
++   if (bst_id >= 0)
++      fprintf(stderr, "air: bind_stage done stage=%d views=%u samplers=%u ssbo=%u images=%u\n",
++          (int)stage, num_views, num_samplers, num_ssbo, num_images);
+ 
+    bound->num_ssbo = num_ssbo;
+    bound->num_views = num_views;
+@@ -7246,6 +7278,13 @@
+  * softpipe). FD_DBG_SYSMEM (bit 9) makes every batch render in sysmem instead of tiling through GMEM. */
+ extern int fd_mesa_debug __attribute__((weak_import));
+ 
++/* 0136: numbered step trace for the first draws. rdraw_n is the local counter of
++ * rwa_render_draw; the last step printed before the silence names the hanging call. */
++#define RWA_RD_STEP(n) do { \
++   if (rdraw_n <= 480) \
++      fprintf(stderr, "air: rd step %d\n", (n)); \
++} while (0)
++
+ int
+ rwa_render_draw(struct rwa_render *render, const struct rwa_draw *draw,
+                 char *why, size_t why_size)
+@@ -7598,14 +7637,17 @@
+ 
+    fb_bind(device, &fb, draw->color, draw->color_count, draw->depth);
+    if (rdraw_n <= 480) { fprintf(stderr, "air: render_draw fb_bound\n"); }
++   RWA_RD_STEP(2);
+ 
+    /* Chlorophyll: Metal's framebuffer fetch is coherent -- a fetching draw sees what the draws before it in the pass wrote.
+     * In sysmem freedreno reads the attachment through the texture path, so without a barrier the fetch saw memory the
+     * colour cache had not written back yet (the pass's clear colour): Control Center's blur passes came out with one
+     * triangle of each quad white (CoreAnimation's Tc3sA2Xhf_Idst after the downsample draw), and which half depended on
+     * timing. FRAMEBUFFER: wait for idle, flush CCU colour/depth, flush and invalidate the texture cache. */
+-   if (render->finfo.fbfetch_targets)
++   if (render->finfo.fbfetch_targets) {
+       pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_FRAMEBUFFER);
++      RWA_RD_STEP(3);
++   }
+ 
+    /* The viewport, and now its z as well. Gallium's window depth is
+     * clip_z/w * scale[2] + translate[2], and with clip_halfz (the rasterizer state
+@@ -7631,6 +7673,7 @@
+        */
+       .scale = { w / 2.0f, -(h / 2.0f), zfar - znear },
+       .translate = { w / 2.0f, h / 2.0f, znear } });
++   RWA_RD_STEP(4);
+ 
+    {
+       /* Chlorophyll: Metal's scissor test (see rwa_draw.scissor), clamped to the attachment as Metal requires. */
+@@ -7643,12 +7686,15 @@
+       }
+       pipe->set_scissor_states(pipe, 0, 1, &sc);
+    }
++   RWA_RD_STEP(5);
+    pipe->bind_blend_state(pipe, render->blend);
++   RWA_RD_STEP(6);
+    /* The caller's depth/stencil state, or the pipeline's zeroed one, which is Metal's
+     * behaviour with no MTLDepthStencilState set: no test and no write.
+     */
+    pipe->bind_depth_stencil_alpha_state(pipe, draw->depth_stencil ? draw->depth_stencil->cso
+                                                                   : render->dsa);
++   RWA_RD_STEP(7);
+    /* Metal keeps the reference value on the encoder and not in the state object, so it
+     * is set per draw. Gallium's is one byte per face, which is the stencil buffer's
+     * width; Metal's is a uint32 and only those bits can match anything.
+@@ -7656,9 +7702,13 @@
+    pipe->set_stencil_ref(pipe, (struct pipe_stencil_ref){
+       .ref_value = { (uint8_t)(draw->stencil_reference[0] & 0xff),
+                      (uint8_t)(draw->stencil_reference[1] & 0xff) } });
++   RWA_RD_STEP(8);
+    pipe->bind_rasterizer_state(pipe, render->rast);
++   RWA_RD_STEP(9);
+    pipe->bind_vs_state(pipe, render->vs_cso);
++   RWA_RD_STEP(10);
+    pipe->bind_fs_state(pipe, render->fs_cso);
++   RWA_RD_STEP(11);
+ 
+    /*
+     * The vertex state, bound on BOTH paths and never NULL.
+@@ -7730,7 +7780,9 @@
+     * other order worked; it worked by permission and not by contract.
+     */
+    pipe->bind_vertex_elements_state(pipe, render->velem);
++   RWA_RD_STEP(12);
+    pipe->set_vertex_buffers(pipe, nvb, vbs);
++   RWA_RD_STEP(13);
+ 
+    struct rwa_bound fbound = { 0 }, vbound = { 0 };
+    int rc = -1;
+@@ -7739,12 +7791,14 @@
+                   &draw->fragment, draw->fragment_buffer_table, draw->fragment_buffer_table_count,
+                   fname, &fbound, why, why_size) != 0)
+       goto unbind;
++   RWA_RD_STEP(14);
+    if (!render->generated_vertex &&
+        bind_stage(device, PIPE_SHADER_VERTEX, &render->vinfo, render->vert_own_sampler,
+                   render->vert_compare_sampler,
+                   &draw->vertex, draw->vertex_buffer_table, draw->vertex_buffer_table_count, vname,
+                   &vbound, why, why_size) != 0)
+       goto unbind;
++   RWA_RD_STEP(15);
+ 
+    /* clear_color NULL is MTLLoadActionLoad: keep what the attachment holds. A pointer
+     * to four floats is MTLLoadActionClear, and the union is filled from them -- for an
+@@ -7774,10 +7828,13 @@
+       if (draw->clear_stencil && draw->depth &&
+           format_has_stencil(draw->depth->res->format))
+          mask |= PIPE_CLEAR_STENCIL;
+-      if (mask)
++      if (mask) {
++         RWA_RD_STEP(16);
+          pipe->clear(pipe, mask, NULL, &clear,
+                      draw->clear_depth ? (double)*draw->clear_depth : 0.0,
+                      draw->clear_stencil ? *draw->clear_stencil & 0xff : 0);
++         RWA_RD_STEP(17);
++      }
+    }
+ 
+    {
+@@ -7809,7 +7866,9 @@
+          .count = draw->vertex_count,
+          .index_bias = index_size ? draw->base_vertex : 0,
+       };
++      RWA_RD_STEP(18);
+       pipe->draw_vbo(pipe, &info, 0, NULL, &sc, 1);
++      RWA_RD_STEP(19);
+    }
+    if (rdraw_n <= 480) { fprintf(stderr, "air: render_draw drew verts=%u\n", (unsigned)draw->vertex_count); }
+ 
+@@ -7842,3 +7901,4 @@
+     * belong to their textures, and rwa_texture_destroy unbinds the framebuffer if it still holds one. */
+    return rc;
+ }
++#undef RWA_RD_STEP
