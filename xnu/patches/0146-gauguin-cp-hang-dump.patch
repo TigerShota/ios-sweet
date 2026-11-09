@@ -1,0 +1,99 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -38,6 +38,8 @@
+ static void gauguin_cp_mem_setup(void);
+ static void gauguin_cp_start(void);
+ static void gauguin_gem_selftest(void);
++static bool gg_gem_l2(uint64_t iova, uint32_t * tbl);
++static uint64_t gg_gem_pa(uint64_t iova);
+ void gauguin_gpu_init(void);
+ 
+ #define GPU_PA       0x03d00000u
+@@ -3200,6 +3202,7 @@
+ 	volatile uint32_t *ring;
+ 	uint32_t need, wp, rp, fence, i, tries, start;
+ 	static int bad_ib_log;
++	static int hang_dump_log;
+ 
+ 	if (gg.gpu == 0 || !cp_started || addresses == NULL || words == NULL ||
+ 	    count == 0 || count > 64) {
+@@ -3347,6 +3350,50 @@
+ 			    (unsigned long long)addresses[k], words[k]);
+ 		}
+ 	}
++	/*
++	 * 0146: RPTR has caught up with WPTR and the IB is fully consumed, so
++	 * the stall is inside the front end. Read back what actually executed:
++	 * the ROQ debug FIFO, and the two timestamps the last EVENT_WRITEs of
++	 * this IB target - the CCU flush words (0x50c20000) and the submit
++	 * seqno (0x5040a000). Neither is written by the CPU, so their DRAM
++	 * value is what the CP produced.
++	 */
++	if (hang_dump_log < 2) {
++		static const uint64_t ts_iova[4] = {
++			0x50c20000u, 0x50c20004u, 0x5040a000u, 0x5040a004u
++		};
++
++		hang_dump_log++;
++		for (i = 0; i < 16u; i++) {
++			gg_wr(gg.gpu, GR(CP_ROQ_DBG_ADDR_DW), i);
++			printf("GAUGUIN CP: stuck roq_dbg[%u]=%#x\n", i,
++			    gg_rd(gg.gpu, GR(CP_ROQ_DBG_DATA_DW)));
++		}
++		printf("GAUGUIN CP: stuck roq avail=%#x stat=%#x rbbm=%#x"
++		    " status1=%#x sqe=%#x\n",
++		    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
++		    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
++		    gg_rd(gg.gpu, GR(A6XX_RBBM_STATUS_DW)),
++		    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
++		    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)));
++		for (i = 0; i < 4u; i++) {
++			uint64_t pa = gg_gem_pa(ts_iova[i]);
++			vm_offset_t m = 0;
++			uint32_t v = 0;
++
++			if (pa != 0u) {
++				m = ml_io_map((vm_offset_t)(pa & ~0xfffull),
++				    GEM_PAGE);
++			}
++			if (m != 0) {
++				v = *(volatile uint32_t *)
++				    (m + (ts_iova[i] & 0xfffu));
++			}
++			printf("GAUGUIN CP: stuck ts %#llx pa=%#llx val=%#x\n",
++			    (unsigned long long)ts_iova[i],
++			    (unsigned long long)pa, v);
++		}
++	}
+ 	(void)sweet_log_flush_now();
+ 	return 0;
+ }
+@@ -3380,6 +3427,27 @@
+ 	return (gg_gem_entry(CPMEM_L2 + 8u * l2idx) & ~0xfffull) == want;
+ }
+ 
++/*
++ * 0146: translate a GEM IOVA into the physical page its data lives in, so
++ * the hang dump can read back a timestamp the CP was supposed to write.
++ */
++static uint64_t
++gg_gem_pa(uint64_t iova)
++{
++	uint32_t tbl;
++	uint64_t e;
++
++	if (!gg_gem_l2(iova, &tbl)) {
++		return 0u;
++	}
++	e = *(volatile uint64_t *)(gem_l3 + 0x1000u * tbl +
++	    8u * ((iova >> 12) & 0x1ffu));
++	if ((e & 3u) == 0u) {
++		return 0u;
++	}
++	return e & 0x0000fffffffff000ULL;
++}
++
+ static void
+ gg_gem_wr(uint32_t off, uint64_t v)
+ {
