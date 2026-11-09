@@ -1,0 +1,66 @@
+diff --git a/bsd/dev/gauguin_inject.c b/bsd/dev/gauguin_inject.c
+--- a/bsd/dev/gauguin_inject.c
++++ b/bsd/dev/gauguin_inject.c
+@@ -264,6 +264,35 @@
+ 	return crc == want ? 0 : EINVAL;
+ }
+ 
++/*
++ * 0127: sweetinject=0 must also undo a bundle installed by an earlier boot.
++ * The archive lives in the root, so merely skipping the write leaves the
++ * previous SweetBGMTL.bundle in place, backboardd keeps loading it and hangs
++ * in Mesa's draw path. Truncating the bundle executable and its two dylibs
++ * to zero bytes makes the loader refuse the bundle, which brings back the
++ * stock software path without deleting directories.
++ */
++static const char *const inj_clear_paths[] = {
++	"/System/Library/Extensions/SweetBGMTL.bundle/SweetBGMTL",
++	"/System/Library/Extensions/SweetBGMTL.bundle/libbgair.dylib",
++	"/System/Library/Extensions/SweetBGMTL.bundle/libdrm.2.dylib",
++};
++
++static void
++gauguin_inject_disable(vfs_context_t ctx)
++{
++	unsigned i;
++
++	for (i = 0; i < sizeof(inj_clear_paths) / sizeof(inj_clear_paths[0]); i++) {
++		int err = inj_write_file(inj_clear_paths[i], NULL, 0, 0755,
++		    0, 0, ctx);
++
++		printf("GAUGUIN INJECT: disabled, cleared %s err=%d\n",
++		    inj_clear_paths[i], err);
++	}
++	(void)sweet_log_flush_now();
++}
++
+ void
+ gauguin_inject_install(void)
+ {
+@@ -276,7 +305,25 @@
+ 	int enabled = 1;
+ 
+ 	(void)PE_parse_boot_argn("sweetinject", &enabled, sizeof(enabled));
+-	if (!enabled || inj_total < INJ_HDR) {
++	if (!enabled) {
++		for (i = 0; i < INJ_POLL_MAX && rootvnode == NULL; i++) {
++			inj_wait_ms(INJ_POLL_MS);
++		}
++		if (rootvnode == NULL) {
++			printf("GAUGUIN INJECT: disabled, root never mounted\n");
++			(void)sweet_log_flush_now();
++			return;
++		}
++		ctx = vfs_context_create(NULL);
++		if (ctx == NULL) {
++			printf("GAUGUIN INJECT: disabled, no vfs context\n");
++			return;
++		}
++		gauguin_inject_disable(ctx);
++		vfs_context_rele(ctx);
++		return;
++	}
++	if (inj_total < INJ_HDR) {
+ 		return;
+ 	}
+ 	magic = inj_rd32(p);
