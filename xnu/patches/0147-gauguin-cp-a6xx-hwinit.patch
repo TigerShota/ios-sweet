@@ -1,0 +1,196 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1702,11 +1702,22 @@
+ #define RB_NC_MODE_CNTL_DW 0x8e08u
+ #define SP_NC_MODE_CNTL_DW 0xae02u
+ #define TPL1_NC_MODE_CNTL_DW 0xb604u
++#define RBBM_NC_MODE_CNTL_DW 0x534u
++#define CP_CHICKEN_DBG_DW 0x841u
++#define CP_APRIV_CNTL_DW 0x844u
++#define CP_SCRATCH_REG2_DW 0x885u
++#define CP_LPAC_PROG_FIFO_SIZE_DW 0xb34u
++#define RB_DBG_ECO_CNTL_DW 0x8e04u
++#define RBBM_GBIF_CLIENT_QOS_CNTL_DW 0x011u
++#define GBIF_QSB_SIDE_DW 0x3c03u
+ /* 32 KiB ring. Bit 27 is NO_UPDATE, which a6xx_rb_start sets
+  * for !hw_apriv so the hardware stops maintaining CP_RB_RPTR and leaves the rptr to the WHERE_AM_I shadow. v29 could not tell
+  * "CP dead" from "shadow not CPU-visible", so 0109 clears it: the register view is AHB-coherent and needs no GPU L2 flush.
+- * Both views are polled below. */
+-#define RB_CNTL_VAL      0x0000020cu
++ * Both views are polled below.
++ * 0147 sets it again: the AHB register view is what the submit path
++ * waits on (0146 shows rptr==wptr there), so the shadow no longer has
++ * to be kept, and the proven a6xx reference runs with it set. */
++#define RB_CNTL_VAL      0x0800020cu
+ 
+ /* ==================== L3b final: zap shader through TrustZone (0105)
+  * v25 ended with the ring/SQE configuration sticking, zero faults and
+@@ -2201,33 +2212,32 @@
+ 	gg_wr(gg.gpu, GR(UCHE_WRITE_THRU_BASE_LO_DW) + 4u, 0x0001ffff);
+ 	CP_WRV(UCHE_FILTER_CNTL_DW, 0x804);
+ 	CP_WRV(UCHE_CACHE_WAYS_DW, 0x4);
+-	{
+-		unsigned tries = 0;
+-		uint32_t roq2 = 0;
+-		for (tries = 0; tries < 3; ++tries) {
+-			gg_wr(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW), 0x010000c0);
+-			delay(1000);
+-			roq2 = gg_rd(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW));
+-			if (roq2 == 0x010000c0) {
+-				break;
+-			}
+-		}
+-		printf("GAUGUIN CP: roq2=%#x after %u tries (canary)\n", roq2, tries);
+-		(void)sweet_log_flush_now();
+-		(void)roq2;
+-	}
++	CP_WRV(CP_ROQ_THRESHOLDS_2_DW, 0x02000140);
+ 	CP_WRV(CP_ROQ_THRESHOLDS_1_DW, 0x8040362c);
+ 	CP_WRV(CP_MEM_POOL_SIZE_DW, 128);
+-	CP_WRV(PC_DBG_ECO_CNTL_DW, 0x00018000);
++	/*
++	 * 0147: the a6xx hw_init values of the reference, not the a5xx ones
++	 * 0099 brought over. PC_DBG_ECO_CNTL and RB_DBG_ECO_CNTL are per-gen1
++	 * (Mesa programs the same two for a619/a642L); the rest are structural:
++	 * UBWC (NC_MODE) on without a UBWC-capable surface merely does nothing,
++	 * but left at zero the RB/SP/UCHE never coalesce, and UCHE_MODE_CNTL
++	 * bit 21 gates the 64-bit UCHE address path.
++	 */
++	CP_WRV(PC_DBG_ECO_CNTL_DW, 0x00200200);
+ 	CP_WRV(CP_AHB_CNTL_DW, 0x1);
++	CP_WRV(CP_CHICKEN_DBG_DW, 0x1);
++	CP_WRV(CP_APRIV_CNTL_DW, 0x4e);
++	CP_WRV(CP_LPAC_PROG_FIFO_SIZE_DW, 0x20);
++	CP_WRV(RB_DBG_ECO_CNTL_DW, 0x04100000);
+ 	CP_WRV(RBBM_PERFCTR_CNTL_DW, 0x1);
+ 	CP_WRV(RBBM_PERFCTR_GPU_BUSY_MASKED_DW, 0xffffffff);
+-	CP_WRV(RB_NC_MODE_CNTL_DW, 0x0);
+-	CP_WRV(TPL1_NC_MODE_CNTL_DW, 0x0);
+-	CP_WRV(SP_NC_MODE_CNTL_DW, 0x0);
+-	CP_WRV(UCHE_MODE_CNTL_DW, 0x0);
+-	CP_WRV(RBBM_INTERFACE_HANG_INT_CNTL_DW, 0x41000000);
+-	CP_WRV(UCHE_CLIENT_PF_DW, 0x1);
++	CP_WRV(RBBM_NC_MODE_CNTL_DW, 0x1);
++	CP_WRV(RB_NC_MODE_CNTL_DW, 0x812);
++	CP_WRV(TPL1_NC_MODE_CNTL_DW, 0x2);
++	CP_WRV(SP_NC_MODE_CNTL_DW, 0x22);
++	CP_WRV(UCHE_MODE_CNTL_DW, 1u << 21);
++	CP_WRV(RBBM_INTERFACE_HANG_INT_CNTL_DW, 0x401fffff);
++	CP_WRV(UCHE_CLIENT_PF_DW, 0x81);
+ 	printf("GAUGUIN CP: hw_init %s (flaky regs WARN, continuing)\n",
+ 	    ok ? "verified" : "warnings");
+ 	(void)sweet_log_flush_now();
+@@ -2242,9 +2252,41 @@
+ 	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_LO_DW) + 4u, 0);
+ 	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_SZ_DW), 0);
+ 	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_CNTL_DW), 0);
+-	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_ADDR_MODE_DW), 1);
+-	gg_wr(gg.gpu, GR(CP_ADDR_MODE_CNTL_DW), 1);  /* 64-bit CP */
++	/*
++	 * 0147: every block that carries an address must be told 64-bit, not
++	 * only the CP and the secure TSB. A 3D block left at 32-bit reads the
++	 * high half of a pointer as zero, so the IB's register writes land on
++	 * a bogus address (or nowhere) and the front end waits for work whose
++	 * state never took: that is the v100 shape -- RPTR == WPTR, the IB
++	 * fully consumed, the ROQ holding only the final flush packet.
++	 */
++	{
++		static const uint32_t addr_modes[] = {
++			0x0842u, /* CP_ADDR_MODE_CNTL */
++			0x0c01u, /* VSC_ADDR_MODE_CNTL */
++			0x8601u, /* GRAS_ADDR_MODE_CNTL */
++			0x8e05u, /* RB_ADDR_MODE_CNTL */
++			0x9e01u, /* PC_ADDR_MODE_CNTL */
++			0xbe05u, /* HLSQ_ADDR_MODE_CNTL */
++			0xa601u, /* VFD_ADDR_MODE_CNTL */
++			0x9601u, /* VPC_ADDR_MODE_CNTL */
++			0x0e00u, /* UCHE_ADDR_MODE_CNTL */
++			0xae01u, /* SP_ADDR_MODE_CNTL */
++			0xb601u, /* TPL1_ADDR_MODE_CNTL */
++			0xf810u, /* RBBM_SECVID_TSB_ADDR_MODE */
++		};
++		unsigned m;
++
++		for (m = 0; m < sizeof(addr_modes) / sizeof(addr_modes[0]); ++m) {
++			gg_wr(gg.gpu, GR(addr_modes[m]), 1u);
++		}
++	}
+ 	gg_wr(gg.gpu, GR(RBBM_VBIF_CLIENT_QOS_CNTL_DW), 3);
++	gg_wr(gg.gpu, GR(RBBM_GBIF_CLIENT_QOS_CNTL_DW), 3);
++	gg_wr(gg.gpu, GR(GBIF_QSB_SIDE_DW), 0x00071620);
++	gg_wr(gg.gpu, GR(GBIF_QSB_SIDE_DW) + 4u, 0x00071620);
++	gg_wr(gg.gpu, GR(GBIF_QSB_SIDE_DW) + 8u, 0x00071620);
++	gg_wr(gg.gpu, GR(GBIF_QSB_SIDE_DW) + 12u, 0x00071620);
+ 	gg_wr(gg.gpu, GR(GBIF_HALT_DW), 0);
+ 	gg_wr(gg.gpu, GR(RBBM_GBIF_HALT_DW), 0);
+ 	__asm__ volatile("dsb sy" ::: "memory");
+@@ -2258,7 +2300,13 @@
+ 	    gg_rd(gg.gpu, GR(GBIF_HALT_ACK_DW)),
+ 	    gg_rd(gg.gpu, GR(RBBM_GBIF_HALT_DW)),
+ 	    gg_rd(gg.gpu, GR(RBBM_GBIF_HALT_ACK_DW)));
+-	(void)sweet_log_flush_now();
++	printf("GAUGUIN CP: addr_mode cp=%#x rb=%#x uche=%#x apriv=%#x rbeco=%#x\n",
++	    gg_rd(gg.gpu, GR(CP_ADDR_MODE_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(0x8e05u)), gg_rd(gg.gpu, GR(0x0e00u)),
++	    gg_rd(gg.gpu, GR(CP_APRIV_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(RB_DBG_ECO_CNTL_DW)));
++	(void)sweet_log_flush_now();
++	gg_wr(gg.gpu, GR(RBBM_GBIF_CLIENT_QOS_CNTL_DW), 0);
+ 
+ 	/* rb_start: RPTR shadow in scratch, then CNTL/BASE, then the SQE. */
+ 	gg_wr(gg.gpu, GR(CP_RB_RPTR_ADDR_DW), CP_VA_SCRATCH);
+@@ -3205,7 +3253,7 @@
+ 	    count == 0 || count > 64) {
+ 		return 0;
+ 	}
+-	need = 4u * count + 5u;
++	need = 4u * count + 11u;	/* + 2 invalidate events, + CP_SCRATCH_REG2 */
+ 	if (need >= ring_dw / 2u) {
+ 		return 0;
+ 	}
+@@ -3258,6 +3306,20 @@
+ 	start = wp;
+ 	*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) = 0u;
+ 	__asm__ volatile("dmb oshst" ::: "memory");
++
++	/*
++	 * 0147: flush the two caches the previous submission left dirty before
++	 * this one's IBs start, and stamp the sequence number where a
++	 * post-mortem can read it. Both are unconditional in the reference.
++	 */
++	ring[wp % ring_dw] = gg_pkt7(CP_EVENT_WRITE, 1u);
++	wp++;
++	ring[wp % ring_dw] = 0x18u;	/* EVENT_INVALIDATE_DEPTH */
++	wp++;
++	ring[wp % ring_dw] = gg_pkt7(CP_EVENT_WRITE, 1u);
++	wp++;
++	ring[wp % ring_dw] = 0x19u;	/* EVENT_INVALIDATE_COLOR */
++	wp++;
+ 
+ 	for (i = 0; i < count; i++) {
+ 		/*
+@@ -3276,6 +3338,10 @@
+ 		ring[wp % ring_dw] = words[i];
+ 		wp++;
+ 	}
++	ring[wp % ring_dw] = gg_pkt4(CP_SCRATCH_REG2_DW);
++	wp++;
++	ring[wp % ring_dw] = fence;
++	wp++;
+ 	/* Completion fence: this word lands after all the IBs above. */
+ 	ring[wp % ring_dw] = gg_pkt7(CP_EVENT_WRITE, 4u);
+ 	wp++;
+@@ -3318,6 +3384,12 @@
+ 	    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++	/* 0147: RBBM_STATUS bit 0 is CP idle; anything else set means the
++	 * blocks are still busy, i.e. the previous submission never drained. */
++	printf("GAUGUIN CP: rbbm_status=%#x scratch2=%#x roq_avail=%#x\n",
++	    gg_rd(gg.gpu, GR(0x840u)), gg_rd(gg.gpu, GR(CP_SCRATCH_REG2_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)));
++	(void)sweet_log_flush_now();
+ 	{
+ 		vm_offset_t s = gg_smmu_base();
+ 		if (s) {
