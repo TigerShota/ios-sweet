@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/gauguin_inject.c b/bsd/dev/gauguin_inject.c
 --- a/bsd/dev/gauguin_inject.c
 +++ b/bsd/dev/gauguin_inject.c
-@@ -264,6 +264,35 @@
+@@ -264,6 +264,50 @@
  	return crc == want ? 0 : EINVAL;
  }
  
@@ -25,11 +25,26 @@ diff --git a/bsd/dev/gauguin_inject.c b/bsd/dev/gauguin_inject.c
 +	unsigned i;
 +
 +	for (i = 0; i < sizeof(inj_clear_paths) / sizeof(inj_clear_paths[0]); i++) {
-+		int err = inj_write_file(inj_clear_paths[i], NULL, 0, 0755,
-+		    0, 0, ctx);
++		const char *path = inj_clear_paths[i];
++		vnode_t vp = NULL;
++		struct vnode_attr va;
++		uint64_t size = ~0ull;
++		int err;
 +
-+		printf("GAUGUIN INJECT: disabled, cleared %s err=%d\n",
-+		    inj_clear_paths[i], err);
++		err = inj_write_file(path, NULL, 0, 0755, 0, 0, ctx);
++		if (vnode_lookup(path, 0, &vp, ctx) == 0) {
++			VATTR_INIT(&va);
++			VATTR_SET(&va, va_data_size, 0);
++			(void)vnode_setattr(vp, &va, ctx);
++			VATTR_INIT(&va);
++			VATTR_WANT(&va, va_data_size);
++			if (vnode_getattr(vp, &va, ctx) == 0) {
++				size = (uint64_t)va.va_data_size;
++			}
++			vnode_put(vp);
++		}
++		printf("GAUGUIN INJECT: disabled, cleared %s err=%d size=%llu\n",
++		    path, err, (unsigned long long)size);
 +	}
 +	(void)sweet_log_flush_now();
 +}
@@ -37,7 +52,7 @@ diff --git a/bsd/dev/gauguin_inject.c b/bsd/dev/gauguin_inject.c
  void
  gauguin_inject_install(void)
  {
-@@ -276,7 +305,25 @@
+@@ -276,7 +320,25 @@
  	int enabled = 1;
  
  	(void)PE_parse_boot_argn("sweetinject", &enabled, sizeof(enabled));
