@@ -1,0 +1,85 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3176,6 +3176,7 @@
+ 	uint32_t ring_dw = CPMEM_RING / 4u;
+ 	volatile uint32_t *ring;
+ 	uint32_t need, wp, rp, fence, i, tries, start;
++	static int bad_ib_log;
+ 
+ 	if (gg.gpu == 0 || !cp_started || addresses == NULL || words == NULL ||
+ 	    count == 0 || count > 64) {
+@@ -3187,7 +3188,18 @@
+ 	}
+ 	for (i = 0; i < count; i++) {
+ 		if (words[i] == 0 || words[i] > 0xfffffu ||
++		    addresses[i] == 0 ||
+ 		    addresses[i] >= 0x100000000ULL) {
++			/*
++			 * 0145: a zero IOVA makes the CP fetch from PA 0, which
++			 * stalls the front end without raising a fault.
++			 */
++			if (bad_ib_log < 8) {
++				bad_ib_log++;
++				printf("GAUGUIN CP: submit reject cmd %u ib=%#llx"
++				    " dwords=%u\n", i,
++				    (unsigned long long)addresses[i], words[i]);
++			}
+ 			return 0;
+ 		}
+ 	}
+@@ -3205,6 +3217,20 @@
+ 		return 0;
+ 	}
+ 
++	/*
++	 * 0145: clear stale stage-1 faults before this submission so the
++	 * timeout dump below only reports the faults it caused.
++	 */
++	{
++		vm_offset_t s = gg_smmu_base();
++
++		if (s != 0) {
++			vm_offset_t cb = s + SMMU_CB(GG_CB1);
++
++			gg_wr(cb, SMMU_CB_FSR, gg_rd(cb, SMMU_CB_FSR));
++		}
++	}
++
+ 	fence = ++gg_next_fence;
+ 	start = wp;
+ 	*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) = 0u;
+@@ -3267,12 +3293,27 @@
+ 			    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR));
+ 		}
+ 	}
+-	printf("GAUGUIN CP: submit ring[%u]=%#x %#x %#x %#x %#x\n", start,
+-	    gm_rd32_raw(CPMEM_RING + 4u * (start % ring_dw)),
+-	    gm_rd32_raw(CPMEM_RING + 4u * ((start + 1u) % ring_dw)),
+-	    gm_rd32_raw(CPMEM_RING + 4u * ((start + 2u) % ring_dw)),
+-	    gm_rd32_raw(CPMEM_RING + 4u * ((start + 3u) % ring_dw)),
+-	    gm_rd32_raw(CPMEM_RING + 4u * ((start + 4u) % ring_dw)));
++	{
++		uint32_t n = wp - start;
++		uint32_t k;
++
++		if (n > 16u) {
++			n = 16u;
++		}
++		printf("GAUGUIN CP: submit ring[%u] n=%u\n", start, n);
++		for (k = 0; k < n; k += 4u) {
++			printf("GAUGUIN CP: ring %u: %#x %#x %#x %#x\n",
++			    start + k,
++			    gm_rd32_raw(CPMEM_RING + 4u * ((start + k) % ring_dw)),
++			    gm_rd32_raw(CPMEM_RING + 4u * ((start + k + 1u) % ring_dw)),
++			    gm_rd32_raw(CPMEM_RING + 4u * ((start + k + 2u) % ring_dw)),
++			    gm_rd32_raw(CPMEM_RING + 4u * ((start + k + 3u) % ring_dw)));
++		}
++		for (k = 0; k < count; k++) {
++			printf("GAUGUIN CP: ib %u addr=%#llx dwords=%u\n", k,
++			    (unsigned long long)addresses[k], words[k]);
++		}
++	}
+ 	(void)sweet_log_flush_now();
+ 	return 0;
+ }

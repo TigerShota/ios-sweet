@@ -1,0 +1,135 @@
+--- bergamota/gpu/freedreno-sweet/sweet_drm.c
++++ bergamota/gpu/freedreno-sweet/sweet_drm.c
+@@ -197,6 +197,103 @@
+ } g_maps[16384];
+ static unsigned g_nmaps;
+ 
++/*
++ * 0145 (front-end hang): shadow the PM4 of the IBs of the submit in flight and
++ * print them only when that submit fails, returns no fence or stalls for over a
++ * second. v99 lost the ring contents after the CPU was reset; this keeps the
++ * exact dwords of the two outermost command buffers instead.
++ */
++static struct {
++	uint32_t ncmds, nbos;
++	uint32_t h[2], off[2], sz[2], ndw[2];
++	uint32_t dw[2][72];
++} g_snap;
++static int g_snap_dump;
++
++static const uint8_t *
++snap_addr(uint32_t handle, size_t *len)
++{
++	for (unsigned i = 0; i < g_nmaps; i++) {
++		if (g_maps[i].handle == handle) {
++			*len = g_maps[i].len;
++			return g_maps[i].addr;
++		}
++	}
++	*len = 0;
++	return NULL;
++}
++
++static void
++swd_snap(const struct sweet_msm_gem_submit *req)
++{
++	const struct sweet_msm_gem_submit_cmd *c = (const void *)(uintptr_t)req->cmds;
++	const struct sweet_msm_gem_submit_bo *b = (const void *)(uintptr_t)req->bos;
++	uint32_t idx[2], n = 0;
++
++	memset(&g_snap, 0, sizeof(g_snap));
++	if (req->nr_cmds == 0 || c == NULL || b == NULL) {
++		return;
++	}
++	g_snap.ncmds = req->nr_cmds;
++	g_snap.nbos = req->nr_bos;
++	idx[n++] = 0;
++	if (req->nr_cmds > 1) {
++		idx[n++] = req->nr_cmds - 1;
++	}
++	for (uint32_t i = 0; i < n; i++) {
++		const struct sweet_msm_gem_submit_cmd *cm = &c[idx[i]];
++		size_t len = 0;
++		const uint8_t *p;
++
++		if (cm->submit_idx >= req->nr_bos) {
++			continue;
++		}
++		g_snap.h[i] = b[cm->submit_idx].handle;
++		g_snap.off[i] = cm->submit_offset;
++		g_snap.sz[i] = cm->size;
++		p = snap_addr(g_snap.h[i], &len);
++		if (p == NULL || cm->size < 4 ||
++		    (size_t)cm->submit_offset + cm->size > len) {
++			continue;
++		}
++		uint32_t ndw = cm->size / 4;
++		if (ndw > 72) {
++			ndw = 72;
++		}
++		memcpy(g_snap.dw[i], p + cm->submit_offset, (size_t)ndw * 4);
++		g_snap.ndw[i] = ndw;
++	}
++}
++
++static void
++swd_dump(void)
++{
++	char b[96];
++
++	if (g_snap.ncmds == 0 || g_snap_dump >= 8) {
++		return;
++	}
++	g_snap_dump++;
++	fprintf(stderr, "swd: FAILED submit cmds=%u bos=%u\n", g_snap.ncmds, g_snap.nbos);
++	for (uint32_t i = 0; i < 2 && i < g_snap.ncmds; i++) {
++		fprintf(stderr, "swd: F c%u h=%u off=%u sz=%u\n", i, g_snap.h[i],
++		    g_snap.off[i], g_snap.sz[i]);
++		for (uint32_t k = 0; k < g_snap.ndw[i]; k += 8) {
++			int n = 0;
++
++			b[0] = 0;
++			for (uint32_t j = k; j < k + 8 && j < g_snap.ndw[i]; j++) {
++				n += snprintf(b + n, sizeof(b) - (size_t)n, "%s%08x",
++				    j == k ? "" : " ", g_snap.dw[i][j]);
++				if ((size_t)n >= sizeof(b)) {
++					break;
++				}
++			}
++			fprintf(stderr, "swd: F %u: %s\n", k, b);
++		}
++	}
++}
++
+ static int
+ io_errno(kern_return_t kr)
+ {
+@@ -819,6 +916,7 @@
+ 	struct sweet_msm_gem_submit *req = data;
+ 	const struct msm_submit_syncobj *in = NULL, *out = NULL;
+ 	uint32_t nin = 0, nout = 0, stride = 0;
++	uint64_t t0 = 0;
+ 	int r;
+ 
+ 	if (size < sizeof(*req)) {
+@@ -868,6 +966,7 @@
+ 	k.flags &= ~(MSM_SUBMIT_SYNCOBJ_IN | MSM_SUBMIT_SYNCOBJ_OUT);
+ 	k.in_syncobjs = k.out_syncobjs = 0;
+ 	k.nr_in_syncobjs = k.nr_out_syncobjs = k.syncobj_stride = 0;
++	swd_snap(req);
+ 	if (k.nr_cmds == 0) {
+ 		struct sweet_gpu_info info;
+ 		memset(&info, 0, sizeof(info));
+@@ -875,7 +974,12 @@
+ 		k.fence = info.last_fence;
+ 		k.fence_fd = -1;
+ 	} else {
++		t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+ 		r = sweet_call(SWEET_GPU_SEL_GEM_SUBMIT, &k, sizeof(k));
++		t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0;
++	}
++	if (r || k.fence == 0 || (k.nr_cmds && t0 > 1000000000ull)) {
++		swd_dump();
+ 	}
+ 	if (r) {
+ 		return r;
