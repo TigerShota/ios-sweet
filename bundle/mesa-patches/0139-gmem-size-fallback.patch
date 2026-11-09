@@ -1,0 +1,35 @@
+diff --git a/src/gallium/drivers/freedreno/freedreno_screen.c b/src/gallium/drivers/freedreno/freedreno_screen.c
+--- a/src/gallium/drivers/freedreno/freedreno_screen.c
++++ b/src/gallium/drivers/freedreno/freedreno_screen.c
+@@ -20,6 +20,8 @@
+ #include "util/xmlconfig.h"
+ 
+ #include "util/os_time.h"
++
++#include <stdio.h>
+ 
+ #include <errno.h>
+ #include <stdio.h>
+@@ -925,11 +927,22 @@
+       DBG("could not get GMEM size");
+       goto fail;
+    }
++   if (val == 0) {
++      /* 0139: the sweet msm shim never reports a GMEM size, and 0 makes
++       * calc_nbins()'s layout loop spin forever, because layout_gmem() can
++       * never fit into zero bytes. Every a6xx part (a618 included) has 512 KiB
++       * of GMEM; a smaller claim than the hardware only shrinks the bins.
++       */
++      fprintf(stderr, "gmem: screen FD_GMEM_SIZE=0, defaulting to 512 KiB\n");
++      val = 512 * 1024;
++   }
+    screen->gmemsize_bytes = debug_get_num_option("FD_MESA_GMEM", val);
+ 
+    if (fd_device_version(dev) >= FD_VERSION_GMEM_BASE) {
+       fd_pipe_get_param(screen->pipe, FD_GMEM_BASE, &screen->gmem_base);
+    }
++   fprintf(stderr, "gmem: screen gmemsize=%u gmem_base=%#llx\n",
++           screen->gmemsize_bytes, (unsigned long long)screen->gmem_base);
+ 
+    if (fd_pipe_get_param(screen->pipe, FD_MAX_FREQ, &val)) {
+       DBG("could not get gpu freq");

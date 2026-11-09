@@ -2,7 +2,15 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-09 (latest): v93 (0137) NAMES THE NEXT FRAME - THE DRAW DIES INSIDE `fd6_vsc_update_sizes`, BEFORE THE SHADER LOOKUP; 0138 TRACES THE BINNING LOOPS <<<
+### >>> UPDATE 2026-11-09 (latest): v94 (0138) PROVES THE SPIN - `FD_GMEM_SIZE` IS 0, SO `calc_nbins()` LOOPS FOREVER; 0139 DEFAULTS IT TO 512 KiB <<<
+- **v94 identity**: metal run `42565925266` (0138, commit `fd3b468`), xnu run `42566227693`, shim run `42568278307`, image `out\v94\gauguin-shim-boot\shim\out\shim-boot.img` (27,832,320 B), no `sweetinject=0`, log `out\sweetlog-v94\v94.txt` (ring 4 MiB / 388,636 B, flush #24). Still only the console log on the panel - expected, 0138 only observes.
+- **Trace**: `dv enter idxsz=2 mode=4 ndraw=1 ioff=0` -> `dv prog ok` -> `vsc enter` -> `gmem: est enter zsbuf=0` -> `lookup key 1125x2436 cbufs=2 cpp0=4 zcpp0=0 align=1` -> `hash hit=0` -> `state init enter` -> **`calc start 1125x2436 align=32/32 max=1024/1008 gmem=0 cpp0=4 zcpp0=0 pipes=32`** -> `calc x done nbins_x=2 iters=1` -> `calc y done nbins_y=3 iters=2` -> `calc layout spin nb=502x503` ... `25002x25003` (keeps growing).
+- **Root cause**: `screen->gmemsize_bytes == 0`. `calc_nbins()`'s third loop is `while (!layout_gmem(...))`, and `layout_gmem()` returns `total <= screen->gmemsize_bytes`, so with 0 bytes it can never succeed - a plain infinite loop, which is why every other thread keeps logging and only backboardd goes silent.
+- **Why 0**: `freedreno_screen.c` reads `FD_GMEM_SIZE` from `fd_pipe_get_param`, i.e. from the msm shim/kernel pair, which never reports it (`bergamota/gpu/freedreno-sweet/sweet_drm.c` forwards MSM_GET_PARAM to the kernel).
+- **0139** (`bundle/mesa-patches/0139-gmem-size-fallback.patch`): in `freedreno_screen.c`, if `FD_GMEM_SIZE` comes back 0, use 512 KiB (every a6xx part incl. a618 has 512 KiB GMEM; claiming less than the hardware only shrinks the bins) and print `gmem: screen gmemsize=... gmem_base=...` so the next log confirms it.
+- **Next**: rebuild metal (0137+0138+0139) -> xnu -> shim (no `sweetinject=0`) -> boot -> pull: expect `calc layout done nb=... bw/bh` then `vsc done`, `dv emit`, `dv clean`, i.e. the first draw to complete.
+
+### >>> UPDATE 2026-11-09 (superseded): v93 (0137) NAMES THE NEXT FRAME - THE DRAW DIES INSIDE `fd6_vsc_update_sizes` <<<
 - **v93 identity**: metal run `42559898436` (0137, commit `e11e047`), xnu run `42562623794`, shim run `42564039570`, image `out\v93\gauguin-shim-boot\shim\out\shim-boot.img` (27,832,320 B), **no** `sweetinject=0` (GPU plugin enabled), `fastboot boot`, log `out\sweetlog-v93\v93.txt` (8,678 lines, ring 4 MiB / 375,888 B, flush #62).
 - **Observed**: still the console log screen, no lock screen - i.e. enabling SweetBGMTL re-introduces the hang, as expected.
 - **Trace**: `air: rd step 18` -> `fd6: dv enter idxsz=2 mode=4 ndraw=1 ioff=0` -> `fd6: dv prog ok` -> silence. **No `gp` lines, no `dv prog state`, no `dv emit`, no `dv clean`.**
