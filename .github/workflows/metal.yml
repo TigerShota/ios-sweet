@@ -69,6 +69,11 @@ jobs:
           for p in chlorophyll/patches/*.patch; do
             git -C mesa apply "$PWD/$p"
           done
+          shopt -s nullglob
+          for p in bundle/mesa-patches/*.patch; do
+            echo "applying $p"
+            git -C mesa apply "$PWD/$p"
+          done
           mkdir -p mesa/src/compiler/air
           for f in chlorophyll/air/*; do
             ln -sf "$PWD/$f" "mesa/src/compiler/air/$(basename "$f")"

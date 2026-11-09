@@ -1,0 +1,152 @@
+diff --git a/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc b/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc
+--- a/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc
++++ b/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc
+@@ -26,6 +26,16 @@
+ #include "fd6_emit.h"
+ #include "fd6_program.h"
+ #include "fd6_vsc.h"
++
++#include <stdio.h>
++
++/* 0137: bounded trace of the first draws. The last "fd6:" line before the
++ * silence names the stage that hangs. */
++static int fd6_draw_trace_n;
++#define FD6_DT(fmt, ...) do { \
++   if (fd6_draw_trace_n++ < 400) \
++      fprintf(stderr, "fd6: " fmt "\n", ##__VA_ARGS__); \
++} while (0)
+ #include "fd6_zsa.h"
+ 
+ #include "fd6_pack.h"
+@@ -246,14 +256,19 @@
+       }
+    }
+ 
++   FD6_DT("gp fixup enter");
+    ir3_fixup_shader_state(&ctx->base, &key.key);
++   FD6_DT("gp fixup done");
+ 
+    if (ctx->gen_dirty & BIT(FD6_GROUP_PROG)) {
++      FD6_DT("gp lookup enter");
+       struct ir3_program_state *s = ir3_cache_lookup(
+             ctx->shader_cache, &key, &ctx->debug);
++      FD6_DT("gp lookup done s=%p", (void *)s);
+       fd6_ctx->prog = fd6_program_state(s);
+    }
+ 
++   FD6_DT("gp return prog=%p", (void *)fd6_ctx->prog);
+    return fd6_ctx->prog;
+ }
+ 
+@@ -301,8 +316,13 @@
+    emit.prog = NULL;
+    emit.draw_id = 0;
+ 
++   FD6_DT("dv enter idxsz=%u mode=%u ndraw=%u ioff=%u", info->index_size,
++         (unsigned)info->mode, num_draws, index_offset);
++
+    if (!(ctx->prog.vs && ctx->prog.fs))
+       return;
++
++   FD6_DT("dv prog ok");
+ 
+    if (PIPELINE == HAS_TESS_GS) {
+       if ((info->mode == MESA_PRIM_PATCHES) || ctx->prog.gs) {
+@@ -325,11 +345,15 @@
+       emit.prog = fd6_ctx->prog;
+    }
+ 
++   FD6_DT("dv prog state=%p", (void *)emit.prog);
++
+    /* bail if compile failed: */
+    if (!emit.prog)
+       return;
+ 
++   FD6_DT("dv fixup enter");
+    fixup_draw_state(ctx, &emit);
++   FD6_DT("dv fixup done");
+ 
+    /* *after* fixup_shader_state(): */
+    emit.dirty_groups = ctx->gen_dirty;
+@@ -428,8 +452,10 @@
+       ctx->last.restart_index = restart_index;
+    }
+ 
++   FD6_DT("dv emit enter dirty=%#x", emit.dirty_groups);
+    if (emit.dirty_groups)
+       fd6_emit_3d_state<CHIP, PIPELINE>(ring, &emit);
++   FD6_DT("dv emit done");
+ 
+    /* All known firmware versions do not wait for WFI's with CP_DRAW_AUTO.
+     * Plus, for the common case where the counter buffer is written by
+@@ -456,6 +482,8 @@
+     */
+    emit_marker6(ring, 7);
+ 
++   FD6_DT("dv draw emit enter indirect=%d", (int)is_indirect(DRAW));
++
+    if (is_indirect(DRAW)) {
+       assert(num_draws == 1);  /* only >1 for direct draws */
+       if (DRAW == DRAW_INDIRECT_OP_XFB) {
+@@ -522,9 +550,13 @@
+ 
+    emit_marker6(ring, 7);
+ 
++   FD6_DT("dv streamout enter");
+    flush_streamout<CHIP>(ctx, &emit);
+-
++   FD6_DT("dv streamout done");
++
++   FD6_DT("dv clean enter");
+    fd_context_all_clean(ctx);
++   FD6_DT("dv clean done");
+ }
+ 
+ template <chip CHIP, fd6_pipeline_type PIPELINE>
+diff --git a/src/gallium/drivers/freedreno/a6xx/fd6_emit.cc b/src/gallium/drivers/freedreno/a6xx/fd6_emit.cc
+--- a/src/gallium/drivers/freedreno/a6xx/fd6_emit.cc
++++ b/src/gallium/drivers/freedreno/a6xx/fd6_emit.cc
+@@ -24,6 +24,15 @@
+ 
+ #include "fd6_blend.h"
+ #include "fd6_const.h"
++
++#include <stdio.h>
++
++/* 0137: bounded trace of the 3D state groups emitted for the first draws. */
++static int fd6_emit_trace_n;
++#define FD6_ET(fmt, ...) do { \
++   if (fd6_emit_trace_n++ < 1200) \
++      fprintf(stderr, "fd6: " fmt "\n", ##__VA_ARGS__); \
++} while (0)
+ #include "fd6_context.h"
+ #include "fd6_compute.h"
+ #include "fd6_emit.h"
+@@ -585,6 +594,8 @@
+    const struct fd6_program_state *prog = fd6_emit_get_prog(emit);
+    const struct ir3_shader_variant *fs = emit->fs;
+ 
++   FD6_ET("e3 enter dirty=%#x", emit->dirty_groups);
++
+    emit_marker6(ring, 5);
+ 
+    /* Special case, we need to re-emit bindless FS state w/ the
+@@ -599,6 +610,8 @@
+       enum fd6_state_id group = (enum fd6_state_id)b;
+       struct fd_ringbuffer *state = NULL;
+ 
++      FD6_ET("e3 group %d", (int)group);
++
+       switch (group) {
+       case FD6_GROUP_VTXSTATE:
+          state = fd6_vertex_stateobj(ctx->vtx.vtx)->stateobj;
+@@ -731,7 +744,9 @@
+       }
+    }
+ 
++   FD6_ET("e3 groups done");
+    fd6_state_emit(&emit->state, ring);
++   FD6_ET("e3 done");
+ }
+ 
+ template void fd6_emit_3d_state<A6XX, NO_TESS_GS>(struct fd_ringbuffer *ring, struct fd6_emit *emit);
