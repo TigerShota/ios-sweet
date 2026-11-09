@@ -1,0 +1,30 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -419,6 +419,26 @@
+ 		}
+ 		s->release();
+ 	}
++	{
++		/* 0144: liveness marker written straight into the panel memory after
++		 * the copy. A magenta square in the top-left and a white bar that moves
++		 * on every present: if the panel shows them, the DPU still scans
++		 * fPixels and what the screen lacks is content, not the display path. */
++		static uint32_t bar;
++		uint32_t by = (bar++ % 32) * 72;
++		for (uint32_t y = 0; y < 96 && y < fHeight; y++) {
++			volatile uint32_t *row = (volatile uint32_t *)(fPixels + (uint64_t)y * fRowBytes);
++			for (uint32_t x = 0; x < 96 && x < fWidth; x++) {
++				row[x] = 0xffff00ff;
++			}
++		}
++		for (uint32_t y = by; y < by + 12 && y < fHeight; y++) {
++			volatile uint32_t *row = (volatile uint32_t *)(fPixels + (uint64_t)y * fRowBytes);
++			for (uint32_t x = 0; x < fWidth; x++) {
++				row[x] = 0xffffffff;
++			}
++		}
++	}
+ }
+ 
+ bool

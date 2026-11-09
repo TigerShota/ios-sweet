@@ -1,0 +1,56 @@
+--- chlorophyll/src/bgmtl.m
++++ chlorophyll/src/bgmtl.m
+@@ -1409,6 +1409,23 @@
+          }
+          BG_LOG("  attachment %p %ux%u s=%d:%s\n", t, wd, ht,
+                 [t iosurface] ? (int)IOSurfaceGetID((IOSurfaceRef)[t iosurface]) : -1, line);
++         // 0144: 8x16 ASCII map of a full-screen attachment: what the drawable really shows
++         static unsigned maps;
++         if (wd >= 512 && ht >= 512 && maps < 4) {
++            static const char ramp[] = " .:-=+*#%@";
++            maps++;
++            for (unsigned ry = 0; ry < 16; ry++) {
++               char mline[16]; size_t m = 0;
++               for (unsigned rx = 0; rx < 8; rx++) {
++                  uint8_t px[4] = { 0 };
++                  [t getBytes:px bytesPerRow:4 fromRegion:MTLRegionMake2D((unsigned)((rx * 2 + 1) * (unsigned long)wd / 16),
++                                                                         (unsigned)((ry * 2 + 1) * (unsigned long)ht / 32), 1, 1) mipmapLevel:0];
++                  mline[m++] = ramp[((px[0] + px[1] + px[2]) / 3) * 9 / 255];
++               }
++               mline[m] = 0;
++               BG_LOG("  map %p row %2u |%s|\n", t, ry, mline);
++            }
++         }
+          // small attachments in full, as raw BGRA files, when /private/var/tmp/bgmtl.dumpatt exists (blur chain debugging; the
+          // full-screen ones are skipped: reading 11 MB per pass back through this path rebooted the phone)
+          static int dump = -1;
+@@ -2058,6 +2075,29 @@
+                 _pipeline->_info.fragment_textures, _pipeline->_ndecls, _thigh, _shigh, tgt,
+                 tgt ? (int)IOSurfaceGetID((IOSurfaceRef)[(BGMTLTexture *)tgt iosurface]) : -1);
+       }
++      // 0144: the textures this draw samples, read back now: do they hold the UI, or nothing?
++      static unsigned tdbg;
++      if (_pipeline->_info.fragment_textures && tdbg < 8) {
++         tdbg++;
++         for (unsigned i = 0; i < BG_MAX_TEX; i++) {
++            BGMTLTexture *tx = (BGMTLTexture *)_tex[i];
++            if (!tx) continue;
++            unsigned wd = (unsigned)[tx width], ht = (unsigned)[tx height];
++            NSUInteger pf = [tx pixelFormat];
++            char line[160]; size_t n = 0;
++            line[0] = 0;
++            if (wd && ht && (pf == MTLPixelFormatBGRA8Unorm || pf == MTLPixelFormatBGRA8Unorm_sRGB || pf == MTLPixelFormatRGBA8Unorm)) {
++               const unsigned sp[3][2] = { { wd / 2, ht / 2 }, { wd / 4, ht / 4 }, { wd - 1, ht - 1 } };
++               for (unsigned k = 0; k < 3; k++) {
++                  uint8_t px[4] = { 0 };
++                  [tx getBytes:px bytesPerRow:4 fromRegion:MTLRegionMake2D(sp[k][0], sp[k][1], 1, 1) mipmapLevel:0];
++                  n += snprintf(line + n, sizeof(line) - n, " (%u,%u,%u,%u)", px[0], px[1], px[2], px[3]);
++               }
++            }
++            BG_LOG("  frag tex[%u] %p %ux%u fmt %lu s=%d:%s\n", i, tx, wd, ht, (unsigned long)pf,
++                   [tx iosurface] ? (int)IOSurfaceGetID((IOSurfaceRef)[tx iosurface]) : -1, line);
++         }
++      }
+    }
+    [_cb bgRecord:w];
+ }
