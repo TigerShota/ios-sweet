@@ -16,6 +16,10 @@ CMDLINE = ('debug=0xc serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam '
            'installd,misagent,misd,installcoordinationd,containermanagerd,launchd,logd '
            'sweetiolog=MobileGestaltHelper,securityd,lsd,backboardd '
            'gauguingpu=2 gauguinbt=0 gauguinbtclk=1')
+# Optional third argument appends extra boot-args, e.g. "sweetinject=0" to
+# boot with CA on the stock software path instead of the Mesa bridge.
+if len(sys.argv) > 3 and sys.argv[3].strip():
+    CMDLINE += ' ' + sys.argv[3].strip()
 
 
 def gh_json(endpoint, method='GET', body=None):
@@ -85,7 +89,7 @@ os.makedirs(OUT, exist_ok=True)
 for a in items:
     zp = os.path.join(OUT, a['name'] + '.zip')
     tok = subprocess.run([GH, 'auth', 'token'], capture_output=True).stdout.decode().strip()
-    p = subprocess.run(['curl.exe', '-L', '--proxy', 'http://127.0.0.1:7890',
+    p = subprocess.run(['curl.exe', '-L',
                         '-H', 'Authorization: Bearer ' + tok, '-o', zp,
                         '--connect-timeout', '20', '--max-time', '300',
                         'https://api.github.com/repos/%s/actions/artifacts/%d/zip' % (REPO, a['id'])],

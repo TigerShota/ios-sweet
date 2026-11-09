@@ -2,7 +2,14 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-09 (latest): v89 (0136) NAMES THE HANG - IT IS `pipe->draw_vbo`; EVERY BIND BEFORE IT SUCCEEDS, NO KERNEL SUBMIT FOLLOWS <<<
+### >>> UPDATE 2026-11-09 (latest): v92-clear RECOVERS THE UI - THE HANG WAS `SweetBGMTL` ITSELF, AND THE FIX IS FORCING THE INSTALLED EXECUTABLES TO 0 BYTES <<<
+- **v92-clear identity**: xnu run `42557622950` (0127 fixed to use `VATTR_WANTED` and to force the size through `vnode_setattr`, commit `33bdfdc`), shim run `42558574028`, image `out\v92-clear\shim\out\shim-boot.img` (17,657,856 B), booted with `fastboot boot`, cmdline `sweetinject=0`.
+- **Observed on device**: console log -> iOS logo -> the 0123 orange/blue probe bars -> logo again -> **LOCK SCREEN**. The UI renders, so the panel mapping, `SweetFramebuffer::present()` and the CoreAnimation software path were correct all along.
+- **Root cause**: backboardd loads the injected `SweetBGMTL` as the Metal plugin and hands every draw to Chlorophyll, which hangs inside freedreno `fd6_draw_vbo` and never returns a frame. CA waits forever, so the panel stays on the kernel console. Closing the plugin makes CA fall back to its native software renderer and frames reach the panel.
+- **Why v91 was not enough**: it only opened the files with `O_TRUNC`; the v91 log printed `err=0` yet `bgmtl` still ran, i.e. the truncation did not stick. 0127 now reads the size back with `VATTR_WANTED(&va, va_data_size)` and forces `vnode_setattr(va_data_size = 0)`; the boot log line is `GAUGUIN INJECT: disabled, cleared <path> err=0 size=<bytes>`.
+- **Keep this image** as the "UI works, no GPU acceleration" baseline. GPU rendering needs `fd6_draw_vbo` fixed first: 0136 already localized the hang to `pipe->draw_vbo`, so the next patch instruments freedreno (`fd6_draw_vbo` entry, ir3 variant lookup, `fd6_emit` begin/end, `fd_batch` growth).
+
+### >>> UPDATE 2026-11-09 (superseded): v89 (0136) NAMES THE HANG - IT IS `pipe->draw_vbo`; EVERY BIND BEFORE IT SUCCEEDS, NO KERNEL SUBMIT FOLLOWS <<<
 - **v89 log** (`logs/v89.txt`, 8277 lines, ring 4 MiB / 364,179 B, flush #16; raw dump `out\sweetlog-v89\v89.bin`):
   - `commit: 4 recorded commands` (8007) -> `work 0 kind 7` (8009) -> `work 1 kind 3` (8014) -> `air: render_draw enter render=0x12b024200 prim=3 verts=6 idx=1` (8015) -> `fb_bound` (8016).
   - The whole step ladder lands: `step 2` (8017), `4,5,6,7,8,9,10,11,12,13` (8018-8027) - so viewport, scissor, blend, dsa, stencil ref, raster, vs, fs, vertex elements and vertex buffers all returned.
