@@ -37,7 +37,7 @@ diff --git a/bsd/dev/gauguin_inject.c b/bsd/dev/gauguin_inject.c
 +			VATTR_SET(&va, va_data_size, 0);
 +			(void)vnode_setattr(vp, &va, ctx);
 +			VATTR_INIT(&va);
-+			VATTR_WANT(&va, va_data_size);
++			VATTR_WANTED(&va, va_data_size);
 +			if (vnode_getattr(vp, &va, ctx) == 0) {
 +				size = (uint64_t)va.va_data_size;
 +			}
