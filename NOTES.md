@@ -2,7 +2,16 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-09 (latest): v92-clear RECOVERS THE UI - THE HANG WAS `SweetBGMTL` ITSELF, AND THE FIX IS FORCING THE INSTALLED EXECUTABLES TO 0 BYTES <<<
+### >>> UPDATE 2026-11-09 (latest): v93 (0137) NAMES THE NEXT FRAME - THE DRAW DIES INSIDE `fd6_vsc_update_sizes`, BEFORE THE SHADER LOOKUP; 0138 TRACES THE BINNING LOOPS <<<
+- **v93 identity**: metal run `42559898436` (0137, commit `e11e047`), xnu run `42562623794`, shim run `42564039570`, image `out\v93\gauguin-shim-boot\shim\out\shim-boot.img` (27,832,320 B), **no** `sweetinject=0` (GPU plugin enabled), `fastboot boot`, log `out\sweetlog-v93\v93.txt` (8,678 lines, ring 4 MiB / 375,888 B, flush #62).
+- **Observed**: still the console log screen, no lock screen - i.e. enabling SweetBGMTL re-introduces the hang, as expected.
+- **Trace**: `air: rd step 18` -> `fd6: dv enter idxsz=2 mode=4 ndraw=1 ioff=0` -> `fd6: dv prog ok` -> silence. **No `gp` lines, no `dv prog state`, no `dv emit`, no `dv clean`.**
+- **Why that pinpoints vsc**: after `dv prog ok` the next code is (a) the `PIPELINE == NO_TESS_GS` fast path `fd6_vsc_update_sizes(ctx->batch, info, &draws[0])`, then (b) `get_program_state<PIPELINE>` (which would print `gp fixup enter` first) and (c) `emit.prog = fd6_ctx->prog` + `dv prog state`. So the hang is inside (a) - `fd6_vsc_update_sizes` -> `fd_gmem_estimate_bins_per_pipe` -> `lookup_gmem_state`/`calc_nbins`, not in ir3 and not in emit.
+- **Prime suspect**: `calc_nbins` has three unbounded loops. If `screen->info->tile_max_w/h` is 0, or `gmemsize_bytes` is 0, the loop never exits (pure CPU spin, other threads keep logging - which matches the v93 log continuing normally after the silence). v88's SMP `fdl6_layout`-adjacent frames are plausible neighbors of `layout_gmem`.
+- **0138** (`bundle/mesa-patches/0138-gmem-bins-trace.patch`) brackets the call (`vsc enter/done`) and prints, bounded to 600 lines: `est enter/done` (nbins, maxpw/maxph), `lookup key` (w/h/cbufs/cpp0/zcpp0/align), hash hit, `lookup done`, and in `calc_nbins` the start inputs (`align`, `max`, `gmemsize`, `pipes`) plus every 1000th iteration of all three loops (`calc x/y/layout spin`) and the final nb/bin size.
+- **Next**: metal -> xnu (`metal_run_id`) -> shim (no `sweetinject=0`) -> `fastboot boot` -> pull: the last `gmem:` line says whether it spins in x (tile_max_w), y, or the layout loop (gmemsize) and with which numbers.
+
+### >>> UPDATE 2026-11-09 (superseded): v92-clear RECOVERS THE UI - THE HANG WAS `SweetBGMTL` ITSELF, AND THE FIX IS FORCING THE INSTALLED EXECUTABLES TO 0 BYTES <<<
 - **v92-clear identity**: xnu run `42557622950` (0127 fixed to use `VATTR_WANTED` and to force the size through `vnode_setattr`, commit `33bdfdc`), shim run `42558574028`, image `out\v92-clear\shim\out\shim-boot.img` (17,657,856 B), booted with `fastboot boot`, cmdline `sweetinject=0`.
 - **Observed on device**: console log -> iOS logo -> the 0123 orange/blue probe bars -> logo again -> **LOCK SCREEN**. The UI renders, so the panel mapping, `SweetFramebuffer::present()` and the CoreAnimation software path were correct all along.
 - **Root cause**: backboardd loads the injected `SweetBGMTL` as the Metal plugin and hands every draw to Chlorophyll, which hangs inside freedreno `fd6_draw_vbo` and never returns a frame. CA waits forever, so the panel stays on the kernel console. Closing the plugin makes CA fall back to its native software renderer and frames reach the panel.

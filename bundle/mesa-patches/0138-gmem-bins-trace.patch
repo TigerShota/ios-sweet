@@ -1,0 +1,142 @@
+diff --git a/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc b/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc
+--- a/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc
++++ b/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc
+@@ -311,7 +311,9 @@
+    }
+ 
+    if ((PIPELINE == NO_TESS_GS) && !is_indirect(DRAW)) {
++      FD6_DT("vsc enter");
+       fd6_vsc_update_sizes(ctx->batch, info, &draws[0]);
++      FD6_DT("vsc done");
+    }
+ 
+    /* If PROG state (which will mark PROG_KEY dirty) or any state that the
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -25,6 +25,16 @@
+ #include "freedreno_resource.h"
+ #include "freedreno_tracepoints.h"
+ #include "freedreno_util.h"
++
++#include <stdio.h>
++
++/* 0138: bounded trace of the binning/gmem state a first draw needs. Shows
++ * whether calc_nbins spins (the loops are unbounded) and with which inputs. */
++static int gmem_trace_n;
++#define GMEM_T(fmt, ...) do { \
++   if (gmem_trace_n++ < 600) \
++      fprintf(stderr, "gmem: " fmt "\n", ##__VA_ARGS__); \
++} while (0)
+ 
+ /*
+  * GMEM is the small (ie. 256KiB for a200, 512KiB for a220, etc) tile buffer
+@@ -207,6 +217,13 @@
+    uint32_t nbins_x = 1, nbins_y = 1;
+    uint32_t max_width = screen->info->tile_max_w;
+    uint32_t max_height = screen->info->tile_max_h;
++   unsigned it;
++
++   GMEM_T("calc start %ux%u align=%u/%u max=%u/%u gmem=%u cpp0=%u zcpp0=%u pipes=%u",
++          key->width, key->height, screen->info->tile_align_w,
++          screen->info->tile_align_h, max_width, max_height,
++          screen->gmemsize_bytes, key->cbuf_cpp[0], key->zsbuf_cpp[0],
++          screen->info->num_vsc_pipes);
+ 
+    if (FD_DBG(MSGS)) {
+       debug_printf("binning input: cbuf cpp:");
+@@ -219,26 +236,40 @@
+    /* first, find a bin size that satisfies the maximum width/
+     * height restrictions:
+     */
++   it = 0;
+    while (div_align(key->width, nbins_x, screen->info->tile_align_w) >
+           max_width) {
+       nbins_x++;
+-   }
+-
++      if ((++it % 1000) == 0)
++         GMEM_T("calc x spin nbins_x=%u binw=%u", nbins_x,
++                div_align(key->width, nbins_x, screen->info->tile_align_w));
++   }
++   GMEM_T("calc x done nbins_x=%u iters=%u", nbins_x, it);
++
++   it = 0;
+    while (div_align(key->height, nbins_y, screen->info->tile_align_h) >
+           max_height) {
+       nbins_y++;
+-   }
++      if ((++it % 1000) == 0)
++         GMEM_T("calc y spin nbins_y=%u binh=%u", nbins_y,
++                div_align(key->height, nbins_y, screen->info->tile_align_h));
++   }
++   GMEM_T("calc y done nbins_y=%u iters=%u", nbins_y, it);
+ 
+    /* then find a bin width/height that satisfies the memory
+     * constraints:
+     */
++   it = 0;
+    while (!layout_gmem(key, nbins_x, nbins_y, gmem)) {
+       if (nbins_y > nbins_x) {
+          nbins_x++;
+       } else {
+          nbins_y++;
+       }
+-   }
++      if ((++it % 1000) == 0)
++         GMEM_T("calc layout spin nb=%ux%u", nbins_x, nbins_y);
++   }
++   GMEM_T("calc layout done nb=%ux%u iters=%u", nbins_x, nbins_y, it);
+ 
+    /* Lets see if we can tweak the layout a bit and come up with
+     * something better:
+@@ -254,11 +285,14 @@
+    }
+ 
+    layout_gmem(key, nbins_x, nbins_y, gmem);
++   GMEM_T("calc done nb=%ux%u bw=%u bh=%u", nbins_x, nbins_y, gmem->bin_w,
++          gmem->bin_h);
+ }
+ 
+ static struct fd_gmem_stateobj *
+ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
+ {
++   GMEM_T("state init enter");
+    struct fd_gmem_stateobj *gmem =
+       rzalloc(screen->gmem_cache.ht, struct fd_gmem_stateobj);
+    pipe_reference_init(&gmem->reference, 1);
+@@ -554,10 +588,14 @@
+    fd_screen_lock(screen);
+ 
+    struct gmem_key *key = gmem_key_init(batch, assume_zs, no_scis_opt);
++   GMEM_T("lookup key %ux%u cbufs=%u cpp0=%u zcpp0=%u align=%u",
++          key->width, key->height, key->nr_cbufs, key->cbuf_cpp[0],
++          key->zsbuf_cpp[0], key->gmem_page_align);
+    uint32_t hash = gmem_key_hash(key);
+ 
+    struct hash_entry *entry =
+       _mesa_hash_table_search_pre_hashed(cache->ht, hash, key);
++   GMEM_T("lookup hash=%#x hit=%d", hash, entry ? 1 : 0);
+    if (entry) {
+       ralloc_free(key);
+       goto found;
+@@ -582,6 +620,8 @@
+    list_add(&gmem->node, &cache->lru);
+ 
+    fd_screen_unlock(screen);
++
++   GMEM_T("lookup done gmem=%p", (void *)gmem);
+ 
+    return gmem;
+ }
+@@ -810,8 +850,10 @@
+ {
+    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
+    struct fd_screen *screen = batch->ctx->screen;
++   GMEM_T("est enter zsbuf=%d", (int)!!pfb->zsbuf);
+    struct fd_gmem_stateobj *gmem = lookup_gmem_state(batch, !!pfb->zsbuf, true);
+    unsigned nbins = gmem->maxpw * gmem->maxph;
++   GMEM_T("est done nbins=%u maxpw=%u maxph=%u", nbins, gmem->maxpw, gmem->maxph);
+ 
+    fd_screen_lock(screen);
+    fd_gmem_reference(&gmem, NULL);
