@@ -2,7 +2,16 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-11-09 (latest): v88 (0135) NAMES THE HANGING WORK ITEM - IT IS THE FIRST `BG_WORK_DRAW`, INSIDE `rwa_render_draw` AFTER `fb_bind`; 0136 ADDS STEP TRACES <<<
+### >>> UPDATE 2026-11-09 (latest): v89 (0136) NAMES THE HANG - IT IS `pipe->draw_vbo`; EVERY BIND BEFORE IT SUCCEEDS, NO KERNEL SUBMIT FOLLOWS <<<
+- **v89 log** (`logs/v89.txt`, 8277 lines, ring 4 MiB / 364,179 B, flush #16; raw dump `out\sweetlog-v89\v89.bin`):
+  - `commit: 4 recorded commands` (8007) -> `work 0 kind 7` (8009) -> `work 1 kind 3` (8014) -> `air: render_draw enter render=0x12b024200 prim=3 verts=6 idx=1` (8015) -> `fb_bound` (8016).
+  - The whole step ladder lands: `step 2` (8017), `4,5,6,7,8,9,10,11,12,13` (8018-8027) - so viewport, scissor, blend, dsa, stencil ref, raster, vs, fs, vertex elements and vertex buffers all returned.
+  - `bind_stage enter stage=4 resources=1` (8028) -> `done stage=4 views=0 samplers=0 ssbo=0 images=0` (8031) -> `step 14` (8032) -> `bind_stage enter stage=0 resources=1` (8033) -> `done stage=0` (8036) -> `step 15` (8037) -> **`step 18` (8038) -> silence**.
+  - No `step 19`, no `air: render_draw drew`, no `work 1 draw rc`, no `commit work done`, and still **zero `swd: submit`**. So the hang is inside `pipe->draw_vbo` (the freedreno vbo submission), on the CPU side, before any kernel ioctl.
+  - The clear path stays clean (`work 0 clear rc 0`), and both `bind_stage` calls return with exactly one resource each - so the AIR shader/UBO binding is no longer a suspect.
+- **What is left**: Freedreno's own `fd6_draw_vbo` - `ir3` variant selection/compilation, `fd6_emit` cmd-stream build, `fd_batch` growth, or the `fdl6_layout`-adjacent index translate the v88 SMP frames already pointed at. **Next**: 0137 instruments `fd6_draw_vbo` (entry, variant lookup, emit begin/end, batch reference) so the next log splits compile from emit from submit.
+
+### >>> UPDATE 2026-11-09 (superseded): v88 (0135) NAMES THE HANGING WORK ITEM - IT IS THE FIRST `BG_WORK_DRAW`, INSIDE `rwa_render_draw` AFTER `fb_bind`; 0136 ADDS STEP TRACES <<<
 - **v88 identity**: kernel xnu run `42541149244` (0135 applied on top of v88 `653c7dd`), metal bundle `42501964279`; shim built locally with `python ios-sweet\tools\gpu-build.py 42541149244 v88-shim`, image `D:\hackios\out\v88-shim\shim\out\shim-boot.img` (27,815,936 B); payload contains `work %lu kind %d`, `commit work done`, `air: render_clear enter`, `air: render_draw enter`. Booted with `fastboot boot` at 08:46; same black screen, touch/volume alive.
 - **v88 log** (`out\sweetlog-v88\v88.txt`, 8301 lines, ring 4 MiB / 357,496 B, flush #34):
   - `commit: 4 recorded commands` (8010) -> `work 0 kind 7` (8012) -> `air: render_clear enter` (8013) -> `work 0 clear rc 0` (8015) -> `work 1 kind 3` (8017) -> `air: render_draw enter render=0x102025800 prim=3 verts=6 idx=1` (8018) -> `air: render_draw fb_bound` (8019) -> **silence**.
