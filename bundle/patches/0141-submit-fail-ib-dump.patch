@@ -1,0 +1,161 @@
+--- bergamota/gpu/freedreno-sweet/sweet_drm.c
++++ bergamota/gpu/freedreno-sweet/sweet_drm.c
+@@ -808,6 +808,100 @@ EXPORT int drmSyncobjFDToHandle(int fd, int obj_fd, uint32_t *handle) { (void)fd
+ EXPORT int drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd) { (void)fd; (void)handle; (void)sync_file_fd; return sobj_err(ENOSYS); }
+ EXPORT int drmSyncobjImportSyncFile(int fd, uint32_t handle, int sync_file_fd) { (void)fd; (void)handle; (void)sync_file_fd; return sobj_err(ENOSYS); }
+ 
++/*
++ * 0141: a submit that times out (the kernel's CP completion fence never landed) wedges the GPU for good: every later
++ * submit times out the same way, so the command stream of the BO at that moment is the only evidence of what the CP
++ * choked on. When a single-command submit fails, read that stream back through the mapping Mesa already has (or map
++ * it here) and print it, together with the dwords that differ from the last stream that completed. 4 dumps.
++ */
++#define SWD_IB_WORDS   128u     /* 512 bytes: the per-frame streams seen so far are 68 dwords */
++#define SWD_IB_DUMPS   4
++
++static int g_ib_dumps;
++static struct {
++	uint32_t handle, offset, n;
++	uint32_t w[SWD_IB_WORDS];
++} g_ib_last;
++
++static const uint8_t *
++swd_bo_view(uint32_t handle, size_t need, mach_vm_address_t *mapped)
++{
++	pthread_mutex_lock(&g_lock);
++	for (unsigned i = 0; i < g_nmaps; i++) {
++		if (g_maps[i].handle == handle && g_maps[i].len >= need) {
++			const uint8_t *p = (const uint8_t *)g_maps[i].addr;
++			pthread_mutex_unlock(&g_lock);
++			*mapped = 0;
++			return p;
++		}
++	}
++	pthread_mutex_unlock(&g_lock);
++	mach_vm_address_t a = 0;
++	mach_vm_size_t s = (mach_vm_size_t)((need + 0xfffu) & ~(size_t)0xfffu);
++	if (!connect_once() ||
++	    IOConnectMapMemory64(g_conn, handle, mach_task_self(), &a, &s,
++	    kIOMapAnywhere | kIOMapWriteCombineCache) != KERN_SUCCESS) {
++		return NULL;
++	}
++	*mapped = a;
++	return (const uint8_t *)(uintptr_t)a;
++}
++
++static void
++swd_bo_view_done(uint32_t handle, mach_vm_address_t mapped)
++{
++	if (mapped) {
++		IOConnectUnmapMemory64(g_conn, handle, mach_task_self(), mapped);
++	}
++}
++
++/* The first MSM_SUBMIT_CMD_BUF of a one-command submit, when it fits the snapshot. */
++static int
++swd_ib_pick(const struct sweet_msm_gem_submit *req, uint32_t *handle, uint32_t *offset,
++    uint32_t *nwords, uint32_t *nrelocs)
++{
++	const struct sweet_msm_gem_submit_cmd *cmds = (const void *)(uintptr_t)req->cmds;
++	const struct sweet_msm_gem_submit_bo *bos = (const void *)(uintptr_t)req->bos;
++
++	if (req->nr_cmds != 1 || req->nr_bos == 0 || req->cmds == 0 || req->bos == 0) {
++		return 0;
++	}
++	if (cmds[0].type != 1 /* MSM_SUBMIT_CMD_BUF */ || cmds[0].submit_idx >= req->nr_bos ||
++	    cmds[0].size == 0 || cmds[0].size > SWD_IB_WORDS * 4) {
++		return 0;
++	}
++	*handle = bos[cmds[0].submit_idx].handle;
++	*offset = cmds[0].submit_offset;
++	*nwords = cmds[0].size / 4;
++	*nrelocs = cmds[0].nr_relocs;
++	return 1;
++}
++
++static uint64_t
++swd_iova(uint32_t handle)
++{
++	struct sweet_msm_gem_info gi;
++
++	memset(&gi, 0, sizeof(gi));
++	gi.handle = handle;
++	gi.info = SWEET_MSM_INFO_GET_IOVA;
++	return sweet_call(SWEET_GPU_SEL_GEM_INFO, &gi, sizeof(gi)) == 0 ? gi.value : 0;
++}
++
++static void
++swd_ib_print(const char *tag, const uint32_t *w, uint32_t n)
++{
++	char line[160];
++
++	for (uint32_t i = 0; i < n; i += 8) {
++		int p = snprintf(line, sizeof(line), "swd: %s[%02u]", tag, i);
++		for (uint32_t j = i; j < n && j < i + 8; j++) {
++			p += snprintf(line + p, sizeof(line) - (size_t)p, " %08x", w[j]);
++		}
++		fprintf(stderr, "%s\n", line);
++	}
++}
++
+ /*
+  * GEM_SUBMIT: the kernel takes no syncobjs (and at least one command), so they are taken off here. In syncobjs must already be
+  * signaled or pending (the ring is in order); out syncobjs become pending on the submit's fence. A submit with no command (Turnip
+@@ -878,8 +972,57 @@ sweet_submit(void *data, unsigned long size)
+ 		r = sweet_call(SWEET_GPU_SEL_GEM_SUBMIT, &k, sizeof(k));
+ 	}
+ 	if (r) {
++		if (g_ib_dumps < SWD_IB_DUMPS) {
++			uint32_t h = 0, off = 0, nw = 0, nrel = 0;
++
++			g_ib_dumps++;
++			fprintf(stderr, "swd: ib fail r=%d n=%d nr_cmds=%u nr_bos=%u fence=%u\n",
++			    r, g_ib_dumps, k.nr_cmds, k.nr_bos, k.fence);
++			if (swd_ib_pick(&k, &h, &off, &nw, &nrel)) {
++				mach_vm_address_t mapped = 0;
++				const uint8_t *b = swd_bo_view(h, (size_t)off + (size_t)nw * 4u, &mapped);
++				fprintf(stderr, "swd: ib fail h=%u off=%u words=%u relocs=%u iova=%#llx view=%p\n",
++				    h, off, nw, nrel, (unsigned long long)swd_iova(h), b);
++				if (b != NULL) {
++					const uint32_t *w = (const uint32_t *)(b + off);
++					unsigned shown = 0;
++
++					swd_ib_print("ib", w, nw);
++					if (g_ib_last.n != 0) {
++						fprintf(stderr, "swd: ib last h=%u off=%u words=%u\n",
++						    g_ib_last.handle, g_ib_last.offset, g_ib_last.n);
++						for (uint32_t i = 0; i < nw && i < g_ib_last.n && shown < 16; i++) {
++							if (g_ib_last.w[i] != w[i]) {
++								fprintf(stderr, "swd: ib diff [%02u] %08x > %08x\n",
++								    i, g_ib_last.w[i], w[i]);
++								shown++;
++							}
++						}
++					}
++				}
++				swd_bo_view_done(h, mapped);
++			}
++		}
+ 		return r;
+ 	}
++	if (k.nr_cmds != 0 && g_ib_dumps == 0) {
++		uint32_t h = 0, off = 0, nw = 0, nrel = 0;
++
++		if (swd_ib_pick(&k, &h, &off, &nw, &nrel) && nw <= SWD_IB_WORDS) {
++			mach_vm_address_t mapped = 0;
++			const uint8_t *b = swd_bo_view(h, (size_t)off + (size_t)nw * 4u, &mapped);
++
++			if (b != NULL) {
++				const uint32_t *w = (const uint32_t *)(b + off);
++
++				g_ib_last.handle = h;
++				g_ib_last.offset = off;
++				g_ib_last.n = nw;
++				memcpy(g_ib_last.w, w, (size_t)nw * 4u);
++			}
++			swd_bo_view_done(h, mapped);
++		}
++	}
+ 	req->fence = k.fence;
+ 	req->fence_fd = k.fence_fd;
+ 	if (nout) {

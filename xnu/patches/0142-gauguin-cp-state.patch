@@ -1,0 +1,55 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 1b747ca..cea494c 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3161,6 +3161,29 @@ gauguin_cp_parameter(uint32_t param, uint64_t * value)
+ }
+ 
+ static uint32_t gg_next_fence = 0x06000001u;
++static int gg_state_log;
++static int gg_hung_log;
++
++/*
++ * 0142: the CP stops retiring fences after v96's first frames (rptr==wptr,
++ * both IBs empty, no protect/fault interrupt), so every later submit times
++ * out. RBBM/CP queue state right after a completion and right after a
++ * timeout tells a dead CP (SQE/ROQ stuck, crash dump set, RBBM_STATUS busy)
++ * apart from a lost completion write.
++ */
++static void
++gg_cp_state(const char *tag, uint32_t fence)
++{
++	printf("GAUGUIN CP: submit state %s fence=%#x rbbm=%#x status1=%#x sqe=%#x"
++	    " roq=%#x avail=%#x crash=%#x int0=%#x\n", tag, fence,
++	    gg_rd(gg.gpu, GR(A6XX_RBBM_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
++	    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
++	    gg_rd(gg.gpu, GR(CP_CRASH_DUMP_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(RBBM_INT_0_STATUS_DW)));
++}
+ 
+ /*
+  * 0124: submit real command buffers. The previous stub only advanced WPTR;
+@@ -3244,10 +3267,20 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 
+ 	for (i = 0; i < 10000; i++) {
+ 		if (gauguin_cp_done(fence)) {
++			/* Two early baselines, then the window right before v96's hang. */
++			if (gg_state_log < 2 ||
++			    (fence >= 0x060000d0u && fence <= 0x06000110u)) {
++				gg_state_log++;
++				gg_cp_state("OK", fence);
++			}
+ 			return fence;
+ 		}
+ 		delay(1);
+ 	}
++	if (gg_hung_log < 3) {
++		gg_hung_log++;
++		gg_cp_state("HUNG", fence);
++	}
+ 	printf("GAUGUIN CP: submit fence=%#x STUCK (rptr=%u wptr=%u)"
+ 	    " ib1=%#x/%#x ib2=%#x/%#x protect=%#x fault=%#x int=%#x\n",
+ 	    fence, gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
