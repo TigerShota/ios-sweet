@@ -1,0 +1,33 @@
+--- chlorophyll/src/bgmtl.m
++++ chlorophyll/src/bgmtl.m
+@@ -1226,6 +1226,30 @@
+             memset((uint8_t *)[(BGMTLBuffer *)w->dst contents] + w->dst_off, w->fill, w->size);
+       }
+    }
++   // 0140: paint the drawable that will be presented, after the frame's draws and before the flush that submits them. Orange on
++   // the panel means the GPU's writes to the presented IOSurface do land, and the black frame is a sampling/upload problem; still
++   // black means the writes never reach that surface (its import, address or layout).
++   static int paint_n;
++   if (paint_n < 120) {
++      paint_n++;
++      for (NSArray *p in _presents) {
++         id dr = p[0];
++         BGMTLTexture *dt = [dr respondsToSelector:@selector(texture)] ? (BGMTLTexture *)[dr texture] : nil;
++         if (![dt isKindOfClass:[BGMTLTexture class]]) continue;
++         struct rwa_texture *colors[1] = { [dt rwaTexture] };
++         struct rwa_clear cl;
++         memset(&cl, 0, sizeof(cl));
++         cl.color = colors;
++         cl.color_count = 1;
++         cl.color_mask = 0xf;
++         cl.color_value[0][0] = 1.0f;
++         cl.color_value[0][1] = 0.5f;
++         cl.color_value[0][2] = 0.0f;
++         cl.color_value[0][3] = 1.0f;
++         int rc = rwa_render_clear([dev rwa], &cl, why, sizeof(why));
++         BG_LOG("  0140 paint %p %ux%u rc %d %s\n", dt, (unsigned)[dt width], (unsigned)[dt height], rc, rc ? why : "");
++      }
++   }
+    // Asynchronous completion (Chlorophyll: CPU and GPU overlap, as Metal's own do): the work is submitted and its fence handed to
+    // a serial completion queue, which waits for it and then runs what follows a completed command buffer (surface sync, presents,
+    // completed handlers), in submission order. BGMTL_TRACE keeps it synchronous: the trace reads attachments back through the

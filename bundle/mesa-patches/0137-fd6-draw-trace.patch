@@ -12,7 +12,7 @@ diff --git a/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc b/src/gallium/driver
 + * silence names the stage that hangs. */
 +static int fd6_draw_trace_n;
 +#define FD6_DT(fmt, ...) do { \
-+   if (fd6_draw_trace_n++ < 400) \
++   if (fd6_draw_trace_n++ < 60) \
 +      fprintf(stderr, "fd6: " fmt "\n", ##__VA_ARGS__); \
 +} while (0)
  #include "fd6_zsa.h"
@@ -116,7 +116,7 @@ diff --git a/src/gallium/drivers/freedreno/a6xx/fd6_emit.cc b/src/gallium/driver
 +/* 0137: bounded trace of the 3D state groups emitted for the first draws. */
 +static int fd6_emit_trace_n;
 +#define FD6_ET(fmt, ...) do { \
-+   if (fd6_emit_trace_n++ < 1200) \
++   if (fd6_emit_trace_n++ < 120) \
 +      fprintf(stderr, "fd6: " fmt "\n", ##__VA_ARGS__); \
 +} while (0)
  #include "fd6_context.h"
