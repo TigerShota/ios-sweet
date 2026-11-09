@@ -1,0 +1,103 @@
+--- chlorophyll/src/bgmtl.m
++++ chlorophyll/src/bgmtl.m
+@@ -992,9 +992,24 @@
+    if (!block) return;
+    if (_status >= 3) block(self); else [_scheduled addObject:[[block copy] autorelease]];   // delivered when submitted (compositor: when finished)
+ }
+-- (void)presentDrawable:(id)drawable { if (drawable) [_presents addObject:@[ drawable, @0.0, @0.0 ]]; }
+-- (void)presentDrawable:(id)drawable atTime:(CFTimeInterval)t { if (drawable) [_presents addObject:@[ drawable, @(t), @0.0 ]]; }
+-- (void)presentDrawable:(id)drawable afterMinimumDuration:(CFTimeInterval)d { if (drawable) [_presents addObject:@[ drawable, @0.0, @(d) ]]; }
++- (void)presentDrawable:(id)drawable
++{
++   // 0143: whether CoreAnimation presents through this entry at all (it did not in v97: _presents stayed empty)
++   id tex = [drawable respondsToSelector:@selector(texture)] ? [drawable texture] : nil;
++   BG_LOG("presentDrawable %p tex %p s=%d\n", drawable, tex,
++          tex ? (int)IOSurfaceGetID((IOSurfaceRef)[(BGMTLTexture *)tex iosurface]) : -1);
++   if (drawable) [_presents addObject:@[ drawable, @0.0, @0.0 ]];
++}
++- (void)presentDrawable:(id)drawable atTime:(CFTimeInterval)t
++{
++   BG_LOG("presentDrawable %p at %.3f\n", drawable, (double)t);
++   if (drawable) [_presents addObject:@[ drawable, @(t), @0.0 ]];
++}
++- (void)presentDrawable:(id)drawable afterMinimumDuration:(CFTimeInterval)d
++{
++   BG_LOG("presentDrawable %p min %.3f\n", drawable, (double)d);
++   if (drawable) [_presents addObject:@[ drawable, @0.0, @(d) ]];
++}
+ - (void)addCompletedHandler:(void (^)(id))block
+ {
+    if (!block) return;
+@@ -1392,7 +1407,8 @@
+             [t getBytes:px bytesPerRow:4 fromRegion:MTLRegionMake2D(pts[k][0], pts[k][1], 1, 1) mipmapLevel:0];
+             n += snprintf(line + n, sizeof(line) - n, " (%u,%u,%u,%u)", px[0], px[1], px[2], px[3]);
+          }
+-         BG_LOG("  attachment %p %ux%u:%s\n", t, wd, ht, line);
++         BG_LOG("  attachment %p %ux%u s=%d:%s\n", t, wd, ht,
++                [t iosurface] ? (int)IOSurfaceGetID((IOSurfaceRef)[t iosurface]) : -1, line);
+          // small attachments in full, as raw BGRA files, when /private/var/tmp/bgmtl.dumpatt exists (blur chain debugging; the
+          // full-screen ones are skipped: reading 11 MB per pass back through this path rebooted the phone)
+          static int dump = -1;
+@@ -1471,14 +1487,17 @@
+ - (id)renderCommandEncoderWithDescriptor:(MTLRenderPassDescriptor *)d
+ {
+    id<MTLTexture> t = d.colorAttachments[0].texture;
+-   BG_TRACE("render pass: color0 %lux%lu fmt %lu load %lu store %lu\n", (unsigned long)t.width, (unsigned long)t.height,
+-            (unsigned long)t.pixelFormat, (unsigned long)d.colorAttachments[0].loadAction, (unsigned long)d.colorAttachments[0].storeAction);
++   BG_TRACE("render pass: color0 %lux%lu fmt %lu load %lu store %lu tex %p s=%d\n", (unsigned long)t.width, (unsigned long)t.height,
++            (unsigned long)t.pixelFormat, (unsigned long)d.colorAttachments[0].loadAction, (unsigned long)d.colorAttachments[0].storeAction,
++            t, t ? (int)IOSurfaceGetID((IOSurfaceRef)[(BGMTLTexture *)t iosurface]) : -1);
+    if (bg_trace()) {
+       for (unsigned i = 1; i < 8; i++)
+          if (d.colorAttachments[i].texture)
+-            BG_LOG("  color%u %lux%lu fmt %lu load %lu store %lu\n", i, (unsigned long)d.colorAttachments[i].texture.width,
++            BG_LOG("  color%u %lux%lu fmt %lu load %lu store %lu tex %p s=%d\n", i, (unsigned long)d.colorAttachments[i].texture.width,
+                    (unsigned long)d.colorAttachments[i].texture.height, (unsigned long)d.colorAttachments[i].texture.pixelFormat,
+-                   (unsigned long)d.colorAttachments[i].loadAction, (unsigned long)d.colorAttachments[i].storeAction);
++                   (unsigned long)d.colorAttachments[i].loadAction, (unsigned long)d.colorAttachments[i].storeAction,
++                   d.colorAttachments[i].texture,
++                   (int)IOSurfaceGetID((IOSurfaceRef)[(BGMTLTexture *)d.colorAttachments[i].texture iosurface]));
+       if (d.depthAttachment.texture) BG_LOG("  depth fmt %lu load %lu\n", (unsigned long)d.depthAttachment.texture.pixelFormat, (unsigned long)d.depthAttachment.loadAction);
+       if (d.stencilAttachment.texture) BG_LOG("  stencil fmt %lu load %lu clear %u\n", (unsigned long)d.stencilAttachment.texture.pixelFormat,
+                                              (unsigned long)d.stencilAttachment.loadAction, d.stencilAttachment.clearStencil);
+@@ -1639,6 +1658,8 @@
+    BG_TRACE("texture %lux%lu fmt %lu type %lu usage %lu storage %lu %s\n", (unsigned long)d.width, (unsigned long)d.height,
+             (unsigned long)d.pixelFormat, (unsigned long)d.textureType, (unsigned long)d.usage, (unsigned long)d.storageMode,
+             surface ? "iosurface" : "own memory");
++   BG_TRACE("  texture object %p surface %p id %d\n", self, surface,
++            surface ? (int)IOSurfaceGetID((IOSurfaceRef)surface) : -1);
+    self = [super init];
+    if (!self) return nil;
+    if (![device rwa] || !d) { [self release]; return nil; }
+@@ -1922,7 +1943,13 @@
+ }
+ - (void)dealloc { for (unsigned i = 0; i < 8; i++) [_color[i] release]; [_scratch release]; [_depth release]; [_depth_state release]; [super dealloc]; }
+ - (id)device { return [_cb device]; }
+-- (void)setRenderPipelineState:(id)s { _pipeline = s; BG_TRACE("setPipeline %s\n", ((BGMTLRenderPipeline *)s)->_names); }
++- (void)setRenderPipelineState:(id)s
++{
++   _pipeline = s;
++   BG_TRACE("setPipeline %p %s vb=%u fb=%u ft=%u ndecls=%u\n", s, ((BGMTLRenderPipeline *)s)->_names,
++            ((BGMTLRenderPipeline *)s)->_info.vertex_buffers, ((BGMTLRenderPipeline *)s)->_info.fragment_buffers,
++            ((BGMTLRenderPipeline *)s)->_info.fragment_textures, ((BGMTLRenderPipeline *)s)->_ndecls);
++}
+ - (void)setVertexBuffer:(id)b offset:(NSUInteger)o atIndex:(NSUInteger)i
+ { BG_TRACE("setVertexBuffer %p offset %lu index %lu\n", b, (unsigned long)o, (unsigned long)i); if (i < BG_MAX_BINDINGS) { _vbuf[i] = b; _voff[i] = o; if (i + 1 > _vhigh) _vhigh = (unsigned)i + 1; } }
+ - (void)setFragmentBuffer:(id)b offset:(NSUInteger)o atIndex:(NSUInteger)i
+@@ -2022,6 +2049,16 @@
+    if (_have_range) { w->have_range = YES; w->depth_range[0] = _range[0]; w->depth_range[1] = _range[1]; }
+    w->primitive = prim; w->vstart = start; w->vcount_verts = count; w->instances = inst; w->base_instance = bi;
+    w->index_buffer = [ib retain]; w->index_type = it; w->index_offset = io; w->base_vertex = bv;
++   {   // 0143: which pipeline object draws, how many views/samplers it was handed, and which surface it targets
++      static unsigned dbg;
++      if (dbg < 240) {
++         id tgt = _ncolor ? _color[0] : nil;
++         dbg++;
++         BG_LOG("draw bind: pipeline %p ft=%u ndecls=%u views=%u samplers=%u target %p s=%d\n", _pipeline,
++                _pipeline->_info.fragment_textures, _pipeline->_ndecls, _thigh, _shigh, tgt,
++                tgt ? (int)IOSurfaceGetID((IOSurfaceRef)[(BGMTLTexture *)tgt iosurface]) : -1);
++      }
++   }
+    [_cb bgRecord:w];
+ }
+ - (void)drawPrimitives:(NSUInteger)p vertexStart:(NSUInteger)s vertexCount:(NSUInteger)c

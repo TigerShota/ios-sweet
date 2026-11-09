@@ -1,0 +1,35 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -390,11 +390,31 @@
+ 		    s->memory == NULL || last > s->memory->getLength()) {
+ 			src = 0;
+ 		}
++		static unsigned probe_n;
++		int probe = probe_n < 24;
++		if (probe) {
++			probe_n++;
++			IOLog("SWEET FB: present layer %u id %u src 0x%llx %dx%d at %d,%d from %d,%d bpe %u bpr %u ew %u eh %u off %u len %llu\n",
++			    layer, id, (unsigned long long)src, w, h, dx, dy, sx, sy, bpe,
++			    s->bytesPerRow, s->elementWidth, s->elementHeight, s->offset,
++			    s->memory ? (unsigned long long)s->memory->getLength() : 0ULL);
++			if (src != 0 && w > 0 && h > 0 && s->bytesPerRow >= (uint32_t)w * 4) {
++				const uint32_t *p = (const uint32_t *)(src + s->offset);
++				uint32_t st = s->bytesPerRow / 4;
++				IOLog("SWEET FB: src px c 0x%08x tl 0x%08x br 0x%08x ml 0x%08x\n",
++				    p[(uint64_t)(sy + h / 2) * st + (sx + w / 2)], p[(uint64_t)sy * st + sx],
++				    p[(uint64_t)(sy + h - 1) * st + (sx + w - 1)], p[(uint64_t)(sy + h / 2) * st + sx]);
++			}
++		}
+ 		if (src != 0 && bpe == 4) {
+ 			for (int32_t y = 0; y < h; y++) {
+ 				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+ 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+ 				    (size_t)w * 4);
++			}
++			if (probe) {
++				const uint32_t *pp = (const uint32_t *)(fPixels + (uint64_t)(dy + h / 2) * fRowBytes);
++				IOLog("SWEET FB: panel px c 0x%08x\n", pp[dx + w / 2]);
+ 			}
+ 		}
+ 		s->release();
