@@ -1,0 +1,40 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3326,20 +3326,33 @@
+ 	ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
+ 	wp = gg_rd(gg.gpu, GR(CP_RB_WPTR_DW));
+ 	/*
+ 	 * 0148: after a fault the read pointer can be *ahead* of our write
+ 	 * pointer (v102: rptr=1918, wptr=1830) because the CP keeps prefetching
+ 	 * past the last packet we wrote. (wp - rp) then wraps to ~2^32 and looks
+-	 * small, so every later submit went into a ring the CP considered
+-	 * already consumed. Measure free space modulo the ring instead.
++	 * small, so every later submit went into a ring the CP considered
++	 * already consumed.
++	 * 0149: but the expression 0148 used, (rp + ring_dw - wp) mod ring_dw,
++	 * is how many dwords the CP still has to read, i.e. the *used* space.
++	 * On an empty ring (rptr == wptr - the state the CP is in before the
++	 * first userspace submit) that is 0, so the check never succeeded, the
++	 * loop burned 4000 x 10 us and the function returned 0 with nothing
++	 * printed. That is v104 exactly: "submit cp done fence=0" and no STUCK
++	 * or reject line, while the kernel self-check submits (which ran while
++	 * the panel blit was still outstanding, so rp != wp) all retired.
++	 * Free space is ring_dw - used, modulo the ring, which is ring_dw for
++	 * an empty ring and shrinks as the CP falls behind.
+ 	 */
+ 	for (tries = 0; tries < 4000; tries++) {
+ 		rp = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
+-		if ((uint32_t)((rp + ring_dw - wp) % ring_dw) >= need) {
++		if (ring_dw - (uint32_t)((wp - rp) % ring_dw) >= need) {
+ 			break;
+ 		}
+ 		delay(10);
+ 	}
+ 	if (tries == 4000) {
++		printf("GAUGUIN CP: submit no ring space need=%u rptr=%u wptr=%u\n",
++		    need, gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++		    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++		(void)sweet_log_flush_now();
+ 		return 0;
+ 	}
