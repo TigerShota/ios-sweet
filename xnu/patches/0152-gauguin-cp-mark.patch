@@ -1,0 +1,190 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3482,6 +3482,84 @@
+ }
+ 
+ /*
++ * 0152: instrumented replay. v107 proved every packet of the IB the CP dies in
++ * (0x5045e000, 72 dwords) decodes cleanly, yet CP_INTERRUPT_STATUS reports
++ * CP_HW_FAULT_ERROR with CP_HW_FAULT bit 18 and the ME never retires another
++ * fence. Packet encoding is therefore not the question any more - which packet
++ * kills the ME is. When gauguinmark=1 each command buffer is copied into the
++ * CP scratch block with a CP_EVENT_WRITE stamp after every packet; the last
++ * stamp the GPU wrote names the next packet, i.e. the one that faulted.
++ * Layout inside CPMEM_SCRATCH (all CP-addressable): stamp word at 0x800,
++ * one 2 KiB copy region per IB from 0x1000.
++ */
++#define GG_MARK_BASE   0x800u
++#define GG_MARK_IB     0x1000u
++#define GG_MARK_STEP   0x800u	/* bytes per IB copy */
++#define GG_MARK_MAX    480u	/* dwords per annotated copy */
++#define GG_MARK_IBS    6u	/* 0x1000 + 6 * 0x800 == end of scratch */
++
++static int gg_mark_opt = -1;	/* -1 unparsed, 0 off, 1 annotate */
++
++/*
++ * Copy one command buffer, inserting a stamp packet after every complete PM4
++ * packet. Returns the number of dwords written, 0 when the buffer cannot be
++ * read through the GEM window or does not fit.
++ */
++static uint32_t
++gg_ib_annotate(uint32_t index, uint64_t iova, uint32_t dwords,
++    volatile uint32_t *out, uint32_t max)
++{
++	vm_offset_t m;
++	uint32_t room, o = 0, n = 0;
++
++	/*
++	 * Never hand the CP a partial copy: a buffer that is bigger than the slot
++	 * or runs off its page is submitted untouched instead.
++	 */
++	if (dwords == 0u || dwords > GG_MARK_MAX) {
++		return 0;
++	}
++	room = gg_ib_room(iova, dwords);
++	if (room != dwords) {
++		return 0;
++	}
++	m = gg_ib_map(iova, dwords);
++	if (m == 0) {
++		return 0;
++	}
++	while (o < dwords) {
++		uint32_t h = *(volatile uint32_t *)(m + 4u * o);
++		uint32_t type = h >> 28;
++		uint32_t plen, len, k;
++
++		if (type == 7u) {
++			plen = h & 0x3fffu;
++		} else if (type == 4u) {
++			plen = h & 0x7fu;
++		} else if (type == 0u) {
++			plen = ((h >> 16) & 0x3fffu) + 1u;
++		} else {
++			return 0;
++		}
++		len = 1u + plen;
++		if (o + len > dwords || n + len + 5u > max) {
++			return 0;
++		}
++		for (k = 0; k < len; ++k) {
++			out[n++] = *(volatile uint32_t *)(m + 4u * (o + k));
++		}
++		out[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++		out[n++] = 0x04u;
++		out[n++] = CP_VA_SCRATCH + GG_MARK_BASE;
++		out[n++] = 0u;
++		out[n++] = 0x4d000000u | ((index & 0x3fu) << 16) |
++		    ((o + len) & 0xffffu);
++		o += len;
++	}
++	return n;
++}
++
++/*
+  * 0124: submit real command buffers. The previous stub only advanced WPTR;
+  * the commands themselves were never put in the ring, so nothing the
+  * userspace stack submitted could ever execute. Each command buffer is now
+@@ -3495,6 +3573,10 @@
+ 	uint32_t ring_dw = CPMEM_RING / 4u;
+ 	volatile uint32_t *ring;
+ 	uint32_t need, wp, rp, fence, i, tries, start;
++	uint64_t maddr[GG_MARK_IBS];
++	uint32_t mwords[GG_MARK_IBS];
++	const uint64_t *ai = addresses;
++	const uint32_t *wi = words;
+ 	static int bad_ib_log;
+ 	static int hang_dump_log;
+ 
+@@ -3521,6 +3603,46 @@
+ 				    (unsigned long long)addresses[i], words[i]);
+ 			}
+ 			return 0;
++		}
++	}
++
++	/*
++	 * 0152: with gauguinmark=1 submit annotated copies so the last stamp the
++	 * GPU writes names the packet that faulted. Any buffer that cannot be
++	 * annotated falls back to the untouched submission, so this is safe to
++	 * leave enabled.
++	 */
++	if (gg_mark_opt < 0) {
++		int mark = 0;
++
++		gg_mark_opt = PE_parse_boot_argn("gauguinmark", &mark,
++		    sizeof(mark)) && mark != 0;
++	}
++	if (gg_mark_opt && count <= GG_MARK_IBS) {
++		bool annotated = true;
++
++		for (i = 0; i < count && annotated; i++) {
++			uint32_t n = gg_ib_annotate(i, addresses[i], words[i],
++			    (volatile uint32_t *)(cpmem + CPMEM_SCRATCH +
++			    GG_MARK_IB + i * GG_MARK_STEP), GG_MARK_MAX);
++
++			if (n == 0u) {
++				annotated = false;
++			} else {
++				maddr[i] = CP_VA_SCRATCH + GG_MARK_IB +
++				    i * GG_MARK_STEP;
++				mwords[i] = n;
++			}
++		}
++		if (annotated) {
++			ai = maddr;
++			wi = mwords;
++			printf("GAUGUIN CP: mark count=%u", count);
++			for (i = 0; i < count; i++) {
++				printf(" %u->%u", words[i], mwords[i]);
++			}
++			printf("\n");
++			(void)sweet_log_flush_now();
+ 		}
+ 	}
+ 
+@@ -3575,6 +3697,10 @@
+ 	fence = ++gg_next_fence;
+ 	start = wp;
+ 	*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) = 0u;
++	if (gg_mark_opt && ai == maddr) {
++		*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH +
++		    GG_MARK_BASE) = 0u;
++	}
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+ 
+ 	/*
+@@ -3611,11 +3737,11 @@
+ 		 */
+ 		ring[wp % ring_dw] = gg_pkt7(CP_INDIRECT_BUFFER, 3u);
+ 		wp++;
+-		ring[wp % ring_dw] = (uint32_t)addresses[i];
++		ring[wp % ring_dw] = (uint32_t)ai[i];
+ 		wp++;
+-		ring[wp % ring_dw] = (uint32_t)(addresses[i] >> 32);
++		ring[wp % ring_dw] = (uint32_t)(ai[i] >> 32);
+ 		wp++;
+-		ring[wp % ring_dw] = words[i];
++		ring[wp % ring_dw] = wi[i];
+ 		wp++;
+ 	}
+ 	ring[wp % ring_dw] = gg_pkt4(CP_SCRATCH_REG2_DW);
+@@ -3664,6 +3790,17 @@
+ 	    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++	/*
++	 * 0152: the last stamp the ME wrote names the packet after the last one it
++	 * finished, i.e. the packet it died in (0 = it never finished the first).
++	 */
++	if (gg_mark_opt && ai == maddr) {
++		uint32_t m = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH +
++		    GG_MARK_BASE);
++
++		printf("GAUGUIN CP: mark last=%#x ib=%u next=%u\n", m,
++		    (m >> 16) & 0x3fu, m & 0xffffu);
++	}
+ 	/* 0147: RBBM_STATUS bit 0 is CP idle; anything else set means the
+ 	 * blocks are still busy, i.e. the previous submission never drained.
+ 	 * 0148: the index is kgsl's 0x210, not 0x840 -- v102 printed a register
