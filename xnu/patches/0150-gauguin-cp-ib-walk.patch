@@ -1,0 +1,158 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3288,6 +3288,138 @@ gg_ib_dwords(const char *tag, uint64_t iova, uint32_t dwords, uint32_t at)
+ 	printf("\n");
+ }
+ 
++static uint32_t
++gg_bits(uint32_t v)
++{
++	uint32_t c = 0u;
++
++	while (v != 0u) {
++		c += v & 1u;
++		v >>= 1;
++	}
++	return c;
++}
++
++/* Map a page-aligned GPU IB back to the CPU through its GEM entry. */
++static vm_offset_t
++gg_ib_map(uint64_t iova, uint32_t dwords)
++{
++	uint64_t pa;
++	vm_offset_t base;
++
++	if (dwords == 0u ||
++	    (iova & 0xfffu) + 4u * (uint64_t)dwords > GEM_PAGE) {
++		return 0;
++	}
++	pa = gg_gem_pa(iova);
++	if (pa == 0u) {
++		printf("GAUGUIN CP: ib %#llx not in the GEM window\n",
++		    (unsigned long long)iova);
++		return 0;
++	}
++	base = ml_io_map((vm_offset_t)(pa & ~0xfffull), GEM_PAGE);
++	if (base == 0) {
++		return 0;
++	}
++	return base + (vm_offset_t)(iova & 0xfffu);
++}
++
++/*
++ * 0150: 0148 printed only the head of every IB and 12 dwords around the stop
++ * site, so the tail of the hung 72-dword IB (the CP says 24 dwords were still
++ * to run) and the buffer its CP_INDIRECT_BUFFER points into have never been
++ * seen. Dump the whole thing.
++ */
++static void
++gg_ib_all(const char *tag, uint64_t iova, uint32_t dwords)
++{
++	vm_offset_t m = gg_ib_map(iova, dwords);
++	uint32_t o, k;
++
++	if (m == 0 || dwords == 0u) {
++		return;
++	}
++	if (dwords > 256u) {
++		dwords = 256u;
++	}
++	printf("GAUGUIN CP: all %s ib %#llx/%u\n", tag,
++	    (unsigned long long)iova, dwords);
++	for (o = 0; o < dwords; o += 4u) {
++		printf("GAUGUIN CP: %s %u:", tag, o);
++		for (k = 0; k < 4u && o + k < dwords; k++) {
++			printf(" %#x", gg_rd(m, 4u * (o + k)));
++		}
++		printf("\n");
++	}
++}
++
++/*
++ * 0150: decode the IB the way the CP has to. A type-7 header carries two
++ * parity bits: bit 23 makes the popcount of opcode bits 22:16 odd, bit 15
++ * does the same for the 15-bit count. A header whose parity does not answer
++ * back is a CP_OPCODE_ERROR, and v105's timeout dump reports int=0x4, which is
++ * that error. Walking from offset 0 instead of trusting CP_IB1_REM_SIZE also
++ * settles the other possibility: if the walk reaches a different offset than
++ * the CP reports, the CP is reading different memory than we wrote.
++ */
++static void
++gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
++{
++	vm_offset_t m = gg_ib_map(iova, dwords);
++	uint32_t o, n;
++
++	if (m == 0 || dwords == 0u) {
++		return;
++	}
++	printf("GAUGUIN CP: walk %s ib %#llx/%u\n", tag,
++	    (unsigned long long)iova, dwords);
++	n = dwords < 96u ? dwords : 96u;
++	for (o = 0; o < n; ) {
++		uint32_t h = gg_rd(m, 4u * o);
++		uint32_t op, cnt;
++
++		if ((h >> 29) != 7u) {
++			/*
++			 * Type 4 is a register write: header, one dword of
++			 * value, plus one more per count in bits 17:16.
++			 */
++			if ((h >> 28) == 4u) {
++				printf("GAUGUIN CP: walk %s %u: type4 reg=%#x"
++				    " val=%#x\n", tag, o, (h >> 8) & 0x3ffffu,
++				    gg_rd(m, 4u * (o + 1)));
++				o += 2u + ((h >> 16) & 3u);
++				continue;
++			}
++			printf("GAUGUIN CP: walk %s BAD %u: %#x type %u\n",
++			    tag, o, h, h >> 28);
++			return;
++		}
++		op = (h >> 16) & 0x7fu;
++		cnt = h & 0x7fffu;
++		if (((gg_bits(op) & 1u) ^ ((h >> 23) & 1u)) == 0u ||
++		    ((gg_bits(cnt) & 1u) ^ ((h >> 15) & 1u)) == 0u) {
++			printf("GAUGUIN CP: walk %s BAD %u: %#x op=%#x cnt=%u\n",
++			    tag, o, h, op, cnt);
++			return;
++		}
++		printf("GAUGUIN CP: walk %s %u: op=%#x cnt=%u\n", tag, o, op,
++		    cnt);
++		/*
++		 * CP_INDIRECT_BUFFER_PFE / PFD: a nested buffer hides its own
++		 * mis-framed packet, so follow it one level.
++		 */
++		if ((op == 0x3fu || op == 0x37u) && cnt >= 3u) {
++			uint64_t sub = (uint64_t)gg_rd(m, 4u * (o + 1)) |
++			    ((uint64_t)gg_rd(m, 4u * (o + 2)) << 32);
++			uint32_t sn = gg_rd(m, 4u * (o + 3));
++
++			gg_ib_all("nested", sub, sn);
++			gg_ib_walk("nested", sub, sn);
++		}
++		o += 1u + cnt;
++	}
++}
++
+ /*
+  * 0124: submit real command buffers. The previous stub only advanced WPTR;
+  * the commands themselves were never put in the ring, so nothing the
+@@ -3509,6 +3641,15 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 				at = words[k] - rem;
+ 			}
+ 			gg_ib_dwords("hung", addresses[k], words[k], at);
++			/*
++			 * 0150: the IB the CP stopped in gets a full dump and a
++			 * framing walk, including whatever nested buffer it
++			 * points at.
++			 */
++			if (at != 0u) {
++				gg_ib_all("hung", addresses[k], words[k]);
++				gg_ib_walk("hung", addresses[k], words[k]);
++			}
+ 		}
+ 	}
+ 	(void)sweet_log_flush_now();
