@@ -1,0 +1,253 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1316,6 +1316,7 @@
+ static uint64_t cp_pa;
+ static vm_offset_t mark_mem;	/* 0154: annotation block, kernel VA */
+ static uint64_t mark_pa;
++static vm_offset_t mark_rd;	/* 0155: same block, uncached device view */
+ static vm_offset_t target;
+ static uint64_t target_pa;
+ /* 0123: the live panel buffer (see the CP_VA_PANEL constants). panel_rd is a
+@@ -1434,6 +1435,15 @@
+ 			bzero((void *)mkva, CPMEM_MARK_SIZE);
+ 			flush_dcache64((addr64_t)mark_pa, CPMEM_MARK_SIZE, TRUE);
+ 			mark_mem = mkva;
++			/*
++			 * 0155: mark_mem is WCOMB, so a CPU read after the ME
++			 * wrote a stamp can still hit a stale line ("mark last"
++			 * in v110's log contradicted CP_IB1_BASE). Read the
++			 * stamps back through a non-cached mapping of the same
++			 * physical block instead.
++			 */
++			mark_rd = ml_io_map((vm_offset_t)mark_pa,
++			    CPMEM_MARK_SIZE);
+ 			for (i = 0; i < CPMEM_MARK_SIZE / PAGE_SIZE; i++) {
+ 				cp_wr64(CPMEM_L3 + 8u *
+ 				    (((CP_VA_MARK >> 12) & 0x1ff) + i),
+@@ -3524,6 +3534,31 @@
+ 			gg_ib_all("nested", sub, sn);
+ 			gg_ib_walk("nested", sub, sn);
+ 		}
++		/*
++		 * 0155: op 0x55 is the packet the ME dies in. 0151 decoded it
++		 * as (addr_lo, addr_hi, size) but never printed the address, so
++		 * the three instances in the hung IB (0x5041e600/65615,
++		 * 0/0, 0/8 MiB) were indistinguishable in the log. Do not
++		 * recurse here - the size field is not a dword count for this
++		 * opcode, and a bad address would only produce noise.
++		 */
++		if (op == 0x55u && cnt >= 2u) {
++			uint64_t a55 = (uint64_t)gg_rd(m, 4u * (o + 1)) |
++			    ((uint64_t)gg_rd(m, 4u * (o + 2)) << 32);
++			uint32_t s55 = cnt >= 3u ? gg_rd(m, 4u * (o + 3)) : 0u;
++
++			printf("GAUGUIN CP: walk %s %u: op55 addr=%#llx size=%u\n",
++			    tag, o, (unsigned long long)a55, s55);
++			if (a55 >= GEM_VA_BASE && a55 < GEM_VA_BASE + GEM_VA_SIZE) {
++				gg_ib_all("op55", a55, 8u);
++			}
++		}
++		if (op == 0x6du) {
++			printf("GAUGUIN CP: walk %s %u: op6d %#x %#x %#x\n", tag,
++			    o, cnt >= 1u ? gg_rd(m, 4u * (o + 1)) : 0u,
++			    cnt >= 2u ? gg_rd(m, 4u * (o + 2)) : 0u,
++			    cnt >= 3u ? gg_rd(m, 4u * (o + 3)) : 0u);
++		}
+ 		o += 1u + cnt;
+ 	}
+ 	printf("GAUGUIN CP: walk %s end %u/%u\n", tag, o, n);
+@@ -3559,6 +3594,8 @@
+  * packet. Returns the number of dwords written, 0 when the buffer cannot be
+  * read through the GEM window or does not fit.
+  */
++static int gg_op55_log;
++
+ static uint32_t
+ gg_ib_annotate(uint32_t index, uint64_t iova, uint32_t dwords,
+     volatile uint32_t *out, uint32_t max, int *why)
+@@ -3591,7 +3628,7 @@
+ 	while (o < dwords) {
+ 		uint32_t h = *(volatile uint32_t *)(m + 4u * o);
+ 		uint32_t type = h >> 28;
+-		uint32_t plen, len, k;
++		uint32_t plen, len, k, h2;
+ 
+ 		if (type == 7u) {
+ 			plen = h & 0x3fffu;
+@@ -3612,12 +3649,45 @@
+ 			*why = 7;
+ 			return 0;
+ 		}
++		h2 = h;
++		/*
++		 * 0155: the IB that kills the ME carries three op 0x55 packets
++		 * laid out as (addr_lo, addr_hi, size_dwords). Two of them have
++		 * addr 0, and the CPU-side submission already rejects a zero
++		 * IB address because it makes the CP fetch from PA 0; after the
++		 * pre-clear in gauguin_cp_submit the hang dump still reports
++		 * cb1 fsr=0x400 far=0, i.e. a fresh translation fault at GPU VA
++		 * 0. gauguinmark=2 drops the packets that carry no usable
++		 * buffer (addr 0 or size 0), gauguinmark=3 drops all of them.
++		 * The header keeps its type-7 count so the payload is skipped,
++		 * not re-interpreted.
++		 */
++		if (type == 7u && (h >> 16 & 0x7fu) == 0x55u && plen >= 2u &&
++		    gg_mark_opt >= 2) {
++			uint32_t alo = *(volatile uint32_t *)(m + 4u * (o + 1u));
++			uint32_t ahi = *(volatile uint32_t *)(m + 4u * (o + 2u));
++			uint32_t sz = plen >= 3u ?
++			    *(volatile uint32_t *)(m + 4u * (o + 3u)) : 0u;
++
++			if (gg_mark_opt >= 3 || (alo == 0u && ahi == 0u) ||
++			    sz == 0u) {
++				h2 = (h & ~(0x7fu << 16) & ~(1u << 23)) |
++				    (0x10u << 16);
++				if (gg_op55_log < 12) {
++					gg_op55_log++;
++					printf("GAUGUIN CP: mark op55 ib=%u at=%u"
++					    " addr=%#x:%#x size=%u -> nop\n",
++					    index, o, ahi, alo, sz);
++				}
++			}
++		}
+ 		for (k = 0; k < len; ++k) {
+-			out[n++] = *(volatile uint32_t *)(m + 4u * (o + k));
++			out[n++] = k == 0u ? h2 :
++			    *(volatile uint32_t *)(m + 4u * (o + k));
+ 		}
+ 		out[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+ 		out[n++] = 0x04u;
+-		out[n++] = CP_VA_MARK + GG_MARK_BASE;
++		out[n++] = CP_VA_MARK + GG_MARK_BASE + 4u * index;
+ 		out[n++] = 0u;
+ 		out[n++] = 0x4d000000u | ((index & 0x3fu) << 16) |
+ 		    ((o + len) & 0xffffu);
+@@ -3635,8 +3705,8 @@
+ static uint32_t
+ gg_mark_origin(uint32_t index, uint32_t at)
+ {
+-	volatile uint32_t *p = (volatile uint32_t *)(mark_mem + GG_MARK_IB +
+-	    index * GG_MARK_STEP);
++	volatile uint32_t *p = (volatile uint32_t *)((mark_rd ? mark_rd :
++	    mark_mem) + GG_MARK_IB + index * GG_MARK_STEP);
+ 	uint32_t n = 0, o = 0;
+ 
+ 	while (n < at) {
+@@ -3723,14 +3793,14 @@
+ 	if (gg_mark_opt < 0) {
+ 		int mark = 0;
+ 
++		/*
++		 * 0155: keep the level. 0154 collapsed gauguinmark to 0/1, so
++		 * "drop the packets with no buffer" (2) and "drop every op 0x55"
++		 * (3) could not be selected from the boot-args.
++		 */
+ 		gg_mark_opt = PE_parse_boot_argn("gauguinmark", &mark,
+-		    sizeof(mark)) && mark != 0;
+-		/*
+-		 * 0154: name the build. v109's log matched 0152's behaviour
+-		 * (no "mark count" for the 5-IB submit and no "mark skip"), so
+-		 * the log alone cannot tell which instrumented source ran.
+-		 */
+-		printf("GAUGUIN CP: impl 0154 mark=%d markpa=%#llx window=%uK"
++		    sizeof(mark)) ? mark : 0;
++		printf("GAUGUIN CP: impl 0155 mark=%d markpa=%#llx window=%uK"
+ 		    " step=%u max=%u\n", gg_mark_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_STEP, GG_MARK_MAX);
+@@ -3756,6 +3826,11 @@
+ 			}
+ 		}
+ 		if (annotated) {
++			/*
++			 * 0155: the copies are written through a WCOMB mapping;
++			 * clean them to DRAM or the ME fetches stale lines.
++			 */
++			flush_dcache64((addr64_t)mark_pa, CPMEM_MARK_SIZE, TRUE);
+ 			ai = maddr;
+ 			wi = mwords;
+ 			printf("GAUGUIN CP: mark count=%u", count);
+@@ -3811,7 +3886,18 @@
+ 		if (s != 0) {
+ 			vm_offset_t cb = s + SMMU_CB(GG_CB1);
+ 
++			/*
++			 * 0155: print what is being cleared. 0154 cleared only
++			 * CB1 FSR and left GFSR alone; a global fault that
++			 * latches here would then be attributed to this submit.
++			 */
++			printf("GAUGUIN CP: pre submit cb1 fsr=%#x far=%#x"
++			    " fsynr0=%#x gfsr=%#x gfsynr0=%#x\n",
++			    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR),
++			    gg_rd(cb, SMMU_CB_FSYNR0), gg_rd(s, SMMU_GFSR),
++			    gg_rd(s, SMMU_GFSYNR0));
+ 			gg_wr(cb, SMMU_CB_FSR, gg_rd(cb, SMMU_CB_FSR));
++			gg_wr(s, SMMU_GFSR, gg_rd(s, SMMU_GFSR));
+ 		}
+ 	}
+ 
+@@ -3819,7 +3905,15 @@
+ 	start = wp;
+ 	*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) = 0u;
+ 	if (gg_mark_opt && ai == maddr) {
+-		*(volatile uint32_t *)(mark_mem + GG_MARK_BASE) = 0u;
++		/*
++		 * 0155: every copy stamps its own word, so one IB finishing a
++		 * packet can no longer overwrite the stop site of another.
++		 */
++		for (i = 0; i < count; i++) {
++			*(volatile uint32_t *)(mark_mem + GG_MARK_BASE +
++			    4u * i) = 0u;
++		}
++		flush_dcache64((addr64_t)mark_pa, CPMEM_MARK_SIZE, TRUE);
+ 	}
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+ 
+@@ -3915,11 +4009,22 @@
+ 	 * finished, i.e. the packet it died in (0 = it never finished the first).
+ 	 */
+ 	if (gg_mark_opt && ai == maddr) {
+-		uint32_t m = mark_mem ? *(volatile uint32_t *)(mark_mem +
+-		    GG_MARK_BASE) : 0u;
+-		uint32_t ib = (m >> 16) & 0x3fu, next = m & 0xffffu;
+-
+-		printf("GAUGUIN CP: mark last=%#x ib=%u next=%u\n", m, ib, next);
++		volatile uint32_t *rd = mark_rd ? (volatile uint32_t *)mark_rd :
++		    (volatile uint32_t *)mark_mem;
++		uint32_t m = 0u, ib = count, next = 0u;
++		uint32_t k;
++
++		for (k = 0; k < count; k++) {
++			uint32_t v = rd[GG_MARK_BASE / 4u + k];
++
++			printf("GAUGUIN CP: mark ib%u last=%#x next=%u\n", k, v,
++			    v & 0xffffu);
++			if (v != 0u && ib == count) {
++				m = v;
++				ib = (v >> 16) & 0x3fu;
++				next = v & 0xffffu;
++			}
++		}
+ 		/*
+ 		 * 0154: decode the packet the stamp points at (an offset in the
+ 		 * original IB), so the log names it instead of forcing a manual
+@@ -4012,8 +4117,16 @@
+ 		vm_offset_t s = gg_smmu_base();
+ 		if (s) {
+ 			vm_offset_t cb = s + SMMU_CB(GG_CB1);
+-			printf("GAUGUIN CP: submit smmu cb1 fsr=%#x far=%#x\n",
+-			    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR));
++			printf("GAUGUIN CP: submit smmu cb1 fsr=%#x far=%#x"
++			    " fsynr0=%#x ttbr0=%#llx tcr=%#x sctlr=%#x\n",
++			    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR),
++			    gg_rd(cb, SMMU_CB_FSYNR0),
++			    (unsigned long long)*(volatile uint64_t *)(cb +
++			    SMMU_CB_TTBR0), gg_rd(cb, SMMU_CB_TCR),
++			    gg_rd(cb, SMMU_CB_SCTLR));
++			printf("GAUGUIN CP: submit smmu gfsr=%#x gfsynr0=%#x"
++			    " gfsynr1=%#x\n", gg_rd(s, SMMU_GFSR),
++			    gg_rd(s, SMMU_GFSYNR0), gg_rd(s, SMMU_GFSYNR1));
+ 		}
+ 	}
+ 	{
