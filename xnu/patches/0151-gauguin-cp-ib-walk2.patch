@@ -1,0 +1,152 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3324,6 +3324,19 @@ gg_ib_map(uint64_t iova, uint32_t dwords)
+ 	return base + (vm_offset_t)(iova & 0xfffu);
+ }
+ 
++/*
++ * 0151: gg_ib_map() refuses a buffer that runs off the end of its page, which
++ * silently hid the 65615-dword buffer behind 0x50416600. Clip to the page
++ * instead so at least the first commands of any IB are visible.
++ */
++static uint32_t
++gg_ib_room(uint64_t iova, uint32_t dwords)
++{
++	uint32_t room = (uint32_t)((GEM_PAGE - (uint32_t)(iova & 0xfffu)) / 4u);
++
++	return dwords < room ? dwords : room;
++}
++
+ /*
+  * 0150: 0148 printed only the head of every IB and 12 dwords around the stop
+  * site, so the tail of the hung 72-dword IB (the CP says 24 dwords were still
+@@ -3333,10 +3346,15 @@ gg_ib_map(uint64_t iova, uint32_t dwords)
+ static void
+ gg_ib_all(const char *tag, uint64_t iova, uint32_t dwords)
+ {
+-	vm_offset_t m = gg_ib_map(iova, dwords);
++	vm_offset_t m;
+ 	uint32_t o, k;
+ 
+-	if (m == 0 || dwords == 0u) {
++	dwords = gg_ib_room(iova, dwords);
++	if (dwords == 0u) {
++		return;
++	}
++	m = gg_ib_map(iova, dwords);
++	if (m == 0) {
+ 		return;
+ 	}
+ 	if (dwords > 256u) {
+@@ -3365,23 +3383,36 @@ gg_ib_all(const char *tag, uint64_t iova, uint32_t dwords)
+ static void
+ gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
+ {
+-	vm_offset_t m = gg_ib_map(iova, dwords);
++	vm_offset_t m;
+ 	uint32_t o, n;
+ 
+-	if (m == 0 || dwords == 0u) {
++	dwords = gg_ib_room(iova, dwords);
++	if (dwords == 0u) {
++		return;
++	}
++	m = gg_ib_map(iova, dwords);
++	if (m == 0) {
+ 		return;
+ 	}
+ 	printf("GAUGUIN CP: walk %s ib %#llx/%u\n", tag,
+ 	    (unsigned long long)iova, dwords);
+-	n = dwords < 96u ? dwords : 96u;
++	n = dwords < 256u ? dwords : 256u;
+ 	for (o = 0; o < n; ) {
+ 		uint32_t h = gg_rd(m, 4u * o);
+ 		uint32_t op, cnt;
+ 
+-		if ((h >> 29) != 7u) {
++		/*
++		 * 0151: the type field is bits 31:28, so a type-7 header has
++		 * h >> 28 == 7 (0150 tested h >> 29 and therefore rejected
++		 * every packet at offset 0).
++		 */
++		if ((h >> 28) != 7u) {
+ 			/*
+ 			 * Type 4 is a register write: header, one dword of
+ 			 * value, plus one more per count in bits 17:16.
++			 * Type 0 is a one-dword no-op and padding before a
++			 * packet boundary is legal PM4, so it must not stop
++			 * the walk.
+ 			 */
+ 			if ((h >> 28) == 4u) {
+ 				printf("GAUGUIN CP: walk %s %u: type4 reg=%#x"
+@@ -3390,6 +3421,12 @@ gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
+ 				o += 2u + ((h >> 16) & 3u);
+ 				continue;
+ 			}
++			if ((h >> 28) == 0u) {
++				printf("GAUGUIN CP: walk %s %u: nop %#x\n",
++				    tag, o, h);
++				o += 1u;
++				continue;
++			}
+ 			printf("GAUGUIN CP: walk %s BAD %u: %#x type %u\n",
+ 			    tag, o, h, h >> 28);
+ 			return;
+@@ -3418,6 +3455,7 @@ gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
+ 		}
+ 		o += 1u + cnt;
+ 	}
++	printf("GAUGUIN CP: walk %s end %u/%u\n", tag, o, n);
+ }
+ 
+ /*
+@@ -3630,27 +3668,35 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	if (gg_ib_dump_log < 2) {
+ 		uint32_t stuck = gg_rd(gg.gpu, GR(CP_IB1_BASE_DW));
+ 		uint32_t rem = gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW));
++		uint32_t ib2 = gg_rd(gg.gpu, GR(CP_IB2_BASE_DW));
++		uint32_t rem2 = gg_rd(gg.gpu, GR(CP_IB2_REM_SIZE_DW));
++		uint32_t pos = 0u;
+ 		uint32_t k;
+ 
+ 		gg_ib_dump_log++;
++		/*
++		 * 0151: dump and walk every IB of the hung submit, not only the
++		 * one CP_IB1_BASE names, and state where the CP says it stopped
++		 * so the walk's own stop offset can be compared against it.
++		 */
+ 		for (k = 0; k < count; k++) {
+-			uint32_t at = 0u;
+-
+ 			if ((uint32_t)addresses[k] == stuck &&
+ 			    rem != 0u && rem <= words[k]) {
+-				at = words[k] - rem;
+-			}
+-			gg_ib_dwords("hung", addresses[k], words[k], at);
+-			/*
+-			 * 0150: the IB the CP stopped in gets a full dump and a
+-			 * framing walk, including whatever nested buffer it
+-			 * points at.
+-			 */
+-			if (at != 0u) {
+-				gg_ib_all("hung", addresses[k], words[k]);
+-				gg_ib_walk("hung", addresses[k], words[k]);
++				pos = words[k] - rem;
+ 			}
+ 		}
++		printf("GAUGUIN CP: pos ib1=%#x rem=%u at=%u ib2=%#x rem=%u"
++		    " count=%u\n", stuck, rem, pos, ib2, rem2, count);
++		for (k = 0; k < count; k++) {
++			gg_ib_dwords("hung", addresses[k], words[k],
++			    (uint32_t)addresses[k] == stuck ? pos : 0u);
++			gg_ib_all("hung", addresses[k], words[k]);
++			gg_ib_walk("hung", addresses[k], words[k]);
++		}
++		if (ib2 != 0u && rem2 != 0u) {
++			gg_ib_all("ib2", ib2, rem2);
++			gg_ib_walk("ib2", ib2, rem2);
++		}
+ 	}
+ 	(void)sweet_log_flush_now();
+ 	{
