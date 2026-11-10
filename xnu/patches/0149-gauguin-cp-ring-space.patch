@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -3326,20 +3326,33 @@
+@@ -3326,19 +3326,33 @@
  	ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
  	wp = gg_rd(gg.gpu, GR(CP_RB_WPTR_DW));
  	/*
