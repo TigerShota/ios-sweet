@@ -39,7 +39,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  		return;
  	}
  	if (dwords > 256u) {
-@@ -3365,23 +3383,36 @@ gg_ib_all(const char *tag, uint64_t iova, uint32_t dwords)
+@@ -3365,29 +3383,71 @@ gg_ib_all(const char *tag, uint64_t iova, uint32_t dwords)
  static void
  gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
  {
@@ -72,28 +72,54 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +		 */
 +		if ((h >> 28) != 7u) {
  			/*
- 			 * Type 4 is a register write: header, one dword of
- 			 * value, plus one more per count in bits 17:16.
-+			 * Type 0 is a one-dword no-op and padding before a
-+			 * packet boundary is legal PM4, so it must not stop
-+			 * the walk.
+-			 * Type 4 is a register write: header, one dword of
+-			 * value, plus one more per count in bits 17:16.
++			 * Type 4 is a register write (adreno_pm4types.h
++			 * cp_type4_packet): payload count is bits 6:0 with its
++			 * odd-parity bit at 7, the register index is bits
++			 * 25:8 with its parity at 27. 0150 assumed
++			 * "2 + ((h >> 16) & 3)" dwords, which shortened the
++			 * 6-dword write at offset 43 of the hung IB to 2 and
++			 * put every later offset 4 dwords early.
  			 */
  			if ((h >> 28) == 4u) {
++				uint32_t c4 = h & 0x7fu;
++				uint32_t r4 = (h >> 8) & 0x7ffffu;
++
  				printf("GAUGUIN CP: walk %s %u: type4 reg=%#x"
-@@ -3390,6 +3421,12 @@ gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
- 				o += 2u + ((h >> 16) & 3u);
- 				continue;
- 			}
-+			if ((h >> 28) == 0u) {
-+				printf("GAUGUIN CP: walk %s %u: nop %#x\n",
-+				    tag, o, h);
-+				o += 1u;
+-				    " val=%#x\n", tag, o, (h >> 8) & 0x3ffffu,
++				    " cnt=%u val=%#x\n", tag, o, r4, c4,
+ 				    gg_rd(m, 4u * (o + 1)));
+-				o += 2u + ((h >> 16) & 3u);
++				if (((gg_bits(c4) & 1u) ^ ((h >> 7) & 1u)) == 0u ||
++				    ((gg_bits(r4) & 1u) ^ ((h >> 27) & 1u)) == 0u) {
++					printf("GAUGUIN CP: walk %s BAD %u: %#x"
++					    " type4 parity\n", tag, o, h);
++					return;
++				}
++				o += 1u + c4;
 +				continue;
 +			}
++			/*
++			 * Bits 31:30 == 0 is a type-0 packet whose size is in
++			 * bits 29:16; all-zero dwords are plain padding and
++			 * must not stop the walk.
++			 */
++			if ((h >> 30) == 0u) {
++				uint32_t c0 = ((h >> 16) & 0x3fffu) + 1u;
++
++				printf("GAUGUIN CP: walk %s %u: type0 %#x size=%u\n",
++				    tag, o, h, c0);
++				if (o + c0 > n) {
++					printf("GAUGUIN CP: walk %s BAD %u: %#x"
++					    " type0 overrun\n", tag, o, h);
++					return;
++				}
++				o += c0;
+ 				continue;
+ 			}
  			printf("GAUGUIN CP: walk %s BAD %u: %#x type %u\n",
- 			    tag, o, h, h >> 28);
- 			return;
-@@ -3418,6 +3455,7 @@ gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
+@@ -3418,6 +3478,7 @@ gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
  		}
  		o += 1u + cnt;
  	}
@@ -101,7 +127,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  }
  
  /*
-@@ -3630,27 +3668,35 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+@@ -3630,27 +3691,35 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
  	if (gg_ib_dump_log < 2) {
  		uint32_t stuck = gg_rd(gg.gpu, GR(CP_IB1_BASE_DW));
  		uint32_t rem = gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW));
