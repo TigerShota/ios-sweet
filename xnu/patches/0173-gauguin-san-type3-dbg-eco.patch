@@ -1,0 +1,117 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3744,7 +3744,24 @@
+ };
+ 
+ static const uint32_t gg_san_debug[] = {
+-	0x8e04u, 0x8e08u, 0xae02u, 0xb604u,
++	/*
++	 * 0173, from the v119 on-device decode: the ME wedged in the amble's
++	 * DBG_ECO/MODE family - RB_DBG_ECO_CNTL (v118 ROQ head) and then
++	 * TPL1_DBG_ECO_CNTL (v119 ROQ head) - while every plain draw-state
++	 * type4 (viewport, guardband, MRT bases, LRZ, SO override) executed
++	 * fine. These are kernel-owned knobs already set at boot, so NOP'ing
++	 * the amble's rewrites keeps the kernel values on the hardware.
++	 */
++	0x80a0u, 0x80a1u,	/* GRAS_SC_CNTL / GRAS_SC_BIN_CNTL */
++	0x8600u,		/* GRAS_DBG_ECO_CNTL */
++	0x8e04u, 0x8e08u,	/* RB_DBG_ECO_CNTL (+HI) */
++	0x9804u,		/* PC_MODE_CNTL */
++	0xa009u,		/* VFD_MODE_CNTL */
++	0xab00u,		/* SP_MODE_CNTL */
++	0xae02u, 0xae03u, 0xae04u, 0xae0fu,	/* SP_CHICKEN/NC/PERFCTR */
++	0xb309u,		/* TPL1_MODE_CNTL */
++	0xb600u, 0xb604u, 0xb605u,	/* TPL1_DBG_ECO/NC/B605 */
++	0xbe00u, 0xbe01u, 0xbe04u,	/* HLSQ_DBG_ECO family */
+ };
+ 
+ static vm_offset_t
+@@ -3828,6 +3845,13 @@
+ 			plen = h & 0x3fffu;
+ 		} else if (type == 4u) {
+ 			plen = h & 0x7fu;
++		} else if (type == 3u) {
++			/*
++			 * 0173: v119 stopped here - the amble is interleaved
++			 * with type3 packets, so the whole tail of every
++			 * nested IB went unsanitized.
++			 */
++			plen = h & 0x3ffu;
+ 		} else if (type == 0u) {
+ 			plen = ((h >> 16) & 0x3fffu) + 1u;
+ 		} else {
+@@ -3847,16 +3871,17 @@
+ 			for (k = 1; k < len; ++k) {
+ 				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
+ 			}
+-			if (gg_san_log < 40) {
++			if (gg_san_log < 120) {
+ 				gg_san_log++;
+ 				printf("GAUGUIN CP: 0172 san ib=%#llx off=%u"
+ 				    " reg=%#x plen=%u -> nop\n",
+ 				    (unsigned long long)iova, o, reg, plen);
+ 			}
+ 			fixed++;
+-		} else if (type == 7u && depth < 2 && plen >= 3u &&
+-		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
+-		    ((h >> 16) & 0x7fu) == 0x37u)) {
++		} else if (depth < 2 && plen >= 3u &&
++		    (type == 3u || type == 7u) &&
++		    (((h >> 16) & 0xffu) == CP_INDIRECT_BUFFER ||
++		    ((h >> 16) & 0xffu) == 0x37u)) {
+ 			al = *(volatile uint32_t *)(m + 4u * (o + 1));
+ 			ah = *(volatile uint32_t *)(m + 4u * (o + 2));
+ 			nst = *(volatile uint32_t *)(m + 4u * (o + 3));
+@@ -4026,6 +4051,7 @@
+ 	volatile uint32_t *ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
+ 	unsigned i, wptr, rptr;
+ 	uint32_t rreg, flush, mw, val;
++	int rec_pass;
+ 	bool ok;
+ 
+ 	printf("GAUGUIN CP: 0171 recover start sqe=%#x rptr=%u wptr=%u"
+@@ -4068,8 +4094,18 @@
+ 	gg_wr(gg.gpucc, GPUCC_GFX3D_CBCR,
+ 	    gg_rd(gg.gpucc, GPUCC_GFX3D_CBCR) | 1u);
+ 
+-	/* hw_init write set - identical to boot cp_start (readback-verified). */
+-	CP_WRV(UCHE_WRITE_RANGE_MAX_LO_DW, 0xffffffc0);
++	/* hw_init write set - identical to boot cp_start (readback-verified).
++	 * 0173: v119 saw every readback come back as reset defaults right
++	 * after GPU_SET - an async GX reset raced the set. Settle for 100 ms
++	 * and replay the whole set once before declaring the core dead. */
++	for (rec_pass = 0; rec_pass < 2; rec_pass++) {
++		if (rec_pass != 0) {
++			printf("GAUGUIN CP: 0173 recover hw_init retry\n");
++			(void)sweet_log_flush_now();
++			gg_wait(100);
++		}
++		ok = true;
++		CP_WRV(UCHE_WRITE_RANGE_MAX_LO_DW, 0xffffffc0);
+ 	gg_wr(gg.gpu, GR(UCHE_WRITE_RANGE_MAX_LO_DW) + 4u, 0x0001ffff);
+ 	CP_WRV(UCHE_TRAP_BASE_LO_DW, 0xfffff000);
+ 	gg_wr(gg.gpu, GR(UCHE_TRAP_BASE_LO_DW) + 4u, 0x0001ffff);
+@@ -4090,7 +4126,12 @@
+ 	CP_WRV(SP_NC_MODE_CNTL_DW, 0x22);
+ 	CP_WRV(UCHE_MODE_CNTL_DW, 1u << 21);
+ 	CP_WRV(RBBM_INTERFACE_HANG_INT_CNTL_DW, 0x401fffff);
+-	CP_WRV(UCHE_CLIENT_PF_DW, 0x81);
++		CP_WRV(UCHE_CLIENT_PF_DW, 0x81);
++		if (!ok) {
++			continue;
++		}
++		break;
++	}
+ 	if (!ok) {
+ 		printf("GAUGUIN CP: 0171 recover hw_init FAIL\n");
+ 		(void)sweet_log_flush_now();
+@@ -4316,7 +4357,7 @@
+ 		    sizeof(mark)) ? mark : 0;
+ 		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
+ 		    sizeof(clr)) ? clr : 0;
+-		printf("GAUGUIN CP: impl 0172 mark=%d clr=%d markpa=%#llx window=%uK"
++		printf("GAUGUIN CP: impl 0173 mark=%d clr=%d markpa=%#llx window=%uK"
+ 		    " step=%u max=%u\n", gg_mark_opt, gg_clr_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_STEP, GG_MARK_MAX);
