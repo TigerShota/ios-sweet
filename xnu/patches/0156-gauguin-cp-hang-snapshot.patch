@@ -1,0 +1,180 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1745,6 +1745,10 @@
+ #define CP_MEM_POOL_SIZE_DW 0x8c3u
+ #define CP_AHB_CNTL_DW   0x98du
+ #define RBBM_INT_0_STATUS_DW 0x201u
++#define RBBM_STATUS1_DW  0x211u
++#define RBBM_STATUS2_DW  0x212u
++#define RBBM_STATUS3_DW  0x213u  /* bit24 SMMU_STALLED_ON_FAULT */
++#define RBBM_VBIF_GX_RESET_STATUS_DW 0x215u
+ #define RBBM_PERFCTR_CNTL_DW 0x500u
+ #define RBBM_PERFCTR_GPU_BUSY_MASKED_DW 0x50bu
+ #define RBBM_INTERFACE_HANG_INT_CNTL_DW 0x01fu
+@@ -3296,6 +3300,32 @@
+ }
+ 
+ /*
++ * 0156: CP_WAIT_FOR_IDLE only returns once every block reports idle, and v111
++ * hangs inside exactly that packet. Print which RBBM_STATUS bits are still set
++ * (bit names from a6xx.xml) instead of a bare hex word.
++ */
++static void
++gg_rbbm_busy(void)
++{
++	static const char *const names[24] = {
++		"CP_AHB_CX", "CP_AHB_CP", "CP", "DBGC", "VBIF", "TSE", "RAS",
++		"RB", "CCU", "A2D", "LRZ", "COM", "PC_DCALL", "PC_VSD", "TESS",
++		"VFD", "VPC", "UCHE", "SP", "TPL1", "VSC", "HLSQ",
++		"GPU_BUSY_CP", "GPU_BUSY"
++	};
++	uint32_t v = gg_rd(gg.gpu, GR(A6XX_RBBM_STATUS_DW));
++	uint32_t b;
++
++	printf("GAUGUIN CP: rbbm busy=%#x [", v);
++	for (b = 0; b < 24u; b++) {
++		if (v & (1u << b)) {
++			printf("%s ", names[b]);
++		}
++	}
++	printf("]\n");
++}
++
++/*
+  * 0148: read a GPU-side IB back through its GEM page table entry, the same
+  * translation gg_gem_pa() does for the 0146 timestamp dump. Every IB the
+  * window server builds is page aligned and smaller than a page, so one
+@@ -3593,9 +3623,14 @@
+  * Copy one command buffer, inserting a stamp packet after every complete PM4
+  * packet. Returns the number of dwords written, 0 when the buffer cannot be
+  * read through the GEM window or does not fit.
++ *
++ * 0156: 0155 rewrote op 0x55 (CP_SET_AMBLE) to a NOP for gauguinmark>=2. Mesa
++ * fd6_emit.cc:1142 always emits three of them and adreno_pm4.xml:2089 says the
++ * payload is [ADDR_LO, ADDR_HI, DWORDS(19:0)|TYPE(21:20)] - the two addr-0
++ * packets are the normal preamble/postamble case, so the rewrite destroyed a
++ * legal packet. Reverted: every copy is byte-identical to the original apart
++ * from the inserted stamps.
+  */
+-static int gg_op55_log;
+-
+ static uint32_t
+ gg_ib_annotate(uint32_t index, uint64_t iova, uint32_t dwords,
+     volatile uint32_t *out, uint32_t max, int *why)
+@@ -3628,7 +3663,7 @@
+ 	while (o < dwords) {
+ 		uint32_t h = *(volatile uint32_t *)(m + 4u * o);
+ 		uint32_t type = h >> 28;
+-		uint32_t plen, len, k, h2;
++		uint32_t plen, len, k;
+ 
+ 		if (type == 7u) {
+ 			plen = h & 0x3fffu;
+@@ -3649,41 +3684,8 @@
+ 			*why = 7;
+ 			return 0;
+ 		}
+-		h2 = h;
+-		/*
+-		 * 0155: the IB that kills the ME carries three op 0x55 packets
+-		 * laid out as (addr_lo, addr_hi, size_dwords). Two of them have
+-		 * addr 0, and the CPU-side submission already rejects a zero
+-		 * IB address because it makes the CP fetch from PA 0; after the
+-		 * pre-clear in gauguin_cp_submit the hang dump still reports
+-		 * cb1 fsr=0x400 far=0, i.e. a fresh translation fault at GPU VA
+-		 * 0. gauguinmark=2 drops the packets that carry no usable
+-		 * buffer (addr 0 or size 0), gauguinmark=3 drops all of them.
+-		 * The header keeps its type-7 count so the payload is skipped,
+-		 * not re-interpreted.
+-		 */
+-		if (type == 7u && (h >> 16 & 0x7fu) == 0x55u && plen >= 2u &&
+-		    gg_mark_opt >= 2) {
+-			uint32_t alo = *(volatile uint32_t *)(m + 4u * (o + 1u));
+-			uint32_t ahi = *(volatile uint32_t *)(m + 4u * (o + 2u));
+-			uint32_t sz = plen >= 3u ?
+-			    *(volatile uint32_t *)(m + 4u * (o + 3u)) : 0u;
+-
+-			if (gg_mark_opt >= 3 || (alo == 0u && ahi == 0u) ||
+-			    sz == 0u) {
+-				h2 = (h & ~(0x7fu << 16) & ~(1u << 23)) |
+-				    (0x10u << 16);
+-				if (gg_op55_log < 12) {
+-					gg_op55_log++;
+-					printf("GAUGUIN CP: mark op55 ib=%u at=%u"
+-					    " addr=%#x:%#x size=%u -> nop\n",
+-					    index, o, ahi, alo, sz);
+-				}
+-			}
+-		}
+ 		for (k = 0; k < len; ++k) {
+-			out[n++] = k == 0u ? h2 :
+-			    *(volatile uint32_t *)(m + 4u * (o + k));
++			out[n++] = *(volatile uint32_t *)(m + 4u * (o + k));
+ 		}
+ 		out[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+ 		out[n++] = 0x04u;
+@@ -3794,13 +3796,13 @@
+ 		int mark = 0;
+ 
+ 		/*
+-		 * 0155: keep the level. 0154 collapsed gauguinmark to 0/1, so
+-		 * "drop the packets with no buffer" (2) and "drop every op 0x55"
+-		 * (3) could not be selected from the boot-args.
++		 * 0156: any non-zero level only means "submit annotated copies".
++		 * 0155 rewrote op 0x55 to a NOP for 2/3; that rewrite is gone
++		 * (see gg_ib_annotate), so 2 and 3 now behave exactly like 1.
+ 		 */
+ 		gg_mark_opt = PE_parse_boot_argn("gauguinmark", &mark,
+ 		    sizeof(mark)) ? mark : 0;
+-		printf("GAUGUIN CP: impl 0155 mark=%d markpa=%#llx window=%uK"
++		printf("GAUGUIN CP: impl 0156 mark=%d markpa=%#llx window=%uK"
+ 		    " step=%u max=%u\n", gg_mark_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_STEP, GG_MARK_MAX);
+@@ -4069,6 +4071,32 @@
+ 	    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_CRASH_DUMP_STATUS_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)));
++	/*
++	 * 0156: one snapshot of the front-end position (CP_IB1_BASE is 64-bit and
++	 * the lines above read it at different moments), the block-busy state
++	 * CP_WAIT_FOR_IDLE is waiting on, and the SQE's own status/PC so the
++	 * stalled microcode routine can be named.
++	 */
++	printf("GAUGUIN CP: hang snap ib1=%#x:%#x rem=%u ib2=%#x:%#x rem=%u"
++	    " rptr=%u wptr=%u\n",
++	    gg_rd(gg.gpu, GR(CP_IB1_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB1_BASE_DW + 1u)),
++	    gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB2_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB2_BASE_DW + 1u)),
++	    gg_rd(gg.gpu, GR(CP_IB2_REM_SIZE_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)), gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++	printf("GAUGUIN CP: hang regs rbbm1=%#x rbbm2=%#x rbbm3=%#x"
++	    " smmu_stalled=%u gx_reset=%#x sqe_stat=%#x:%#x sqe_pc=%#x:%#x\n",
++	    gg_rd(gg.gpu, GR(RBBM_STATUS1_DW)), gg_rd(gg.gpu, GR(RBBM_STATUS2_DW)),
++	    gg_rd(gg.gpu, GR(RBBM_STATUS3_DW)),
++	    (gg_rd(gg.gpu, GR(RBBM_STATUS3_DW)) >> 24) & 1u,
++	    gg_rd(gg.gpu, GR(RBBM_VBIF_GX_RESET_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(CP_SQE_STAT_ADDR_DW)),
++	    gg_rd(gg.gpu, GR(CP_SQE_STAT_DATA_DW)),
++	    gg_rd(gg.gpu, GR(CP_SQE_UCODE_DBG_ADDR_DW)),
++	    gg_rd(gg.gpu, GR(CP_SQE_UCODE_DBG_DATA_DW)));
++	gg_rbbm_busy();
+ 	if (gg_ib_dump_log < 2) {
+ 		uint32_t stuck = gg_rd(gg.gpu, GR(CP_IB1_BASE_DW));
+ 		uint32_t rem = gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW));
+@@ -4103,7 +4131,11 @@
+ 		    count);
+ 		for (k = 0; k < count; k++) {
+ 			gg_ib_dwords("hung", addresses[k], words[k],
+-			    (uint32_t)addresses[k] == stuck ? pos : 0u);
++			    (uint32_t)addresses[k] == stuck ? orig : 0u);
++			if (ai != addresses) {
++				gg_ib_dwords("hungcopy", ai[k], wi[k],
++				    (uint32_t)ai[k] == stuck ? pos : 0u);
++			}
+ 			gg_ib_all("hung", addresses[k], words[k]);
+ 			gg_ib_walk("hung", addresses[k], words[k]);
+ 		}
