@@ -1,0 +1,19 @@
+diff --git a/bsd/dev/gauguin_touch.c b/bsd/dev/gauguin_touch.c
+--- a/bsd/dev/gauguin_touch.c
++++ b/bsd/dev/gauguin_touch.c
+@@ -752,8 +752,14 @@
+ 	printf("GAUGUIN TOUCH: starting in %u s\n", delay_s);
+ 	gt_wait(delay_s * 1000u);
+ 	printf("GAUGUIN TOUCH: step1 mapping GCC/TLMM/SE0\n");
++	printf("GAUGUIN TOUCH: impl 0160 tlmm window 0x5b000\n");
+ 	gt.gcc = ml_io_map(GT_GCC_PA, 0x60000);
+-	gt.tlmm = ml_io_map(GT_TLMM_PA, 0x5b0000);
++	/* 0160: the TLMM register window is 0x5b000 bytes (0060 uses the same
++	 * size). 0084 asked for 0x5b0000 = 5.6875 MiB out of the 8 MiB IOKit
++	 * io_submap. ml_io_map()'s kmem_alloc is KMA_NOFAIL, so when that VA
++	 * did not fit the kernel panicked here 45 s after every boot, right in
++	 * the middle of the GPU submit loop. Keep the real window only. */
++	gt.tlmm = ml_io_map(GT_TLMM_PA, 0x5b000);
+ 	gt.se = ml_io_map(GT_SE_PA, 0x4000);
+ 	if (!gt.gcc || !gt.tlmm || !gt.se) {
+ 		printf("GAUGUIN TOUCH: MMIO mapping failed\n");
