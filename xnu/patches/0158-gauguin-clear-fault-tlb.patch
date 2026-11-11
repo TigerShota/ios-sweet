@@ -1,0 +1,89 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3619,6 +3619,7 @@
+ #define GG_MARK_IBS    6u	/* 0x1000 + 6 * 0x2000 < 64 KiB */
+ 
+ static int gg_mark_opt = -1;	/* -1 unparsed, 0 off, 1 annotate */
++static int gg_clr_opt = -1;	/* 0158: -1 unparsed, 0 off, 1..4 below */
+ 
+ /*
+  * Copy one command buffer, inserting a stamp packet after every complete PM4
+@@ -3826,7 +3827,7 @@
+ 	 * leave enabled.
+ 	 */
+ 	if (gg_mark_opt < 0) {
+-		int mark = 0;
++		int mark = 0, clr = 0;
+ 
+ 		/*
+ 		 * 0156: any non-zero level only means "submit annotated copies".
+@@ -3834,11 +3835,16 @@
+ 		 * (see gg_ib_annotate), so 2 and 3 now behave exactly like 1.
+ 		 * 0157 adds 4/5/6: drop indirect buffers / WAIT_FOR_IDLE /
+ 		 * both from the annotated copy (see gg_ib_annotate).
++		 * 0158 adds gauguinclr (independent of the mark level): clear
++		 * inherited CP fault latches and/or invalidate the stage-1 TLB
++		 * before each real submit.
+ 		 */
+ 		gg_mark_opt = PE_parse_boot_argn("gauguinmark", &mark,
+ 		    sizeof(mark)) ? mark : 0;
+-		printf("GAUGUIN CP: impl 0157 mark=%d markpa=%#llx window=%uK"
+-		    " step=%u max=%u\n", gg_mark_opt,
++		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
++		    sizeof(clr)) ? clr : 0;
++		printf("GAUGUIN CP: impl 0158 mark=%d clr=%d markpa=%#llx window=%uK"
++		    " step=%u max=%u\n", gg_mark_opt, gg_clr_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_STEP, GG_MARK_MAX);
+ 	}
+@@ -3936,6 +3942,49 @@
+ 			gg_wr(cb, SMMU_CB_FSR, gg_rd(cb, SMMU_CB_FSR));
+ 			gg_wr(s, SMMU_GFSR, gg_rd(s, SMMU_GFSR));
+ 		}
++	}
++
++	/*
++	 * 0158: mark=0 (v113m0) proved the annotation path is innocent - the
++	 * original Mesa IBs die at the same rptr 1834/1851/1880 as mark=1/5.
++	 * Two inherited-state suspects remain:
++	 *   (1) CP_INTERRUPT_STATUS bit 2 (CP_HW_FAULT_ERROR) and CP_HW_FAULT
++	 *       bit 18 latch when the SQE is released at boot (v113m0 lines
++	 *       1780-1807: "intr after release=0x4 (cold 0)", "hw_fault=
++	 *       0x40000") and are never acknowledged. The only W1C in cp_start
++	 *       clears the cold value, which was zero. ME_INIT, SET_SECURE_MODE
++	 *       and the GEM selftest still pass, but a latched HW fault can make
++	 *       the ME refuse a chained IB.
++	 *   (2) gemNew writes new PTEs with gg_gem_wr() but never invalidates
++	 *       the stage-1 TLB (gauguin_gem_tlb_flush() is called only from
++	 *       unmap and the selftest). gg_gem_pa() reads the correct PTE on
++	 *       the CPU, which is why every hang dump decodes cleanly, while
++	 *       the CP can walk a stale PTE - "clean PM4, smmu_stalled=0, ME
++	 *       dies entering the nested IB".
++	 *
++	 * gauguinclr: 1 = W1C CP_INTERRUPT_STATUS, 2 = TLB flush, 3 = both,
++	 * 4 = both plus an experimental W1C of CP_HW_FAULT. 0 = unchanged.
++	 */
++	if (gg_clr_opt > 0) {
++		uint32_t intr0 = 0, intr1 = 0, hf0 = 0, hf1 = 0;
++
++		if (gg_clr_opt == 1 || gg_clr_opt >= 3) {
++			intr0 = gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW));
++			hf0 = gg_rd(gg.gpu, GR(CP_HW_FAULT_DW));
++			gg_wr(gg.gpu, GR(CP_INTERRUPT_STATUS_DW), intr0);
++			if (gg_clr_opt == 4) {
++				gg_wr(gg.gpu, GR(CP_HW_FAULT_DW), hf0);
++			}
++			intr1 = gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW));
++			hf1 = gg_rd(gg.gpu, GR(CP_HW_FAULT_DW));
++		}
++		if (gg_clr_opt >= 2) {
++			gauguin_gem_tlb_flush();
++		}
++		printf("GAUGUIN CP: 0158 clr=%d int=%#x->%#x fault=%#x->%#x"
++		    " tlb=%d\n", gg_clr_opt, intr0, intr1, hf0, hf1,
++		    gg_clr_opt >= 2);
++		(void)sweet_log_flush_now();
+ 	}
+ 
+ 	fence = ++gg_next_fence;
