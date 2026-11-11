@@ -1,0 +1,195 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3715,6 +3715,162 @@
+  * (0x26), 6 = both. The stamp after the packet stays, so gg_ib_walk() and
+  * gg_mark_origin() still recover the original buffer offsets.
+  */
++/*
++ * 0172: sanitize nested command buffers in place. The v118 ROQ capture
++ * showed the ME wedged in the AHB register writes of the 196-dword amble IB
++ * (head dwords all type-4 writes to RB_DBG_ECO_CNTL / *_NC_MODE_CNTL /
++ * *_ADDR_MODE_CNTL-class registers). The kernel sets the 64-bit address
++ * modes and owns the CP configuration; executing mesa's amble from the ME
++ * rewrites them under the running ring - the plausible stall cause. Rewrite
++ * every type-4 packet whose register is in the deny list (CP config block,
++ * CP_PROTECT, RBBM_SECVID_TSB, the ADDR_MODE set, the ECO/NC debug set) into
++ * a length-preserving CP_NOP, directly in the user's BO, so the ME never
++ * sees it. Everything else passes untouched. Mappings are cached per page:
++ * gg_ib_map() leaks an ml_io_map per call and sanitize runs per submit.
++ */
++static int gg_san_log;
++static int gg_san_opt = -1;	/* gauguinsan: -1 unparsed, 0 off, 1 on */
++
++static struct {
++	uint64_t pa;
++	vm_offset_t base;
++} gg_san_pg[8];
++static int gg_san_pg_n;
++static int gg_san_rot;
++
++static const uint32_t gg_san_addr_modes[] = {
++	0x0842u, 0x0c01u, 0x8601u, 0x8e05u, 0x9e01u, 0xbe05u,
++	0xa601u, 0x9601u, 0x0e00u, 0xae01u, 0xb601u, 0xf810u,
++};
++
++static const uint32_t gg_san_debug[] = {
++	0x8e04u, 0x8e08u, 0xae02u, 0xb604u,
++};
++
++static vm_offset_t
++gg_san_map(uint64_t iova)
++{
++	uint64_t pg = gg_gem_pa(iova) & ~0xfffull;
++	vm_offset_t base;
++	int i;
++
++	if (pg == 0u) {
++		return 0;
++	}
++	for (i = 0; i < gg_san_pg_n; ++i) {
++		if (gg_san_pg[i].pa == pg) {
++			return gg_san_pg[i].base +
++			    (vm_offset_t)(iova & 0xfffu);
++		}
++	}
++	base = ml_io_map((vm_offset_t)pg, GEM_PAGE);
++	if (base == 0) {
++		return 0;
++	}
++	i = gg_san_pg_n < 8 ? gg_san_pg_n++ : (gg_san_rot++ % 8);
++	gg_san_pg[i].pa = pg;
++	gg_san_pg[i].base = base;
++	return base + (vm_offset_t)(iova & 0xfffu);
++}
++
++static bool
++gg_san_deny(uint32_t r)
++{
++	unsigned k;
++
++	if ((r >= 0x800u && r <= 0x849u) ||
++	    (r >= 0x8e00u && r <= 0x8e1fu) ||
++	    (r >= 0xf800u && r <= 0xf813u)) {
++		return true;
++	}
++	for (k = 0; k < sizeof(gg_san_addr_modes) /
++	    sizeof(gg_san_addr_modes[0]); ++k) {
++		if (gg_san_addr_modes[k] == r) {
++			return true;
++		}
++	}
++	for (k = 0; k < sizeof(gg_san_debug) / sizeof(gg_san_debug[0]); ++k) {
++		if (gg_san_debug[k] == r) {
++			return true;
++		}
++	}
++	return false;
++}
++
++static void
++gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
++{
++	vm_offset_t m;
++	uint32_t room, o, k, fixed = 0;
++
++	if (gg_san_opt == 0 || depth > 2) {
++		return;
++	}
++	room = (uint32_t)((GEM_PAGE - (uint32_t)(iova & 0xfffu)) / 4u);
++	if (dwords < room) {
++		room = dwords;
++	}
++	if (room == 0u) {
++		return;
++	}
++	m = gg_san_map(iova);
++	if (m == 0) {
++		return;
++	}
++	o = 0;
++	while (o < room) {
++		uint32_t h = *(volatile uint32_t *)(m + 4u * o);
++		uint32_t type = h >> 28;
++		uint32_t plen, len, al, ah, nst;
++		uint32_t reg = (h >> 8) & 0x7ffffu;
++
++		if (type == 7u) {
++			plen = h & 0x3fffu;
++		} else if (type == 4u) {
++			plen = h & 0x7fu;
++		} else if (type == 0u) {
++			plen = ((h >> 16) & 0x3fffu) + 1u;
++		} else {
++			break;	/* unknown framing - stop scanning */
++		}
++		len = 1u + plen;
++		if (o + len > room) {
++			break;
++		}
++		if (type == 4u && gg_san_deny(reg)) {
++			/*
++			 * Length-preserving CP_NOP: header plus plen zero
++			 * dwords, so every following packet keeps its offset.
++			 */
++			*(volatile uint32_t *)(m + 4u * o) =
++			    gg_pkt7(CP_NOP, plen);
++			for (k = 1; k < len; ++k) {
++				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
++			}
++			if (gg_san_log < 40) {
++				gg_san_log++;
++				printf("GAUGUIN CP: 0172 san ib=%#llx off=%u"
++				    " reg=%#x plen=%u -> nop\n",
++				    (unsigned long long)iova, o, reg, plen);
++			}
++			fixed++;
++		} else if (type == 7u && depth < 2 && plen >= 3u &&
++		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
++		    ((h >> 16) & 0x7fu) == 0x37u)) {
++			al = *(volatile uint32_t *)(m + 4u * (o + 1));
++			ah = *(volatile uint32_t *)(m + 4u * (o + 2));
++			nst = *(volatile uint32_t *)(m + 4u * (o + 3));
++			gg_ib_sanitize(((uint64_t)ah << 32) | al, nst,
++			    depth + 1);
++		}
++		o += len;
++	}
++	if (fixed != 0u) {
++		flush_dcache64((addr64_t)m, 4u * room, FALSE);
++		__asm__ volatile("dmb oshst" ::: "memory");
++	}
++}
++
+ static uint32_t
+ gg_ib_annotate(uint32_t index, uint64_t iova, uint32_t dwords,
+     volatile uint32_t *out, uint32_t max, int *why)
+@@ -4160,7 +4316,7 @@
+ 		    sizeof(mark)) ? mark : 0;
+ 		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
+ 		    sizeof(clr)) ? clr : 0;
+-		printf("GAUGUIN CP: impl 0171 mark=%d clr=%d markpa=%#llx window=%uK"
++		printf("GAUGUIN CP: impl 0172 mark=%d clr=%d markpa=%#llx window=%uK"
+ 		    " step=%u max=%u\n", gg_mark_opt, gg_clr_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_STEP, GG_MARK_MAX);
+@@ -4344,6 +4500,19 @@
+ 	ring[wp % ring_dw] = 0x10000004u;
+ 	wp++;
+ 
++	/*
++	 * 0172: scrub privileged register writes out of every IB (and its
++	 * nested IBs) before the ring points the CP at them.
++	 */
++	if (gg_san_opt < 0) {
++		int san = 1;
++
++		gg_san_opt = PE_parse_boot_argn("gauguinsan", &san,
++		    sizeof(san)) ? san : 1;
++	}
++	for (i = 0; i < count; i++) {
++		gg_ib_sanitize(ai[i], wi[i], 0);
++	}
+ 	for (i = 0; i < count; i++) {
+ 		/*
+ 		 * a6xx (non-legacy PM4) cp_gpuaddr writes a 64-bit address, so
