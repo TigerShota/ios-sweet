@@ -1,0 +1,80 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1269,6 +1269,7 @@
+  * (out/refs/willow-redwood_adreno.c, step 22). a615 belongs to the same
+  * a6xx block family, so the 2D pipe is addressed with the same numbers. */
+ #define CP_WAIT_FOR_IDLE     0x26u
++#define CP_NOP               0x10u
+ #define CP_BLIT              0x2cu
+ #define CP_INDIRECT_BUFFER   0x3fu   /* CP_INDIRECT_BUFFER_PFE (a6xx) */
+ #define CP_EVENT_WRITE       0x46u
+@@ -3631,12 +3632,21 @@
+  * legal packet. Reverted: every copy is byte-identical to the original apart
+  * from the inserted stamps.
+  */
++/*
++ * 0157: v112 proved the fatal packet is IB0 offset 11 - a CP_INDIRECT_BUFFER
++ * into nested IB 0x50423600/0xc4 - with smmu_stalled=0 and CP still busy.
++ * gauguinmark 4/5/6 replace selected packets with a single CP_NOP of the same
++ * length: 4 = CP_INDIRECT_BUFFER_PFE/PFD (0x3f/0x37), 5 = CP_WAIT_FOR_IDLE
++ * (0x26), 6 = both. The stamp after the packet stays, so gg_ib_walk() and
++ * gg_mark_origin() still recover the original buffer offsets.
++ */
+ static uint32_t
+ gg_ib_annotate(uint32_t index, uint64_t iova, uint32_t dwords,
+     volatile uint32_t *out, uint32_t max, int *why)
+ {
+ 	vm_offset_t m;
+ 	uint32_t room, o = 0, n = 0;
++	int drop;
+ 
+ 	/*
+ 	 * Never hand the CP a partial copy: a buffer that is bigger than the slot
+@@ -3684,8 +3694,31 @@
+ 			*why = 7;
+ 			return 0;
+ 		}
++		/*
++		 * 0157: keep the framing identical - one CP_NOP header plus
++		 * (len - 1) zero dwords - so the ME skips exactly this packet
++		 * without moving any of the following packets.
++		 */
++		drop = 0;
++		if (gg_mark_opt >= 4 && type == 7u) {
++			uint32_t op = (h >> 16) & 0x7fu;
++
++			if ((gg_mark_opt == 4 || gg_mark_opt == 6) &&
++			    (op == CP_INDIRECT_BUFFER || op == 0x37u)) {
++				drop = 1;
++			}
++			if ((gg_mark_opt == 5 || gg_mark_opt == 6) &&
++			    op == CP_WAIT_FOR_IDLE) {
++				drop = 1;
++			}
++		}
+ 		for (k = 0; k < len; ++k) {
+-			out[n++] = *(volatile uint32_t *)(m + 4u * (o + k));
++			out[n++] = drop ? (k == 0u ? gg_pkt7(CP_NOP, plen) : 0u) :
++			    *(volatile uint32_t *)(m + 4u * (o + k));
++		}
++		if (drop) {
++			printf("GAUGUIN CP: mark drop ib=%u off=%u op=%#x len=%u\n",
++			    index, o, (h >> 16) & 0x7fu, len);
+ 		}
+ 		out[n++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+ 		out[n++] = 0x04u;
+@@ -3799,10 +3832,12 @@
+ 		 * 0156: any non-zero level only means "submit annotated copies".
+ 		 * 0155 rewrote op 0x55 to a NOP for 2/3; that rewrite is gone
+ 		 * (see gg_ib_annotate), so 2 and 3 now behave exactly like 1.
++		 * 0157 adds 4/5/6: drop indirect buffers / WAIT_FOR_IDLE /
++		 * both from the annotated copy (see gg_ib_annotate).
+ 		 */
+ 		gg_mark_opt = PE_parse_boot_argn("gauguinmark", &mark,
+ 		    sizeof(mark)) ? mark : 0;
+-		printf("GAUGUIN CP: impl 0156 mark=%d markpa=%#llx window=%uK"
++		printf("GAUGUIN CP: impl 0157 mark=%d markpa=%#llx window=%uK"
+ 		    " step=%u max=%u\n", gg_mark_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_STEP, GG_MARK_MAX);
