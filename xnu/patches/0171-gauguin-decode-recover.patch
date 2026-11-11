@@ -154,7 +154,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  				if (((gg_bits(c4) & 1u) ^ ((h >> 7) & 1u)) == 0u ||
  				    ((gg_bits(r4) & 1u) ^ ((h >> 27) & 1u)) == 0u) {
  					printf("GAUGUIN CP: walk %s BAD %u: %#x"
-@@ -3774,6 +3848,244 @@
+@@ -3774,6 +3848,249 @@
  }
  
  /*
@@ -179,7 +179,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +{
 +	volatile uint32_t *ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
 +	unsigned i, wptr, rptr;
-+	uint32_t rreg, flush, mw;
++	uint32_t rreg, flush, mw, val;
 +	bool ok;
 +
 +	printf("GAUGUIN CP: 0171 recover start sqe=%#x rptr=%u wptr=%u"
@@ -245,6 +245,11 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +	CP_WRV(UCHE_MODE_CNTL_DW, 1u << 21);
 +	CP_WRV(RBBM_INTERFACE_HANG_INT_CNTL_DW, 0x401fffff);
 +	CP_WRV(UCHE_CLIENT_PF_DW, 0x81);
++	if (!ok) {
++		printf("GAUGUIN CP: 0171 recover hw_init FAIL\n");
++		(void)sweet_log_flush_now();
++		return false;
++	}
 +
 +	/* secvid + 64-bit addr modes + QoS/GBIF - identical to boot. */
 +	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_LO_DW), 0);
@@ -399,7 +404,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
   * 0124: submit real command buffers. The previous stub only advanced WPTR;
   * the commands themselves were never put in the ring, so nothing the
   * userspace stack submitted could ever execute. Each command buffer is now
-@@ -3843,7 +4155,7 @@
+@@ -3843,7 +4160,7 @@
  		    sizeof(mark)) ? mark : 0;
  		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
  		    sizeof(clr)) ? clr : 0;
@@ -408,7 +413,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  		    " step=%u max=%u\n", gg_mark_opt, gg_clr_opt,
  		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
  		    GG_MARK_STEP, GG_MARK_MAX);
-@@ -4311,6 +4623,37 @@
+@@ -4311,6 +4628,37 @@
  		}
  	}
  	(void)sweet_log_flush_now();
