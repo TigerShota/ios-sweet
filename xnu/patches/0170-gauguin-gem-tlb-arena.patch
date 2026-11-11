@@ -1,29 +1,17 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
-
-index 7b11b92..1b3aada 100644
+index 8002cfb..9837e24 100644
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -145,6 +145,11 @@ gauguin_gem_map(uint64_t iova, addr64_t phys, uint32_t flags)
+@@ -4396,6 +4396,12 @@ gauguin_gem_map(uint64_t iova, addr64_t phys, uint32_t flags)
  	}
  	pte = (uint32_t)((iova >> 12) & 0x1ffu);
  	gg_gem_wr(0x1000u * tbl + 8u * pte, ((uint64_t)phys & ~0xfffull) | PTE_PAGE_NC);
-+	/* 0170 (fajita 0166 #2): the GEM allocator (0130) reuses freed iova, so a
-+	 * fresh mapping for an iova the CP already walked must invalidate the GPU
-+	 * TLB, or the CP keeps fetching the previous buffer through the stale entry
-+	 * and hangs on CP_INDIRECT_BUFFER. Flush after every PTE write. */
++	/* 0170 (fajita 0166 #1): flush the GPU TLB after every PTE write so a
++	 * freshly mapped (possibly iova-reused) buffer is visible to the CP
++	 * before it walks the table; without this the CP keeps fetching the
++	 * stale indirect buffer and hangs on CP_INDIRECT_BUFFER. The global
++	 * non-secure TLB invalidation lives in gauguin_gem_tlb_flush() (0125). */
 +	gauguin_gem_tlb_flush();
  	return true;
  }
  
-@@ -185,6 +190,11 @@ gauguin_gem_tlb_flush(void)
- 	cb = s + SMMU_CB(GG_CB1);
- 	gg_wr(cb, SMMU_CB_TLBIALL, 0);
- 	(void)gg_tlb_sync(cb, SMMU_CB_TLBSYNC, SMMU_CB_TLBSTATUS);
-+	/* 0170 (fajita 0166 #2): the GPU also caches the non-secure non-hyp walk
-+	 * in the global TLB, so a per-CB flush alone leaves a stale indirect-buffer
-+	 * translation after an iova is freed and reused. Invalidate both. */
-+	gg_wr(s, SMMU_TLBIALLNSNH, 0);
-+	(void)gg_tlb_sync(s, SMMU_sTLBGSYNC, SMMU_sTLBGSTATUS);
- }
- 
- /* Clean the CPU cache for a GEM range before/after the GPU touches it. */
