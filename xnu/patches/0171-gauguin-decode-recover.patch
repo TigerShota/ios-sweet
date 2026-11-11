@@ -1,0 +1,448 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1944,6 +1944,8 @@
+ 	uint32_t magic, phoff, phnum;
+ 	int64_t st;
+ 	unsigned i, bad = 0;
++	static vm_offset_t zap_kva;	/* 0171: reuse the boot allocation */
++	static uint64_t zap_pa;
+ 
+ 	printf("GAUGUIN ZAP: start\n");
+ 	(void)sweet_log_flush_now();
+@@ -1981,25 +1983,33 @@
+ 		return false;
+ 	}
+ 
+-	kr = kmem_alloc_contig(kernel_map, &kva, ZAPBLK_SIZE, 0,
+-	    0xffffffffu, 63u, 0u, 1u);   /* PA 1 MiB-aligned, 16 KiB pages */
+-	if (kr != KERN_SUCCESS) {
+-		printf("GAUGUIN ZAP: alloc failed %d\n", kr);
+-		(void)sweet_log_flush_now();
+-		return false;
+-	}
+-	pn = pmap_find_phys(kernel_pmap, (addr64_t)kva);
+-	if (!pn) {
+-		printf("GAUGUIN ZAP: no phys page\n");
+-		(void)sweet_log_flush_now();
+-		return false;
+-	}
+-	pa = ptoa_64(pn);
++	if (zap_kva != 0) {
++		/* 0171: a recovery re-run reuses the boot allocation. */
++		kva = zap_kva;
++		pa = zap_pa;
++	} else {
++		kr = kmem_alloc_contig(kernel_map, &kva, ZAPBLK_SIZE, 0,
++		    0xffffffffu, 63u, 0u, 1u);   /* PA 1 MiB-aligned, 16 KiB pages */
++		if (kr != KERN_SUCCESS) {
++			printf("GAUGUIN ZAP: alloc failed %d\n", kr);
++			(void)sweet_log_flush_now();
++			return false;
++		}
++		pn = pmap_find_phys(kernel_pmap, (addr64_t)kva);
++		if (!pn) {
++			printf("GAUGUIN ZAP: no phys page\n");
++			(void)sweet_log_flush_now();
++			return false;
++		}
++		pa = ptoa_64(pn);
++		for (i = 0; i < ZAPBLK_SIZE / PAGE_SIZE; i++) {
++			pmap_set_cache_attributes(pn + i, VM_WIMG_WCOMB);
++		}
++		zap_kva = kva;
++		zap_pa = pa;
++	}
+ 	img_pa = pa;                    /* 1 MiB-aligned via pnum_mask */
+ 	meta_pa = pa + ZAPBLK_META_OFF;
+-	for (i = 0; i < ZAPBLK_SIZE / PAGE_SIZE; i++) {
+-		pmap_set_cache_attributes(pn + i, VM_WIMG_WCOMB);
+-	}
+ 	flush_dcache64((addr64_t)pa, ZAPBLK_SIZE, TRUE);
+ 	bzero((void *)kva, ZAPBLK_SIZE);
+ 	printf("GAUGUIN ZAP: block pa=%#llx img=%#llx meta=%#llx\n",
+@@ -3459,6 +3469,68 @@
+ }
+ 
+ /*
++ * 0171: name the register a type-4 write targets. Only indices this file
++ * programs - and whose readbacks the boot has verified - get a name;
++ * everything else is cross-checked offline against the generated a6xx.xml.
++ */
++static const char *
++gg_reg_name(uint32_t r)
++{
++	switch (r) {
++	case CP_RB_CNTL_DW: return "CP_RB_CNTL";
++	case CP_RB_RPTR_DW: return "CP_RB_RPTR";
++	case CP_RB_WPTR_DW: return "CP_RB_WPTR";
++	case CP_SQE_CNTL_DW: return "CP_SQE_CNTL";
++	case CP_HW_FAULT_DW: return "CP_HW_FAULT";
++	case CP_INTERRUPT_STATUS_DW: return "CP_INTERRUPT_STATUS";
++	case CP_PROTECT_STATUS_DW: return "CP_PROTECT_STATUS";
++	case CP_STATUS_1_DW: return "CP_STATUS_1";
++	case CP_SQE_INSTR_BASE_DW: return "CP_SQE_INSTR_BASE";
++	case CP_CHICKEN_DBG_DW: return "CP_CHICKEN_DBG";
++	case CP_ADDR_MODE_CNTL_DW: return "CP_ADDR_MODE_CNTL";
++	case CP_APRIV_CNTL_DW: return "CP_APRIV_CNTL";
++	case CP_ROQ_THRESHOLDS_1_DW: return "CP_ROQ_THRESHOLDS_1";
++	case CP_MEM_POOL_SIZE_DW: return "CP_MEM_POOL_SIZE";
++	case CP_AHB_CNTL_DW: return "CP_AHB_CNTL";
++	case CP_IB1_BASE_DW: return "CP_IB1_BASE";
++	case CP_IB1_REM_SIZE_DW: return "CP_IB1_REM_SIZE";
++	case CP_IB2_BASE_DW: return "CP_IB2_BASE";
++	case CP_IB2_REM_SIZE_DW: return "CP_IB2_REM_SIZE";
++	case CP_SCRATCH_REG2_DW: return "CP_SCRATCH_REG2";
++	case CP_LPAC_PROG_FIFO_SIZE_DW: return "CP_LPAC_PROG_FIFO_SIZE";
++	case RB_DBG_ECO_CNTL_DW: return "RB_DBG_ECO_CNTL";
++	case 0x8e05u: return "RB_ADDR_MODE_CNTL";
++	case RB_NC_MODE_CNTL_DW: return "RB_NC_MODE_CNTL";
++	case SP_NC_MODE_CNTL_DW: return "SP_NC_MODE_CNTL";
++	case 0xae01u: return "SP_ADDR_MODE_CNTL";
++	case TPL1_NC_MODE_CNTL_DW: return "TPL1_NC_MODE_CNTL";
++	case 0xb601u: return "TPL1_ADDR_MODE_CNTL";
++	case PC_DBG_ECO_CNTL_DW: return "PC_DBG_ECO_CNTL";
++	case 0x9e01u: return "PC_ADDR_MODE_CNTL";
++	case 0x9601u: return "VPC_ADDR_MODE_CNTL";
++	case 0x8601u: return "GRAS_ADDR_MODE_CNTL";
++	case 0xa601u: return "VFD_ADDR_MODE_CNTL";
++	case 0xbe05u: return "HLSQ_ADDR_MODE_CNTL";
++	case 0x0c01u: return "VSC_ADDR_MODE_CNTL";
++	case UCHE_MODE_CNTL_DW: return "UCHE_MODE_CNTL";
++	case 0x0e00u: return "UCHE_ADDR_MODE_CNTL";
++	case UCHE_WRITE_RANGE_MAX_LO_DW: return "UCHE_WRITE_RANGE_MAX_LO";
++	case UCHE_TRAP_BASE_LO_DW: return "UCHE_TRAP_BASE_LO";
++	case UCHE_WRITE_THRU_BASE_LO_DW: return "UCHE_WRITE_THRU_BASE_LO";
++	case UCHE_CACHE_WAYS_DW: return "UCHE_CACHE_WAYS";
++	case UCHE_FILTER_CNTL_DW: return "UCHE_FILTER_CNTL";
++	case UCHE_CLIENT_PF_DW: return "UCHE_CLIENT_PF";
++	case RBBM_SECVID_TSB_CNTL_DW: return "RBBM_SECVID_TSB_CNTL";
++	case RBBM_SECVID_TSB_ADDR_MODE_DW: return "RBBM_SECVID_TSB_ADDR_MODE";
++	case RBBM_VBIF_CLIENT_QOS_CNTL_DW: return "RBBM_VBIF_CLIENT_QOS_CNTL";
++	case RBBM_INTERFACE_HANG_INT_CNTL_DW: return
++	    "RBBM_INTERFACE_HANG_INT_CNTL";
++	case RBBM_PERFCTR_CNTL_DW: return "RBBM_PERFCTR_CNTL";
++	}
++	return NULL;
++}
++
++/*
+  * 0150: decode the IB the way the CP has to. A type-7 header carries two
+  * parity bits: bit 23 makes the popcount of opcode bits 22:16 odd, bit 15
+  * does the same for the 15-bit count. A header whose parity does not answer
+@@ -3485,7 +3557,7 @@
+ 	}
+ 	printf("GAUGUIN CP: walk %s ib %#llx/%u\n", tag,
+ 	    (unsigned long long)iova, dwords);
+-	n = dwords < 256u ? dwords : 256u;
++	n = dwords < 1024u ? dwords : 1024u;
+ 	for (o = 0; o < n; ) {
+ 		uint32_t h = gg_rd(m, 4u * o);
+ 		uint32_t op, cnt;
+@@ -3508,10 +3580,12 @@
+ 			if ((h >> 28) == 4u) {
+ 				uint32_t c4 = h & 0x7fu;
+ 				uint32_t r4 = (h >> 8) & 0x7ffffu;
++				const char *rn = gg_reg_name(r4);
+ 
+ 				printf("GAUGUIN CP: walk %s %u: type4 reg=%#x"
+-				    " cnt=%u val=%#x\n", tag, o, r4, c4,
+-				    gg_rd(m, 4u * (o + 1)));
++				    " byte=%#x val=%#x%s%s\n", tag, o, r4,
++				    r4 * 4u, gg_rd(m, 4u * (o + 1)),
++				    rn ? " name=" : "", rn ? rn : "");
+ 				if (((gg_bits(c4) & 1u) ^ ((h >> 7) & 1u)) == 0u ||
+ 				    ((gg_bits(r4) & 1u) ^ ((h >> 27) & 1u)) == 0u) {
+ 					printf("GAUGUIN CP: walk %s BAD %u: %#x"
+@@ -3774,6 +3848,244 @@
+ }
+ 
+ /*
++ * 0171: CP soft-reset recovery. v118 proved the ME dies in the first real
++ * backboardd submit (AHB stall in the nested amble IB, the ROQ holding its
++ * head dwords) and stays dead: every later submit hits the same STUCK with
++ * rptr caught up and scratch2 frozen at the previous fence, so backboardd
++ * sees -60 forever and the desktop never renders. The zap (PAS 13
++ * AUTH_AND_RESET) puts the whole core back to reset - the same mechanism the
++ * boot used - so re-run the minimal bring-up chain (GPU_SET, core clock,
++ * hw_init, secvid/addr-modes, RB regs, zap, SQE release, ME_INIT,
++ * SET_SECURE_MODE, memwrite probe) and let backboardd retry on a fresh CP.
++ * Deliberately does NOT re-run gauguin_cp_mem_setup (the cpmem/GEM page
++ * tables are DRAM state and survive the core reset) nor step22/panel/GEM
++ * selftest. gauguinrec caps the attempts (default 2, 0 = off).
++ */
++static int gg_rec_left = -1;	/* -1 unparsed; boot-arg gauguinrec */
++static int gg_rec_busy;		/* one recovery at a time */
++
++static bool
++gauguin_cp_recover(void)
++{
++	volatile uint32_t *ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
++	unsigned i, wptr, rptr;
++	uint32_t rreg, flush, mw;
++	bool ok;
++
++	printf("GAUGUIN CP: 0171 recover start sqe=%#x rptr=%u wptr=%u"
++	    " fault=%#x\n",
++	    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)),
++	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)));
++	(void)sweet_log_flush_now();
++
++	/* Halt the ME and W1C the latches (0158 proved W1C cannot clear the
++	 * running ME's HW_FAULT; the zap below resets them anyway). */
++	gg_wr(gg.gpu, GR(CP_SQE_CNTL_DW), 0);
++	gg_wr(gg.gpu, GR(CP_INTERRUPT_STATUS_DW),
++	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++	gg_wr(gg.gpu, GR(CP_HW_FAULT_DW), gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)));
++
++	/* OOB GPU_SET (set bit 16, ack bit 24) - same as boot. */
++	gauguin_gmu_wr(G_H2G_INTR_SET, 1u << 16);
++	ok = false;
++	for (i = 0; i < 5000; ++i) {
++		if (gauguin_gmu_rd(G_INTR_INFO) & (1u << 24)) {
++			ok = true;
++			break;
++		}
++		delay(10);
++	}
++	printf("GAUGUIN CP: 0171 recover gpu_set acked=%d\n", ok);
++	(void)sweet_log_flush_now();
++	if (!ok) {
++		return false;
++	}
++
++	/* Core clock back on (redundant if it never stopped, harmless). */
++	gg_wr(gg.gpucc, GPUCC_GFX3D_SRC + 4u, 0x501u);
++	gg_wr(gg.gpucc, GPUCC_GFX3D_SRC, 1u);
++	for (i = 0; i < 1000 && (gg_rd(gg.gpucc, GPUCC_GFX3D_SRC) & 1u); ++i) {
++		delay(10);
++	}
++	gg_wr(gg.gpucc, GPUCC_GFX3D_CBCR,
++	    gg_rd(gg.gpucc, GPUCC_GFX3D_CBCR) | 1u);
++
++	/* hw_init write set - identical to boot cp_start (readback-verified). */
++	CP_WRV(UCHE_WRITE_RANGE_MAX_LO_DW, 0xffffffc0);
++	gg_wr(gg.gpu, GR(UCHE_WRITE_RANGE_MAX_LO_DW) + 4u, 0x0001ffff);
++	CP_WRV(UCHE_TRAP_BASE_LO_DW, 0xfffff000);
++	gg_wr(gg.gpu, GR(UCHE_TRAP_BASE_LO_DW) + 4u, 0x0001ffff);
++	gg_wr(gg.gpu, GR(UCHE_WRITE_THRU_BASE_LO_DW), 0xfffff000);
++	gg_wr(gg.gpu, GR(UCHE_WRITE_THRU_BASE_LO_DW) + 4u, 0x0001ffff);
++	CP_WRV(UCHE_FILTER_CNTL_DW, 0x804);
++	CP_WRV(UCHE_CACHE_WAYS_DW, 0x4);
++	CP_WRV(CP_ROQ_THRESHOLDS_1_DW, 0x8040362c);
++	CP_WRV(CP_MEM_POOL_SIZE_DW, 128);
++	CP_WRV(PC_DBG_ECO_CNTL_DW, 0x00200200);
++	CP_WRV(CP_AHB_CNTL_DW, 0x1);
++	CP_WRV(CP_CHICKEN_DBG_DW, 0x1);
++	CP_WRV(RB_DBG_ECO_CNTL_DW, 0x04100000);
++	CP_WRV(RBBM_PERFCTR_CNTL_DW, 0x1);
++	CP_WRV(RBBM_PERFCTR_GPU_BUSY_MASKED_DW, 0xffffffff);
++	CP_WRV(RB_NC_MODE_CNTL_DW, 0x812);
++	CP_WRV(TPL1_NC_MODE_CNTL_DW, 0x2);
++	CP_WRV(SP_NC_MODE_CNTL_DW, 0x22);
++	CP_WRV(UCHE_MODE_CNTL_DW, 1u << 21);
++	CP_WRV(RBBM_INTERFACE_HANG_INT_CNTL_DW, 0x401fffff);
++	CP_WRV(UCHE_CLIENT_PF_DW, 0x81);
++
++	/* secvid + 64-bit addr modes + QoS/GBIF - identical to boot. */
++	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_LO_DW), 0);
++	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_LO_DW) + 4u, 0);
++	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_SZ_DW), 0);
++	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_CNTL_DW), 0);
++	{
++		static const uint32_t addr_modes[] = {
++			0x0842u, 0x0c01u, 0x8601u, 0x8e05u, 0x9e01u, 0xbe05u,
++			0xa601u, 0x9601u, 0x0e00u, 0xae01u, 0xb601u, 0xf810u,
++		};
++		unsigned m;
++
++		for (m = 0; m < sizeof(addr_modes) / sizeof(addr_modes[0]);
++		    ++m) {
++			gg_wr(gg.gpu, GR(addr_modes[m]), 1u);
++		}
++	}
++	gg_wr(gg.gpu, GR(RBBM_VBIF_CLIENT_QOS_CNTL_DW), 3);
++	gg_wr(gg.gpu, GR(RBBM_GBIF_CLIENT_QOS_CNTL_DW), 3);
++	gg_wr(gg.gpu, GR(GBIF_QSB_SIDE_DW), 0x00071620);
++	gg_wr(gg.gpu, GR(GBIF_QSB_SIDE_DW) + 4u, 0x00071620);
++	gg_wr(gg.gpu, GR(GBIF_QSB_SIDE_DW) + 8u, 0x00071620);
++	gg_wr(gg.gpu, GR(GBIF_QSB_SIDE_DW) + 12u, 0x00071620);
++	gg_wr(gg.gpu, GR(GBIF_HALT_DW), 0);
++	gg_wr(gg.gpu, GR(RBBM_GBIF_HALT_DW), 0);
++	gg_wr(gg.gpu, GR(RBBM_GBIF_CLIENT_QOS_CNTL_DW), 0);
++
++	/* RB setup - identical to boot. */
++	gg_wr(gg.gpu, GR(CP_RB_RPTR_ADDR_DW), CP_VA_SCRATCH);
++	gg_wr(gg.gpu, GR(CP_RB_RPTR_ADDR_DW) + 4u, 0);
++	gg_wr(gg.gpu, GR(CP_RB_CNTL_DW), RB_CNTL_VAL);
++	gg_wr(gg.gpu, GR(CP_RB_BASE_DW), CP_VA_RING);
++	gg_wr(gg.gpu, GR(CP_RB_BASE_DW) + 4u, 0);
++	gg_wr(gg.gpu, GR(CP_SQE_INSTR_BASE_DW), CP_VA_SQE);
++	gg_wr(gg.gpu, GR(CP_SQE_INSTR_BASE_DW) + 4u, 0);
++
++	/* v41 lesson: zap while SQE_CNTL is still 0. PAS 13 was shut down
++	 * after the boot selftest, so this re-runs the full INIT/MEM_SETUP/
++	 * AUTH sequence on the cached block (see gauguin_zap_load). */
++	if (!gauguin_zap_load()) {
++		printf("GAUGUIN CP: 0171 recover zap failed\n");
++		(void)sweet_log_flush_now();
++		return false;
++	}
++	printf("GAUGUIN CP: 0171 recover zap done sqe=%#x rptr=%u wptr=%u"
++	    " fault=%#x int=%#x\n",
++	    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)),
++	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
++	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++	(void)sweet_log_flush_now();
++
++	gg_wr(gg.gpu, GR(CP_SQE_CNTL_DW), 1);
++
++	/* ME_INIT + WAI - identical to boot. */
++	ring[0] = gg_pkt7(0x48u, 8u);
++	ring[1] = 0x2fu;
++	ring[2] = 0x00000003;
++	ring[3] = 0x20000000;
++	ring[4] = 0x00000000;
++	ring[5] = 0x00000000;
++	ring[6] = 0x00000000;
++	ring[7] = 0x00000000;
++	ring[8] = 0x00000000;
++	ring[9] = gg_pkt7(0x62u, 2u);
++	ring[10] = (uint32_t)(CP_VA_SCRATCH & 0xffffffffu);
++	ring[11] = 0u;
++	__asm__ volatile("dmb oshst" ::: "memory");
++	wptr = 12;
++	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wptr);
++	ok = false;
++	for (i = 0; i < 2000; ++i) {
++		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
++		rptr = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
++		rreg = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++		if (rptr == wptr || rreg == wptr) {
++			ok = true;
++			break;
++		}
++		delay(1000);
++	}
++	printf("GAUGUIN CP: 0171 recover ME_INIT %s (rptr=%u reg=%#x"
++	    " wptr=%u)\n", ok ? "RETIRED" : "STUCK", rptr, rreg, wptr);
++	(void)sweet_log_flush_now();
++	if (!ok) {
++		return false;
++	}
++
++	/* SET_SECURE_MODE + WAI - identical to boot. */
++	ring[12] = gg_pkt7(0x66u, 1u);
++	ring[13] = 0u;
++	ring[14] = gg_pkt7(0x62u, 2u);
++	ring[15] = (uint32_t)(CP_VA_SCRATCH & 0xffffffffu);
++	ring[16] = 0u;
++	__asm__ volatile("dmb oshst" ::: "memory");
++	wptr = 17;
++	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wptr);
++	ok = false;
++	for (i = 0; i < 2000; ++i) {
++		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 64, FALSE);
++		rptr = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH);
++		rreg = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++		if (rptr == wptr || rreg == wptr) {
++			ok = true;
++			break;
++		}
++		delay(1000);
++	}
++	printf("GAUGUIN CP: 0171 recover SET_SECURE_MODE %s (rptr=%u reg=%#x"
++	    " wptr=%u)\n", ok ? "RETIRED" : "STUCK", rptr, rreg, wptr);
++	(void)sweet_log_flush_now();
++	if (!ok) {
++		return false;
++	}
++
++	/* memwrite + CACHE_FLUSH_TS probe - the boot-proven retirement test. */
++	ring[17] = gg_pkt7(0x3du, 3u);
++	ring[18] = (uint32_t)((CP_VA_SCRATCH + 0x120u) & 0xffffffffu);
++	ring[19] = 0u;
++	ring[20] = 0x600dc0deu;
++	ring[21] = gg_pkt7(0x46u, 4u);
++	ring[22] = 0x04u;
++	ring[23] = (uint32_t)((CP_VA_SCRATCH + 0x130u) & 0xffffffffu);
++	ring[24] = 0u;
++	ring[25] = 0x600df1a5u;
++	__asm__ volatile("dmb oshst" ::: "memory");
++	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), 26u);
++	flush = 0u;
++	for (i = 0; i < 2000; ++i) {
++		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x100u),
++		    64, FALSE);
++		flush = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x130u);
++		if (flush == 0x600df1a5u) {
++			break;
++		}
++		delay(1000);
++	}
++	flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH + 0x120u), 64, FALSE);
++	mw = *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x120u);
++	printf("GAUGUIN CP: 0171 recover memwrite=%#x flush=%#x tries=%u"
++	    " fault=%#x int=%#x status1=%#x\n", mw, flush, i,
++	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
++	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)));
++	(void)sweet_log_flush_now();
++	return flush == 0x600df1a5u && mw == 0x600dc0deu;
++}
++
++/*
+  * 0124: submit real command buffers. The previous stub only advanced WPTR;
+  * the commands themselves were never put in the ring, so nothing the
+  * userspace stack submitted could ever execute. Each command buffer is now
+@@ -3843,7 +4155,7 @@
+ 		    sizeof(mark)) ? mark : 0;
+ 		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
+ 		    sizeof(clr)) ? clr : 0;
+-		printf("GAUGUIN CP: impl 0158 mark=%d clr=%d markpa=%#llx window=%uK"
++		printf("GAUGUIN CP: impl 0171 mark=%d clr=%d markpa=%#llx window=%uK"
+ 		    " step=%u max=%u\n", gg_mark_opt, gg_clr_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_STEP, GG_MARK_MAX);
+@@ -4311,6 +4623,37 @@
+ 		}
+ 	}
+ 	(void)sweet_log_flush_now();
++	/*
++	 * 0171: the ME is wedged for good (v118: every later submit hits the
++	 * same STUCK and backboardd sees -60 forever). Reset the core with the
++	 * boot zap and re-run the minimal bring-up so the next submit retries
++	 * on a fresh CP. One recovery at a time; gauguinrec caps the attempts
++	 * (default 2, 0 = off).
++	 */
++	if (gg_rec_left < 0) {
++		int rec = 2;
++
++		gg_rec_left = PE_parse_boot_argn("gauguinrec", &rec,
++		    sizeof(rec)) ? rec : 2;
++	}
++	if (gg_rec_left > 0 &&
++	    __sync_bool_compare_and_swap(&gg_rec_busy, 0, 1)) {
++		gg_rec_left--;
++		printf("GAUGUIN CP: 0171 recover begin (left=%d)\n",
++		    gg_rec_left);
++		(void)sweet_log_flush_now();
++		if (gauguin_cp_recover()) {
++			printf("GAUGUIN CP: 0171 recover ok - CP restarted\n");
++		} else {
++			/*
++			 * Restart failed: reject further submits instead of
++			 * wedging every caller with -60.
++			 */
++			cp_started = false;
++		}
++		gg_rec_busy = 0;
++		(void)sweet_log_flush_now();
++	}
+ 	return 0;
+ }
+ 
