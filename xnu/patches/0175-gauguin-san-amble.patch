@@ -1,0 +1,163 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3652,10 +3652,23 @@
+ 			    ((uint64_t)gg_rd(m, 4u * (o + 2)) << 32);
+ 			uint32_t s55 = cnt >= 3u ? gg_rd(m, 4u * (o + 3)) : 0u;
+ 
+-			printf("GAUGUIN CP: walk %s %u: op55 addr=%#llx size=%u\n",
+-			    tag, o, (unsigned long long)a55, s55);
++			/*
++			 * 0175: the payload is [ADDR_LO, ADDR_HI, DWORDS(19:0) |
++			 * TYPE(21:20)], so print the decoded count and type and
++			 * dump 32 dwords (v121 could only show the first 8, which
++			 * was enough to prove the amble repeats the DBG_ECO writes
++			 * but not what follows them).
++			 */
++			printf("GAUGUIN CP: walk %s %u: op55 addr=%#llx size=%u"
++			    " n=%u ty=%u\n", tag, o, (unsigned long long)a55,
++			    s55, s55 & 0xfffffu, (s55 >> 20) & 0x3u);
+ 			if (a55 >= GEM_VA_BASE && a55 < GEM_VA_BASE + GEM_VA_SIZE) {
+-				gg_ib_all("op55", a55, 8u);
++				uint32_t d55 = s55 & 0xfffffu;
++
++				if (d55 == 0u || d55 > 32u) {
++					d55 = 32u;
++				}
++				gg_ib_all("op55", a55, d55);
+ 			}
+ 		}
+ 		if (op == 0x6du) {
+@@ -3730,6 +3743,7 @@
+  */
+ static int gg_san_log;
+ static int gg_san_opt = -1;	/* gauguinsan: -1 unparsed, 0 off, 1 on */
++static int gg_amb_opt = -1;	/* gauguinamb: 1 sanitize, 2 nop the amble */
+ 
+ static struct {
+ 	uint64_t pa;
+@@ -3826,6 +3840,12 @@
+ 	 * 0x5041f600), and the old depth > 2 stop skipped exactly the buffer
+ 	 * that wedges. Six levels covers the deepest chain Mesa emits.
+ 	 */
++	if (gg_amb_opt < 0) {
++		int amb = 1;
++
++		gg_amb_opt = PE_parse_boot_argn("gauguinamb", &amb,
++		    sizeof(amb)) ? amb : 1;
++	}
+ 	if (gg_san_opt == 0 || depth > 6) {
+ 		return;
+ 	}
+@@ -3838,6 +3858,15 @@
+ 	}
+ 	m = gg_san_map(iova);
+ 	if (m == 0) {
++		/*
++		 * 0175: a followed buffer that is not a tracked GEM object
++		 * silently produced no NOPs in v121. Say so instead.
++		 */
++		if (depth != 0 && gg_san_log < 240) {
++			gg_san_log++;
++			printf("GAUGUIN CP: 0175 nomap depth=%d ib=%#llx"
++			    " n=%u\n", depth, (unsigned long long)iova, dwords);
++		}
+ 		return;
+ 	}
+ 	o = 0;
+@@ -3845,6 +3874,7 @@
+ 		uint32_t h = *(volatile uint32_t *)(m + 4u * o);
+ 		uint32_t type = h >> 28;
+ 		uint32_t plen, len, al, ah, nst;
++		uint32_t al55, ah55, sz55, n55, ty55;
+ 		uint32_t reg = (h >> 8) & 0x7ffffu;
+ 
+ 		if (type == 7u) {
+@@ -3877,9 +3907,9 @@
+ 			for (k = 1; k < len; ++k) {
+ 				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
+ 			}
+-			if (gg_san_log < 120) {
++			if (gg_san_log < 240) {
+ 				gg_san_log++;
+-				printf("GAUGUIN CP: 0174 san ib=%#llx off=%u"
++				printf("GAUGUIN CP: 0175 san ib=%#llx off=%u"
+ 				    " reg=%#x plen=%u -> nop\n",
+ 				    (unsigned long long)iova, o, reg, plen);
+ 			}
+@@ -3899,15 +3929,56 @@
+ 			al = *(volatile uint32_t *)(m + 4u * (o + 1));
+ 			ah = *(volatile uint32_t *)(m + 4u * (o + 2));
+ 			nst = *(volatile uint32_t *)(m + 4u * (o + 3));
+-			if (gg_san_log < 120) {
++			if (gg_san_log < 240) {
+ 				gg_san_log++;
+-				printf("GAUGUIN CP: 0174 rec depth=%d ib=%#llx"
++				printf("GAUGUIN CP: 0175 rec depth=%d ib=%#llx"
+ 				    " n=%u\n", depth + 1,
+ 				    (unsigned long long)(((uint64_t)ah << 32) | al),
+ 				    nst);
+ 			}
+ 			gg_ib_sanitize(((uint64_t)ah << 32) | al, nst,
+ 			    depth + 1);
++		} else if (type == 7u && plen >= 3u &&
++		    ((h >> 16) & 0x7fu) == 0x55u) {
++			/*
++			 * 0175: CP_SET_AMBLE names a buffer the ME loads and runs as
++			 * its own preamble, and 0174 did not follow it. v121's hang
++			 * dump showed that buffer (0x5041e600, 207 dwords, type 1)
++			 * starts with the very same RB_DBG_ECO_CNTL / TPL1_DBG_ECO
++			 * writes the PFE target had, so it was the last copy of the
++			 * privileged state that still reached the ME. Payload is
++			 * [ADDR_LO, ADDR_HI, DWORDS(19:0) | TYPE(21:20)].
++			 */
++			al55 = *(volatile uint32_t *)(m + 4u * (o + 1));
++			ah55 = *(volatile uint32_t *)(m + 4u * (o + 2));
++			sz55 = *(volatile uint32_t *)(m + 4u * (o + 3));
++			n55 = sz55 & 0xfffffu;
++			ty55 = (sz55 >> 20) & 0x3u;
++			if (gg_san_log < 240) {
++				gg_san_log++;
++				printf("GAUGUIN CP: 0175 amb depth=%d addr=%#llx"
++				    " n=%u ty=%u opt=%d\n", depth + 1,
++				    (unsigned long long)
++				    (((uint64_t)ah55 << 32) | al55),
++				    n55, ty55, gg_amb_opt);
++			}
++			if (gg_amb_opt == 2 && ty55 == 1u && n55 != 0u) {
++				/*
++				 * Experiment B: drop the amble itself. Length
++				 * preserving, so every later packet keeps its offset.
++				 */
++				*(volatile uint32_t *)(m + 4u * o) =
++				    gg_pkt7(CP_NOP, plen);
++				for (k = 1; k < len; ++k) {
++					*(volatile uint32_t *)(m + 4u * (o + k)) =
++					    0u;
++				}
++				fixed++;
++			} else if (gg_amb_opt == 1 && depth < 6 && n55 != 0u &&
++			    n55 <= 65536u) {
++				gg_ib_sanitize(((uint64_t)ah55 << 32) | al55,
++				    n55, depth + 1);
++			}
+ 		}
+ 		o += len;
+ 	}
+@@ -3916,7 +3987,7 @@
+ 		__asm__ volatile("dmb oshst" ::: "memory");
+ 	}
+ 	if (depth == 0) {
+-		printf("GAUGUIN CP: 0174 san ib=%#llx dwords=%u fixed=%u\n",
++		printf("GAUGUIN CP: 0175 san ib=%#llx dwords=%u fixed=%u\n",
+ 		    (unsigned long long)iova, dwords, fixed);
+ 	}
+ }
+@@ -4382,7 +4453,7 @@
+ 		    sizeof(mark)) ? mark : 0;
+ 		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
+ 		    sizeof(clr)) ? clr : 0;
+-		printf("GAUGUIN CP: impl 0173 mark=%d clr=%d markpa=%#llx window=%uK"
++		printf("GAUGUIN CP: impl 0175 mark=%d clr=%d markpa=%#llx window=%uK"
+ 		    " step=%u max=%u\n", gg_mark_opt, gg_clr_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_STEP, GG_MARK_MAX);
