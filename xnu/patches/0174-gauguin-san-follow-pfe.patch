@@ -1,0 +1,66 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3820,7 +3820,13 @@
+ 	vm_offset_t m;
+ 	uint32_t room, o, k, fixed = 0;
+ 
+-	if (gg_san_opt == 0 || depth > 2) {
++	/*
++	 * 0174: the v120 decode showed the amble sits one or two
++	 * CP_INDIRECT_BUFFER levels below ib1 (0x5045e000 -> 0x50466000 ->
++	 * 0x5041f600), and the old depth > 2 stop skipped exactly the buffer
++	 * that wedges. Six levels covers the deepest chain Mesa emits.
++	 */
++	if (gg_san_opt == 0 || depth > 6) {
+ 		return;
+ 	}
+ 	room = (uint32_t)((GEM_PAGE - (uint32_t)(iova & 0xfffu)) / 4u);
+@@ -3873,18 +3879,33 @@
+ 			}
+ 			if (gg_san_log < 120) {
+ 				gg_san_log++;
+-				printf("GAUGUIN CP: 0172 san ib=%#llx off=%u"
++				printf("GAUGUIN CP: 0174 san ib=%#llx off=%u"
+ 				    " reg=%#x plen=%u -> nop\n",
+ 				    (unsigned long long)iova, o, reg, plen);
+ 			}
+ 			fixed++;
+-		} else if (depth < 2 && plen >= 3u &&
++		} else if (depth < 6 && plen >= 3u &&
+ 		    (type == 3u || type == 7u) &&
+-		    (((h >> 16) & 0xffu) == CP_INDIRECT_BUFFER ||
+-		    ((h >> 16) & 0xffu) == 0x37u)) {
++		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
++		    ((h >> 16) & 0x7fu) == 0x37u)) {
++			/*
++			 * 0174: this test used & 0xff, so it never matched a PFE
++			 * header whose bit 23 parity bit is set (0x70bf8003). Every
++			 * indirect on the path to the amble is exactly that, which
++			 * is why v120's 0173 deny list never reached it. The walker
++			 * above uses & 0x7f for the same reason: bit 23 is the
++			 * opcode parity bit, not part of the opcode.
++			 */
+ 			al = *(volatile uint32_t *)(m + 4u * (o + 1));
+ 			ah = *(volatile uint32_t *)(m + 4u * (o + 2));
+ 			nst = *(volatile uint32_t *)(m + 4u * (o + 3));
++			if (gg_san_log < 120) {
++				gg_san_log++;
++				printf("GAUGUIN CP: 0174 rec depth=%d ib=%#llx"
++				    " n=%u\n", depth + 1,
++				    (unsigned long long)(((uint64_t)ah << 32) | al),
++				    nst);
++			}
+ 			gg_ib_sanitize(((uint64_t)ah << 32) | al, nst,
+ 			    depth + 1);
+ 		}
+@@ -3893,6 +3914,10 @@
+ 	if (fixed != 0u) {
+ 		flush_dcache64((addr64_t)m, 4u * room, FALSE);
+ 		__asm__ volatile("dmb oshst" ::: "memory");
++	}
++	if (depth == 0) {
++		printf("GAUGUIN CP: 0174 san ib=%#llx dwords=%u fixed=%u\n",
++		    (unsigned long long)iova, dwords, fixed);
+ 	}
+ }
+ 
