@@ -1,0 +1,126 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -693,6 +693,20 @@
+ static uint64_t sweet_log_forced;
+ static uint32_t sweet_log_secs = SWEET_LOG_SECS;
+ 
++/*
++ * 0159: panic text capture. The periodic flush thread sleeps and cannot run
++ * once the scheduler stops, so panic output stays in the RAM ring and is lost
++ * on the next power cycle. sweet_log_append() watches for the XNU panic
++ * prologue and, from then on, pushes every new byte to the partition with a
++ * polled, lock-free, printf-free write.
++ */
++static int sweet_paniclog_on = 1;
++static int sweet_panic_match;
++static volatile int sweet_panic_seen;
++static volatile int sweet_panic_busy;
++static volatile int sweet_panic_done;
++static void sweet_log_panic_flush(void);
++
+ /* Called for all console output, any context: never blocks. */
+ void sweet_log_append(const char *c, int size);
+ 
+@@ -705,6 +719,25 @@
+ 	uint64_t at = os_atomic_add_orig(&sweet_log_total, (uint64_t)size, relaxed);
+ 	for (int i = 0; i < size; i++) {
+ 		sweet_log_ring[(at + (uint64_t)i) % SWEET_LOG_SIZE] = c[i];
++	}
++
++	/* 0159: XNU always starts a panic with "panic(cpu N caller 0x...)".
++	 * _cnputs may split that line across several calls, so keep the match
++	 * state across append() calls. Nothing here blocks on a normal boot. */
++	if (sweet_paniclog_on && !sweet_panic_seen) {
++		static const char pat[] = "panic(cpu";
++		for (int i = 0; i < size && !sweet_panic_seen; i++) {
++			if (c[i] == pat[sweet_panic_match]) {
++				if (++sweet_panic_match == (int)sizeof(pat) - 1) {
++					sweet_panic_seen = 1;
++				}
++			} else {
++				sweet_panic_match = (c[i] == pat[0]) ? 1 : 0;
++			}
++		}
++	}
++	if (sweet_panic_seen) {
++		sweet_log_panic_flush();
+ 	}
+ }
+ 
+@@ -850,6 +883,64 @@
+ 	sweet_log_forced = total;
+ }
+ 
++/*
++ * 0159: same block/head write as sweet_log_flush_now(), but callable from
++ * panic context: no mutex (the panic CPU may already hold sweet_ufs_lock),
++ * no printf (a failing UFS command prints, which would re-enter append and
++ * recurse), and a busy/done guard. ufs_scsi() is polled - it rings the
++ * doorbell and spins on UTRLDBR with delay(1) - so it works with interrupts
++ * disabled. Duplicated block writes are harmless.
++ */
++static void
++sweet_log_panic_flush(void)
++{
++	uint64_t base, total, pos;
++	void *bounce;
++	int error = 0;
++
++	if (!sweet_log_ready || sweet_panic_done || sweet_panic_busy) {
++		return;
++	}
++	sweet_panic_busy = 1;
++	total = os_atomic_load(&sweet_log_total, relaxed);
++	if (total == sweet_log_forced) {
++		sweet_panic_busy = 0;
++		return;
++	}
++	base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	bounce = (void *)(su.dma + DMA_BOUNCE);
++	pos = sweet_log_forced;
++	while (pos < total && !error) {
++		uint32_t off = (uint32_t)(pos % SWEET_LOG_SIZE);
++		uint32_t blk = off / UFS_BLOCK;
++		uint64_t need = ((uint64_t)off % UFS_BLOCK + (total - pos) + UFS_BLOCK - 1) / UFS_BLOCK;
++		uint32_t n = (uint32_t)MIN(MIN(need, (uint64_t)(SWEET_LOG_SIZE / UFS_BLOCK - blk)),
++		    (uint64_t)(BOUNCE_SIZE / UFS_BLOCK));
++		memcpy(bounce, sweet_log_ring + (uint64_t)blk * UFS_BLOCK, n * UFS_BLOCK);
++		error = ufs_write_blocks(base + 1 + blk, n);
++		pos += (uint64_t)(blk + n) * UFS_BLOCK - off;
++	}
++	if (!error) {
++		struct sweet_log_header h = {
++			.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
++			.version = 1, .size = SWEET_LOG_SIZE, .total = total,
++			.seq = 0,
++		};
++		bzero(bounce, UFS_BLOCK);
++		memcpy(bounce, &h, sizeof(h));
++		error = ufs_write_blocks(base, 1);
++	}
++	if (!error) {
++		error = ufs_sync_cache();
++	}
++	if (error) {
++		sweet_panic_done = 1;   /* never retry; UFS already printed why */
++	} else {
++		sweet_log_forced = total;
++	}
++	sweet_panic_busy = 0;
++}
++
+ static void
+ sweet_log_start(void)
+ {
+@@ -860,6 +951,10 @@
+ 	if (!on || !su.writable || su.nblocks < 2 * SWEET_LOG_BLOCKS) {
+ 		return;
+ 	}
++	PE_parse_boot_argn("sweetpaniclog", &sweet_paniclog_on,
++	    sizeof(sweet_paniclog_on));
++	printf("SWEET LOG: 0159 panic capture %s\n",
++	    sweet_paniclog_on ? "armed" : "disabled");
+ 	PE_parse_boot_argn("ufslogsecs", &sweet_log_secs, sizeof(sweet_log_secs));
+ 	if (sweet_log_secs == 0 || sweet_log_secs > 60) {
+ 		sweet_log_secs = SWEET_LOG_SECS;
