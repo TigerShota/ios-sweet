@@ -1,0 +1,95 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4886,7 +4886,7 @@
+ 		    sizeof(mark)) ? mark : 0;
+ 		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
+ 		    sizeof(clr)) ? clr : 0;
+-		printf("GAUGUIN CP: impl 0187 mark=%d clr=%d markpa=%#llx window=%uK"
++		printf("GAUGUIN CP: impl 0190 mark=%d clr=%d markpa=%#llx window=%uK"
+ 		    " max=%u ibs=%u\n", gg_mark_opt, gg_clr_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_MAX, GG_MARK_IBS);
+@@ -5346,6 +5346,71 @@
+ 		printf("GAUGUIN CP: pos ib1=%#x rem=%u at=%u orig=%u ib2=%#x"
+ 		    " rem=%u count=%u\n", stuck, rem, pos, orig, ib2, rem2,
+ 		    count);
++		/*
++		 * 0190: nothing so far printed what is *at* the offset the CP
++		 * stopped on - every dump clipped an IB to its first page
++		 * (GEM_PAGE is 4 KiB, so the 2411-dword IB was never decoded).
++		 * Walk the dwords around the stop site page by page through the
++		 * cached gg_san_map() and decode the header the CP is about to
++		 * execute.
++		 */
++		for (k = 0; k < count; k++) {
++			uint32_t at0, lo, hi, idx, hh, tt, r0;
++			vm_offset_t mp;
++
++			if ((uint32_t)ai[k] != stuck || rem == 0u ||
++			    rem > wi[k]) {
++				continue;
++			}
++			at0 = wi[k] - rem;
++			lo = at0 > 8u ? at0 - 8u : 0u;
++			hi = at0 + 48u < wi[k] ? at0 + 48u : wi[k];
++			printf("GAUGUIN CP: 0190 stop ib=%u iova=%#llx at=%u"
++			    " of=%u rem=%u\n", k,
++			    (unsigned long long)ai[k], at0, wi[k], rem);
++			for (idx = lo; idx < hi; idx += 8u) {
++				printf("GAUGUIN CP: 0190 %u:", idx);
++				for (hh = 0; hh < 8u && idx + hh < hi; hh++) {
++					mp = gg_san_map(ai[k] + 4u * (idx + hh));
++					printf(" %#x", mp != 0 ? gg_rd(mp, 0) :
++					    0xdeadbeefu);
++				}
++				printf("\n");
++			}
++			mp = gg_san_map(ai[k] + 4u * at0);
++			if (mp != 0) {
++				hh = gg_rd(mp, 0);
++				tt = hh >> 28;
++				printf("GAUGUIN CP: 0190 pkt %u hdr=%#x type=%u"
++				    " plen=%u\n", at0, hh, tt,
++				    tt == 7u ? (hh & 0x3fffu) :
++				    (tt == 4u ? (hh & 0x7fu) :
++				    ((hh >> 16) & 0x3fffu) + 1u));
++			}
++			/*
++			 * 0190: stopped or merely slow? Sample the remaining
++			 * size again 200 ms later.
++			 */
++			r0 = gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW));
++			delay(200);
++			printf("GAUGUIN CP: 0190 progress rem=%u->%u rptr=%u"
++			    " wptr=%u\n", r0,
++			    gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW)),
++			    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++			    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++		}
++		if (ib2 != 0u) {
++			uint32_t idx;
++			vm_offset_t mp;
++
++			printf("GAUGUIN CP: 0190 next ib2=%#x head:", ib2);
++			for (idx = 0; idx < 16u; idx++) {
++				mp = gg_san_map((uint64_t)ib2 + 4u * idx);
++				printf(" %#x", mp != 0 ? gg_rd(mp, 0) :
++				    0xdeadbeefu);
++			}
++			printf("\n");
++		}
+ 		for (k = 0; k < count; k++) {
+ 			gg_ib_dwords("hung", addresses[k], words[k],
+ 			    (uint32_t)addresses[k] == stuck ? orig : 0u);
+@@ -5382,8 +5447,9 @@
+ 		uint32_t n = wp - start;
+ 		uint32_t k;
+ 
+-		if (n > 16u) {
+-			n = 16u;
++		/* 0190: show the whole submit window, not just 16 dwords. */
++		if (n > 64u) {
++			n = 64u;
+ 		}
+ 		printf("GAUGUIN CP: submit ring[%u] n=%u\n", start, n);
+ 		for (k = 0; k < n; k += 4u) {
