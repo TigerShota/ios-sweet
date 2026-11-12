@@ -1,0 +1,53 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4352,6 +4352,50 @@
+ 	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
+ 	(void)sweet_log_flush_now();
+ 
++	/*
++	 * 0180: boot's cp_start refuses anything but a COLD CP
++	 * (sqe=0, rptr=0, wptr=0, hw_fault=0): CP registers only stick in
++	 * that state. v126 proved the zap leaves rptr=176 wptr=4112
++	 * fault=0x40000 int=0x4, so the recover writes above were made
++	 * against a live ring. Writing only wptr=12 for ME_INIT then left
++	 * the hardware rptr at 176 - the CP sees rptr > wptr and never
++	 * fetches ME_INIT (0171 recover ME_INIT STUCK rptr=17 reg=0xb0).
++	 * Force the pointers back to zero, W1C the latches, replay the RB
++	 * setup and clear the WHERE_AM_I shadow before releasing the SQE.
++	 */
++	for (i = 0; i < 20u; ++i) {
++		gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), 0);
++		gg_wr(gg.gpu, GR(CP_RB_RPTR_DW), 0);
++		gg_wr(gg.gpu, GR(CP_HW_FAULT_DW),
++		    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)));
++		gg_wr(gg.gpu, GR(CP_INTERRUPT_STATUS_DW),
++		    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++		if (gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)) == 0 &&
++		    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)) == 0) {
++			break;
++		}
++		delay(1000);
++	}
++	gg_wr(gg.gpu, GR(CP_RB_RPTR_ADDR_DW), CP_VA_SCRATCH);
++	gg_wr(gg.gpu, GR(CP_RB_RPTR_ADDR_DW) + 4u, 0);
++	gg_wr(gg.gpu, GR(CP_RB_CNTL_DW), RB_CNTL_VAL);
++	gg_wr(gg.gpu, GR(CP_RB_BASE_DW), CP_VA_RING);
++	gg_wr(gg.gpu, GR(CP_RB_BASE_DW) + 4u, 0);
++	gg_wr(gg.gpu, GR(CP_SQE_INSTR_BASE_DW), CP_VA_SQE);
++	gg_wr(gg.gpu, GR(CP_SQE_INSTR_BASE_DW) + 4u, 0);
++	for (i = 0; i < 80u; ++i) {
++		((volatile uint32_t *)(cpmem + CPMEM_SCRATCH))[i] = 0;
++	}
++	__asm__ volatile("dmb oshst" ::: "memory");
++	printf("GAUGUIN CP: 0180 recover cold sqe=%#x rptr=%u wptr=%u"
++	    " fault=%#x int=%#x tries=%u\n",
++	    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)),
++	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
++	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)), i);
++	(void)sweet_log_flush_now();
++
+ 	gg_wr(gg.gpu, GR(CP_SQE_CNTL_DW), 1);
+ 
+ 	/* ME_INIT + WAI - identical to boot. */
