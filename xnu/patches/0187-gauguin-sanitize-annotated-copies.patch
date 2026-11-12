@@ -1,0 +1,314 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3711,9 +3711,14 @@
+  */
+ #define GG_MARK_BASE   0x800u
+ #define GG_MARK_IB     0x1000u
+-#define GG_MARK_STEP   0x2000u	/* bytes per IB copy */
+ #define GG_MARK_MAX    2000u	/* dwords per annotated copy */
+-#define GG_MARK_IBS    6u	/* 0x1000 + 6 * 0x2000 < 64 KiB */
++/*
++ * 0187: a submit carries up to 64 IBs (the first real UI draw has 22) and
++ * the old fixed 8 KiB stride only fit six, so exactly that submit fell back
++ * to the raw stream. Copies are packed from GG_MARK_IB and every IB's start
++ * is recorded, which keeps the whole 64 KiB usable.
++ */
++#define GG_MARK_IBS    64u	/* one entry per submit IB */
+ 
+ static int gg_mark_opt = -1;	/* -1 unparsed, 0 off, 1 annotate */
+ static int gg_clr_opt = -1;	/* 0158: -1 unparsed, 0 off, 1..4 below */
+@@ -3755,6 +3760,8 @@
+ static int gg_san_opt = -1;	/* gauguinsan: -1 unparsed, 0 off, 1 on */
+ static int gg_amb_opt = -1;	/* gauguinamb: 1 sanitize, 2 nop the amble */
+ static int gg_skip_nested = -1;	/* gauguinsk: >0 skip N guilty nested IBs */
++static uint32_t gg_mark_off[GG_MARK_IBS];	/* 0187: copy offset, bytes */
++static uint32_t gg_mark_len[GG_MARK_IBS];	/* 0187: copy length, dwords */
+ 
+ static struct {
+ 	uint64_t pa;
+@@ -3844,6 +3851,7 @@
+ {
+ 	vm_offset_t m;
+ 	uint32_t room, o, k, fixed = 0;
++	int ismark;
+ 
+ 	/*
+ 	 * 0174: the v120 decode showed the amble sits one or two
+@@ -3866,7 +3874,20 @@
+ 	if (gg_san_opt == 0 || depth > 6) {
+ 		return;
+ 	}
+-	room = (uint32_t)((GEM_PAGE - (uint32_t)(iova & 0xfffu)) / 4u);
++	/*
++	 * 0187: with gauguinmark=1 the CP is handed the annotated copies, but
++	 * sanitize ran after annotation and called gg_gem_pa(CP_VA_MARK) -> 0,
++	 * so it silently did nothing and the raw annotated stream executed.
++	 * Map the mark window back to its kernel alias and bound the walk by
++	 * the recorded copy length.
++	 */
++	ismark = (mark_mem != 0 && iova >= CP_VA_MARK &&
++	    iova < CP_VA_MARK + CPMEM_MARK_SIZE);
++	if (ismark) {
++		room = (CPMEM_MARK_SIZE - (uint32_t)(iova - CP_VA_MARK)) / 4u;
++	} else {
++		room = (uint32_t)((GEM_PAGE - (uint32_t)(iova & 0xfffu)) / 4u);
++	}
+ 	/*
+ 	 * 0178: v124 still wedged at the TAIL of the top-level submit IB
+ 	 * (0x50426000 offset ~241) although 0177 skip-all fired 50x on
+@@ -3877,7 +3898,7 @@
+ 	 * for the top-level IB (depth 0) so every op 0x3f/0x37/0x63 in
+ 	 * it is NOPed; nested IBs keep their recorded dwords count.
+ 	 */
+-	if (gg_skip_nested <= 0 && dwords < room) {
++	if ((ismark || gg_skip_nested <= 0) && dwords < room) {
+ 		room = dwords;
+ 	} else if (gg_skip_nested > 0 && depth > 0 && dwords < room) {
+ 		room = dwords;
+@@ -3885,7 +3906,8 @@
+ 	if (room == 0u) {
+ 		return;
+ 	}
+-	m = gg_san_map(iova);
++	m = ismark ? mark_mem + (vm_offset_t)(iova - CP_VA_MARK) :
++	    gg_san_map(iova);
+ 	if (m == 0) {
+ 		/*
+ 		 * 0175: a followed buffer that is not a tracked GEM object
+@@ -4103,12 +4125,22 @@
+ 		o += len;
+ 	}
+ 	if (fixed != 0u) {
+-		flush_dcache64((addr64_t)m, 4u * room, FALSE);
++		/*
++		 * 0187: the mark block is WCOMB - clean by physical address or
++		 * the ME can still fetch the pre-sanitize lines.
++		 */
++		if (ismark) {
++			flush_dcache64((addr64_t)(mark_pa +
++			    (iova - CP_VA_MARK)), 4u * room, TRUE);
++		} else {
++			flush_dcache64((addr64_t)m, 4u * room, FALSE);
++		}
+ 		__asm__ volatile("dmb oshst" ::: "memory");
+ 	}
+ 	if (depth == 0) {
+-		printf("GAUGUIN CP: 0175 san ib=%#llx dwords=%u fixed=%u\n",
+-		    (unsigned long long)iova, dwords, fixed);
++		printf("GAUGUIN CP: 0187 san ib=%#llx dwords=%u fixed=%u%s\n",
++		    (unsigned long long)iova, dwords, fixed,
++		    ismark ? " mark" : "");
+ 	}
+ }
+ 
+@@ -4213,7 +4245,8 @@
+ gg_mark_origin(uint32_t index, uint32_t at)
+ {
+ 	volatile uint32_t *p = (volatile uint32_t *)((mark_rd ? mark_rd :
+-	    mark_mem) + GG_MARK_IB + index * GG_MARK_STEP);
++	    mark_mem) + (index < GG_MARK_IBS ? gg_mark_off[index] :
++	    GG_MARK_IB));
+ 	uint32_t n = 0, o = 0;
+ 
+ 	while (n < at) {
+@@ -4242,6 +4275,58 @@
+ 		n += 5u;
+ 	}
+ 	return o;
++}
++
++/*
++ * 0187: read the packet at original offset "at" from the annotated copy.
++ * The copy is the raw stream plus a fixed 5-dword stamp after every packet,
++ * and sanitize is length-preserving, so walking it by packet length maps
++ * source offsets to copy offsets. Returns the bytes the ME actually fetched
++ * after sanitization, which is what the stamp names.
++ */
++static void
++gg_mark_read(uint32_t index, uint32_t at, uint32_t out[4])
++{
++	volatile uint32_t *p;
++	uint32_t n, o = 0u, pos = 0u, k;
++
++	out[0] = out[1] = out[2] = out[3] = 0u;
++	if (index >= GG_MARK_IBS || mark_mem == 0) {
++		return;
++	}
++	p = (volatile uint32_t *)((mark_rd ? mark_rd : mark_mem) +
++	    gg_mark_off[index]);
++	n = gg_mark_len[index];
++	while (pos < n) {
++		uint32_t h = p[pos];
++		uint32_t type = h >> 28;
++		uint32_t plen, len;
++
++		if (type == 7u) {
++			plen = h & 0x3fffu;
++		} else if (type == 4u) {
++			plen = h & 0x7fu;
++		} else if (type == 0u) {
++			plen = ((h >> 16) & 0x3fffu) + 1u;
++		} else {
++			break;
++		}
++		len = 1u + plen;
++		if (pos + len > n) {
++			break;
++		}
++		if (o == at) {
++			for (k = 0; k < 4u && pos + k < n; k++) {
++				out[k] = p[pos + k];
++			}
++			return;
++		}
++		o += len;
++		pos += len;
++		if (pos + 5u <= n) {
++			pos += 5u;	/* the annotation stamp */
++		}
++	}
+ }
+ 
+ /*
+@@ -4733,6 +4818,7 @@
+ 	uint32_t mwords[GG_MARK_IBS];
+ 	const uint64_t *ai = addresses;
+ 	const uint32_t *wi = words;
++	uint64_t mark_mask = 0u;	/* 0187: IBs actually annotated */
+ 	static int bad_ib_log;
+ 	static int hang_dump_log;
+ 
+@@ -4785,32 +4871,51 @@
+ 		    sizeof(mark)) ? mark : 0;
+ 		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
+ 		    sizeof(clr)) ? clr : 0;
+-		printf("GAUGUIN CP: impl 0175 mark=%d clr=%d markpa=%#llx window=%uK"
+-		    " step=%u max=%u\n", gg_mark_opt, gg_clr_opt,
++		printf("GAUGUIN CP: impl 0187 mark=%d clr=%d markpa=%#llx window=%uK"
++		    " max=%u ibs=%u\n", gg_mark_opt, gg_clr_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+-		    GG_MARK_STEP, GG_MARK_MAX);
+-	}
+-	if (gg_mark_opt && mark_mem != 0 && count <= GG_MARK_IBS) {
+-		bool annotated = true;
+-		int why = 0;
++		    GG_MARK_MAX, GG_MARK_IBS);
++	}
++	/*
++	 * 0187: annotate whatever fits instead of all-or-nothing. The first
++	 * UI submit has 22 IBs, so the old count <= 6 gate submitted it raw.
++	 * Each IB that does not fit keeps its original address; the sanitizer
++	 * below runs over ai[] - annotated copy or raw IB - and edits the
++	 * stream the CP actually fetches.
++	 */
++	if (gg_mark_opt && mark_mem != 0) {
++		uint32_t moff = GG_MARK_IB;
++		int why = 0, used = 0;
+ 
+ 		for (i = 0; i < count; i++) {
+-			uint32_t n = gg_ib_annotate(i, addresses[i], words[i],
+-			    (volatile uint32_t *)(mark_mem +
+-			    GG_MARK_IB + i * GG_MARK_STEP), GG_MARK_MAX, &why);
+-
++			uint32_t max = (CPMEM_MARK_SIZE - moff) / 4u;
++			uint32_t n = 0u;
++
++			if (max > GG_MARK_MAX) {
++				max = GG_MARK_MAX;
++			}
++			if (max != 0u) {
++				n = gg_ib_annotate(i, addresses[i], words[i],
++				    (volatile uint32_t *)(mark_mem + moff),
++				    max, &why);
++			}
+ 			if (n == 0u) {
+ 				printf("GAUGUIN CP: mark skip ib=%u iova=%#llx"
+ 				    " words=%u why=%d\n", i,
+ 				    (unsigned long long)addresses[i], words[i], why);
+-				annotated = false;
+-			} else {
+-				maddr[i] = CP_VA_MARK + GG_MARK_IB +
+-				    i * GG_MARK_STEP;
+-				mwords[i] = n;
++				maddr[i] = addresses[i];
++				mwords[i] = words[i];
++				continue;
+ 			}
+-		}
+-		if (annotated) {
++			gg_mark_off[i] = moff;
++			gg_mark_len[i] = n;
++			maddr[i] = CP_VA_MARK + moff;
++			mwords[i] = n;
++			mark_mask |= 1ull << i;
++			moff += 4u * n;
++			used++;
++		}
++		if (used != 0) {
+ 			/*
+ 			 * 0155: the copies are written through a WCOMB mapping;
+ 			 * clean them to DRAM or the ME fetches stale lines.
+@@ -4818,7 +4923,8 @@
+ 			flush_dcache64((addr64_t)mark_pa, CPMEM_MARK_SIZE, TRUE);
+ 			ai = maddr;
+ 			wi = mwords;
+-			printf("GAUGUIN CP: mark count=%u", count);
++			printf("GAUGUIN CP: mark count=%u used=%d bytes=%u",
++			    count, used, moff - GG_MARK_IB);
+ 			for (i = 0; i < count; i++) {
+ 				printf(" %u->%u", words[i], mwords[i]);
+ 			}
+@@ -4932,12 +5038,15 @@
+ 	fence = ++gg_next_fence;
+ 	start = wp;
+ 	*(volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x140u) = 0u;
+-	if (gg_mark_opt && ai == maddr) {
++	if (mark_mask != 0u) {
+ 		/*
+ 		 * 0155: every copy stamps its own word, so one IB finishing a
+ 		 * packet can no longer overwrite the stop site of another.
+ 		 */
+ 		for (i = 0; i < count; i++) {
++			if ((mark_mask & (1ull << i)) == 0u) {
++				continue;
++			}
+ 			*(volatile uint32_t *)(mark_mem + GG_MARK_BASE +
+ 			    4u * i) = 0u;
+ 		}
+@@ -5049,7 +5158,7 @@
+ 	 * 0152: the last stamp the ME wrote names the packet after the last one it
+ 	 * finished, i.e. the packet it died in (0 = it never finished the first).
+ 	 */
+-	if (gg_mark_opt && ai == maddr) {
++	if (mark_mask != 0u) {
+ 		volatile uint32_t *rd = mark_rd ? (volatile uint32_t *)mark_rd :
+ 		    (volatile uint32_t *)mark_mem;
+ 		uint32_t m = 0u, ib = count, next = 0u;
+@@ -5083,6 +5192,18 @@
+ 				    *(volatile uint32_t *)(q + 4u * (next + 2u)) : 0u,
+ 				    next + 3u < words[ib] ?
+ 				    *(volatile uint32_t *)(q + 4u * (next + 3u)) : 0u);
++			}
++			if ((mark_mask & (1ull << ib)) != 0u) {
++				uint32_t pkt[4];
++
++				gg_mark_read(ib, next, pkt);
++				/*
++				 * 0187: the raw packet above may be an indirect that
++				 * sanitize already NOPed; this is what the ME fetched.
++				 */
++				printf("GAUGUIN CP: 0187 pktcopy %u: %#x %#x"
++				    " %#x %#x\n", next, pkt[0], pkt[1],
++				    pkt[2], pkt[3]);
+ 			}
+ 		}
+ 	}
+@@ -5178,7 +5299,7 @@
+ 			if ((uint32_t)ai[k] == stuck &&
+ 			    rem != 0u && rem <= wi[k]) {
+ 				pos = wi[k] - rem;
+-				orig = (ai != addresses) ?
++				orig = ((mark_mask & (1ull << k)) != 0u) ?
+ 				    gg_mark_origin(k, pos) : pos;
+ 			}
+ 		}
