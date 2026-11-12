@@ -1,0 +1,51 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -2404,6 +2404,9 @@
+ 	gg_wr(gg.gpu, GR(CP_SQE_INSTR_BASE_DW) + 4u, 0);
+ 	val = gg_rd(gg.gpu, GR(CP_RB_CNTL_DW));
+ 	printf("GAUGUIN CP: rb cntl=%#x\n", val);
++	printf("GAUGUIN CP: 0189 ring size=%u dwords window=%#x..%#x\n",
++	    (CPMEM_SQE - CPMEM_RING) / 4u, CP_VA_RING,
++	    CP_VA_RING + (CPMEM_SQE - CPMEM_RING));
+ 	(void)sweet_log_flush_now();
+ 	val = gg_rd(gg.gpu, GR(CP_RB_BASE_DW));
+ 	printf("GAUGUIN CP: rb base=%#x\n", val);
+@@ -4812,7 +4815,18 @@
+ uint32_t
+ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t count)
+ {
+-	uint32_t ring_dw = CPMEM_RING / 4u;
++	/*
++	 * 0189: CPMEM_RING (0x4000) is the *offset* of the ring inside the
++	 * CP block, not its size. The ring window is CPMEM_RING..CPMEM_SQE
++	 * (0x4000..0xc000) = 32 KiB = 8192 dwords, which is what
++	 * RB_CNTL_VAL 0x0800020c encodes (BUFSZ 12 = log2(32 KiB in 8-byte
++	 * units)) and what 0182's recovery scrub already erased. v137 proved
++	 * it on the hardware: when the driver wrapped at 4096 dwords the CP
++	 * kept fetching linearly past slot 4095 (rptr=4272), read the
++	 * zeroed second half of the ring and died before executing the IB
++	 * (mark stamp 0).
++	 */
++	uint32_t ring_dw = (CPMEM_SQE - CPMEM_RING) / 4u;
+ 	volatile uint32_t *ring;
+ 	uint32_t need, wp, rp, fence, i, tries, start;
+ 	uint64_t maddr[GG_MARK_IBS];
+@@ -4939,12 +4953,12 @@
+ 	/*
+ 	 * 0188: v136 died on the first submit that wrapped the ring. #137
+ 	 * starts at dword 4095, is 17 dwords long and programmed
+-	 * CP_RB_WPTR=4112 while the ring is 4096 dwords; the CP mirrored
+-	 * that value (rptr=wptr=4112), fetched the zeroed tail of the ring
+-	 * window, retired no IB at all - the mark stamp stayed 0 - and
+-	 * never came back through eight recoveries. Keep the register
+-	 * inside the ring exactly like the reference driver masks
+-	 * RB_WPTR with RB_BUFSZ.
++	 * CP_RB_WPTR=4112 while the driver believed the ring was 4096
++	 * dwords; the CP mirrored that value (rptr=wptr=4112), retired no
++	 * IB at all - the mark stamp stayed 0 - and never came back through
++	 * eight recoveries. Keep the register inside the ring exactly like
++	 * the reference driver masks RB_WPTR with RB_BUFSZ. 0189 fixes the
++	 * size itself (8192 dwords); this mask is now only a guard.
+ 	 */
+ 	if (wp >= ring_dw) {
+ 		if (gg_wrap_log < 8) {
