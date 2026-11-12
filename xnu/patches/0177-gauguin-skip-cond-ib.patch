@@ -1,0 +1,29 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3924,7 +3924,8 @@
+ 		} else if (depth < 6 && plen >= 3u &&
+ 		    (type == 3u || type == 7u) &&
+ 		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
+-		    ((h >> 16) & 0x7fu) == 0x37u)) {
++		    ((h >> 16) & 0x7fu) == 0x37u ||
++		    ((h >> 16) & 0x7fu) == 0x63u)) {
+ 			/*
+ 			 * 0174: this test used & 0xff, so it never matched a PFE
+ 			 * header whose bit 23 parity bit is set (0x70bf8003). Every
+@@ -3955,8 +3956,14 @@
+ 			 * only the first/guilty one.
+ 			 */
+ 			if (gg_skip_nested > 0 &&
+-			    ((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER) {
+-				gg_skip_nested--;
++			    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
++			    ((h >> 16) & 0x7fu) == 0x37u ||
++			    ((h >> 16) & 0x7fu) == 0x63u)) {
++				/* 0177: skip ALL indirect/conditional entries when gauguinsk>0
++				 * (no per-buffer decrement). The ME wedges on op 0x63
++				 * (CP_COND_INDIRECT_BUFFER) which 0176 never reached because
++				 * it was not in the recurse branch; op 0x3f/0x37 also wedge.
++				 */
+ 				*(volatile uint32_t *)(m + 4u * o) =
+ 				    gg_pkt7(CP_NOP, plen);
+ 				for (k = 1; k < len; ++k) {
