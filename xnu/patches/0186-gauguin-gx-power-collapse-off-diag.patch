@@ -1,0 +1,45 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -883,7 +883,17 @@
+ 	gauguin_gmu_wr(G_DCACHE_CFG, 1);
+ 	gauguin_gmu_wr(G_PWR_COL_HYST_IF, 0xa1680u);
+ 	gauguin_gmu_wr(G_PWR_COL_HYST_SP, 0xa1680u);
+-	gauguin_gmu_wr(G_PWR_COL_CTRL, 0x9c40400u | 0x7u);
++	/*
++	 * 0186: keep the GX rail on for good.  Linux' a6xx GMU re-votes the
++	 * GX/MX levels before every submission and wakes an idle GX domain;
++	 * this port votes once at boot (gauguin_gx_rail_on) and has no idle /
++	 * slumber state machine, so GMU power collapse (the low three bits of
++	 * G_PWR_COL_CTRL) can switch the 3D blocks off between the CP-only
++	 * selftest and the first real draw.  A DCALL into a powered-off GX
++	 * never returns, which is exactly the PC_DCALL/GPU_BUSY wedge seen
++	 * unchanged from v124 through v133.
++	 */
++	gauguin_gmu_wr(G_PWR_COL_CTRL, 0x9c40400u);
+ 	/* Enable the GMU RPMh client - the GX vote gate (v18 miss). */
+ 	val = gauguin_gmu_rd(G_RPMH_CTRL);
+ 	printf("GAUGUIN GPU: rpmh ctrl %#x -> %#x\n", val,
+@@ -5125,6 +5135,23 @@
+ 	    gg_rd(gg.gpu, GR(CP_SQE_STAT_DATA_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_SQE_UCODE_DBG_ADDR_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_SQE_UCODE_DBG_DATA_DW)));
++	/*
++	 * 0186: v131 NOPed short op 0x63, v132 NOPed CP_WAIT_FOR_IDLE,
++	 * v133 (gauguinamb=2) NOPed CP_SET_AMBLE, yet the first HUNG
++	 * snapshot stayed bit-for-bit identical across all three:
++	 * rbbm=0xc01005 [PC_DCALL GPU_BUSY], status1=0x81004106,
++	 * sqe_pc=0x4:0x2883003f, rptr=wptr=4112, ccu=0x10000004.
++	 * The command stream is therefore not the wedge.  Print the GX
++	 * power state so a GMU-collapsed 3D domain can be named directly.
++	 */
++	printf("GAUGUIN CP: 0186 gx sptprac=%#x pwr_col=%#x boot_slumber=%#x"
++	    " votes=%#x/%#x gdsc=%#x gfx3d_cbcr=%#x gfx3d_src=%#x"
++	    " gmu_cbcr=%#x\n",
++	    gauguin_gmu_rd(G_SPTPRAC), gauguin_gmu_rd(G_PWR_COL_CTRL),
++	    gauguin_gmu_rd(G_BOOT_SLUMBER), gauguin_gmu_rd(G_GX_VOTE_IDX),
++	    gauguin_gmu_rd(G_MX_VOTE_IDX), gg_rd(gg.gpucc, GPUCC_CX_GDSC),
++	    gg_rd(gg.gpucc, GPUCC_GFX3D_CBCR), gg_rd(gg.gpucc, GPUCC_GFX3D_SRC),
++	    gg_rd(gg.gpucc, GPUCC_GMU_CBCR));
+ 	gg_rbbm_busy();
+ 	if (gg_ib_dump_log < 2) {
+ 		uint32_t stuck = gg_rd(gg.gpu, GR(CP_IB1_BASE_DW));
