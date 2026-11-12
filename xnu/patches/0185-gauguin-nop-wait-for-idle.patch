@@ -1,0 +1,35 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3961,6 +3961,32 @@
+ 				    (h >> 16) & 0x7fu, plen,
+ 				    (unsigned long long)iova, o, h);
+ 			}
++		} else if (type == 7u &&
++		    ((h >> 16) & 0x7fu) == CP_WAIT_FOR_IDLE) {
++			/*
++			 * 0185: v131's first big submit is fetched in full
++			 * (hang snap rem=0, rptr=wptr=4112) but never writes
++			 * its fence: RBBM_STATUS stays 0xc01005 with PC_DCALL
++			 * and GPU_BUSY set. That 241-dword IB contains seven
++			 * 0x70268000 (CP_WAIT_FOR_IDLE) packets, and WFI only
++			 * returns once every block reports idle - which the
++			 * wedged 3D blocks never do. gauguinmark=5 has been
++			 * able to NOP these since 0157, but the cmdline has
++			 * always carried gauguinmark=0 so it was never tried.
++			 * NOP them length-preservingly so the fence write at
++			 * the end of the IB can retire.
++			 */
++			*(volatile uint32_t *)(m + 4u * o) =
++			    gg_pkt7(CP_NOP, plen);
++			for (k = 1; k < len; ++k) {
++				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
++			}
++			fixed++;
++			if (depth == 0) {
++				printf("GAUGUIN CP: 0185 nop wfi plen=%u"
++				    " ib=%#llx off=%u hdr=%#x\n",
++				    plen, (unsigned long long)iova, o, h);
++			}
+ 		} else if (depth < 6 && plen >= 3u &&
+ 		    (type == 3u || type == 7u) &&
+ 		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
