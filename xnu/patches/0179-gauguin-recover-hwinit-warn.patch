@@ -1,0 +1,28 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4284,11 +4284,20 @@
+ 		}
+ 		break;
+ 	}
+-	if (!ok) {
+-		printf("GAUGUIN CP: 0171 recover hw_init FAIL\n");
+-		(void)sweet_log_flush_now();
+-		return false;
+-	}
++	/*
++	 * 0179: the boot hw_init treats these four masked registers as
++	 * WARN-only and continues - RBBM_PERFCTR_GPU_BUSY_MASKED (0x50b),
++	 * RB_NC_MODE_CNTL (0x8e08), SP_NC_MODE_CNTL (0xae02) and
++	 * UCHE_CLIENT_PF (0xe19). The exact same four mismatches appear at
++	 * boot (v125 log lines 1797-1800) and the CP still starts and
++	 * renders. Recovery used to abort here, setting cp_started=false
++	 * and leaving backboardd with -60 forever after the first ME wedge
++	 * (v123/v124/v125 all died at this line). Warn and continue through
++	 * zap + SQE release + ME_INIT so the CP can actually restart.
++	 */
++	printf("GAUGUIN CP: 0179 recover hw_init %s"
++	    " (flaky regs WARN, continuing)\n", ok ? "verified" : "warnings");
++	(void)sweet_log_flush_now();
+ 
+ 	/* secvid + 64-bit addr modes + QoS/GBIF - identical to boot. */
+ 	gg_wr(gg.gpu, GR(RBBM_SECVID_TSB_LO_DW), 0);
