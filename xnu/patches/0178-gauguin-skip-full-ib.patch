@@ -1,0 +1,23 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3857,7 +3857,19 @@
+ 		return;
+ 	}
+ 	room = (uint32_t)((GEM_PAGE - (uint32_t)(iova & 0xfffu)) / 4u);
+-	if (dwords < room) {
++	/*
++	 * 0178: v124 still wedged at the TAIL of the top-level submit IB
++	 * (0x50426000 offset ~241) although 0177 skip-all fired 50x on
++	 * nested IBs. The submit path records a too-short word count
++	 * (wi[i]=72) so the walker stopped at 72 and never reached the
++	 * op 0x63 the ME actually wedged on. When skipping indirect/
++	 * conditional buffers (gauguinsk>0), walk the WHOLE GEM page
++	 * for the top-level IB (depth 0) so every op 0x3f/0x37/0x63 in
++	 * it is NOPed; nested IBs keep their recorded dwords count.
++	 */
++	if (gg_skip_nested <= 0 && dwords < room) {
++		room = dwords;
++	} else if (gg_skip_nested > 0 && depth > 0 && dwords < room) {
+ 		room = dwords;
+ 	}
+ 	if (room == 0u) {
