@@ -1,0 +1,57 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4196,6 +4196,7 @@
+  */
+ static int gg_rec_left = -1;	/* -1 unparsed; boot-arg gauguinrec */
+ static int gg_rec_busy;		/* one recovery at a time */
++static int gg_rec_zaps;		/* 0182: PAS 13 must be shut down before re-INIT */
+ 
+ static bool
+ gauguin_cp_recover(void)
+@@ -4357,6 +4358,22 @@
+ 	/* v41 lesson: zap while SQE_CNTL is still 0. PAS 13 was shut down
+ 	 * after the boot selftest, so this re-runs the full INIT/MEM_SETUP/
+ 	 * AUTH sequence on the cached block (see gauguin_zap_load). */
++	/*
++	 * 0182: boot SHUTDOWNs PAS 13 after its selftest, which is why the
++	 * FIRST recovery zap can INIT_IMAGE cleanly. Our zap leaves PAS 13
++	 * authenticated/started; v128's second recovery hung right after
++	 * "phdr 2" (no "block pa=" line ever appeared) - re-INITing a live
++	 * PAS wedges TrustZone. Shut PAS 13 down before every repeat zap.
++	 */
++	if (gg_rec_zaps > 0) {
++		int64_t st = gauguin_scm_call(ZAP_FN_SHUTDOWN, 0x1u,
++		    ZAP_PAS_ID, 0, 0, NULL);
++
++		printf("GAUGUIN CP: 0182 recover pas shutdown st=%lld\n",
++		    (long long)st);
++		(void)sweet_log_flush_now();
++	}
++	gg_rec_zaps++;
+ 	if (!gauguin_zap_load()) {
+ 		printf("GAUGUIN CP: 0171 recover zap failed\n");
+ 		(void)sweet_log_flush_now();
+@@ -4405,7 +4422,23 @@
+ 	for (i = 0; i < 80u; ++i) {
+ 		((volatile uint32_t *)(cpmem + CPMEM_SCRATCH))[i] = 0;
+ 	}
++	/*
++	 * 0182: boot bzero()s the ENTIRE cpmem before the first ME_INIT, so
++	 * the ring holds only our 26 probe dwords. Recovery scrubbed the
++	 * scratch but never the ring: all 241 dwords of the wedged submit
++	 * are still sitting at ring[26..]. The CP then keeps executing
++	 * stale commands - v128's second hang has a completely different
++	 * SQE PC (0xcc860065 vs 0x2883003f) at rptr=43, and the memwrite
++	 * probe fails with status1 back at 0x81004106 even though the
++	 * post-SQE status1 was a clean 0x1000000. Scrub the whole 32 KiB
++	 * ring (CPMEM_RING 0x4000 .. CPMEM_SQE 0xc000 = 8192 dwords).
++	 */
++	for (i = 0; i < 8192u; ++i) {
++		((volatile uint32_t *)(cpmem + CPMEM_RING))[i] = 0;
++	}
+ 	__asm__ volatile("dmb oshst" ::: "memory");
++	printf("GAUGUIN CP: 0182 recover ring scrubbed 8192 dwords\n");
++	(void)sweet_log_flush_now();
+ 	printf("GAUGUIN CP: 0180 recover cold sqe=%#x rptr=%u wptr=%u"
+ 	    " fault=%#x int=%#x tries=%u\n",
+ 	    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)),
