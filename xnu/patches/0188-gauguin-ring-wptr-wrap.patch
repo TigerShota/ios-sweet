@@ -1,0 +1,58 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3298,6 +3298,7 @@
+ static int gg_state_log;
+ static int gg_hung_log;
+ static int gg_ib_dump_log;
++static int gg_wrap_log;
+ 
+ /*
+  * 0142: the CP stops retiring fences after v96's first frames (rptr==wptr,
+@@ -4936,6 +4937,25 @@
+ 	ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
+ 	wp = gg_rd(gg.gpu, GR(CP_RB_WPTR_DW));
+ 	/*
++	 * 0188: v136 died on the first submit that wrapped the ring. #137
++	 * starts at dword 4095, is 17 dwords long and programmed
++	 * CP_RB_WPTR=4112 while the ring is 4096 dwords; the CP mirrored
++	 * that value (rptr=wptr=4112), fetched the zeroed tail of the ring
++	 * window, retired no IB at all - the mark stamp stayed 0 - and
++	 * never came back through eight recoveries. Keep the register
++	 * inside the ring exactly like the reference driver masks
++	 * RB_WPTR with RB_BUFSZ.
++	 */
++	if (wp >= ring_dw) {
++		if (gg_wrap_log < 8) {
++			gg_wrap_log++;
++			printf("GAUGUIN CP: 0188 wptr %u out of range"
++			    " -> %u (ring %u dwords)\n", wp, wp % ring_dw,
++			    ring_dw);
++		}
++		wp %= ring_dw;
++	}
++	/*
+ 	 * 0148: after a fault the read pointer can be *ahead* of our write
+ 	 * pointer (v102: rptr=1918, wptr=1830) because the CP keeps prefetching
+ 	 * past the last packet we wrote. (wp - rp) then wraps to ~2^32 and looks
+@@ -5125,7 +5145,7 @@
+ 	wp++;
+ 
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+-	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wp);
++	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wp % ring_dw);
+ 
+ 	for (i = 0; i < 10000; i++) {
+ 		if (gauguin_cp_done(fence)) {
+@@ -5154,6 +5174,12 @@
+ 	    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++	/*
++	 * 0188: the submit is 4*count+13 dwords; printing its range proves
++	 * at a glance whether the CP was pointed past the end of the ring.
++	 */
++	printf("GAUGUIN CP: 0188 ring start=%u end=%u size=%u first=%#x\n",
++	    start, wp, ring_dw, ring[start % ring_dw]);
+ 	/*
+ 	 * 0152: the last stamp the ME wrote names the packet after the last one it
+ 	 * finished, i.e. the packet it died in (0 = it never finished the first).
