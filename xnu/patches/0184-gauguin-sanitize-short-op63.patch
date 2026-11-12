@@ -1,0 +1,37 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3933,6 +3933,34 @@
+ 				    (unsigned long long)iova, o, reg, plen);
+ 			}
+ 			fixed++;
++		} else if (gg_skip_nested > 0 && type == 7u && plen < 3u &&
++		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
++		    ((h >> 16) & 0x7fu) == 0x37u ||
++		    ((h >> 16) & 0x7fu) == 0x63u)) {
++			/*
++			 * 0184: 0177 says the ME wedges on op 0x63
++			 * (CP_COND_INDIRECT_BUFFER), but the NOP below only
++			 * runs when plen >= 3. v130's wedged IB
++			 * 0x50426000/241 STARTS with 0x70e30001 0 - op 0x63,
++			 * plen=1 - and every backboardd submit carries that
++			 * same header as its first packet. The walker stepped
++			 * over it untouched (0175 san ... fixed=10 only NOPed
++			 * type-4 privileged writes), so the "skip all 0x63"
++			 * promise of 0177 was never kept. Length-preserving
++			 * NOP short 0x3f/0x37/0x63 entries too, no recursion.
++			 */
++			*(volatile uint32_t *)(m + 4u * o) =
++			    gg_pkt7(CP_NOP, plen);
++			for (k = 1; k < len; ++k) {
++				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
++			}
++			fixed++;
++			if (depth == 0) {
++				printf("GAUGUIN CP: 0184 nop short op=%#x"
++				    " plen=%u ib=%#llx off=%u hdr=%#x\n",
++				    (h >> 16) & 0x7fu, plen,
++				    (unsigned long long)iova, o, h);
++			}
+ 		} else if (depth < 6 && plen >= 3u &&
+ 		    (type == 3u || type == 7u) &&
+ 		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
