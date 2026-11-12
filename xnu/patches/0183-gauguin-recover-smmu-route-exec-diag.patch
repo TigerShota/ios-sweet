@@ -1,0 +1,113 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4202,7 +4202,7 @@
+ gauguin_cp_recover(void)
+ {
+ 	volatile uint32_t *ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
+-	unsigned i, wptr, rptr;
++	unsigned i, wptr, rptr, cold_tries;
+ 	uint32_t rreg, flush, mw, val;
+ 	int rec_pass;
+ 	bool ok;
+@@ -4419,6 +4419,7 @@
+ 	gg_wr(gg.gpu, GR(CP_RB_BASE_DW) + 4u, 0);
+ 	gg_wr(gg.gpu, GR(CP_SQE_INSTR_BASE_DW), CP_VA_SQE);
+ 	gg_wr(gg.gpu, GR(CP_SQE_INSTR_BASE_DW) + 4u, 0);
++	cold_tries = i;	/* 0183: 0182's ring scrub reuses i below */
+ 	for (i = 0; i < 80u; ++i) {
+ 		((volatile uint32_t *)(cpmem + CPMEM_SCRATCH))[i] = 0;
+ 	}
+@@ -4445,7 +4446,7 @@
+ 	    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
+-	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)), i);
++	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)), cold_tries);
+ 	(void)sweet_log_flush_now();
+ 
+ 	/*
+@@ -4467,7 +4468,47 @@
+ 			    gg_rd(cb, SMMU_CB_FSYNR0),
+ 			    gg_rd(cb, SMMU_CB_SCTLR),
+ 			    gg_rd(smmu, SMMU_GFSR));
++			printf("GAUGUIN CP: 0183 recover smr2=%#x s2cr2=%#x"
++			    " cbar1=%#x cba2r1=%#x tcr1=%#x tcr2=%#x"
++			    " mair0=%#x actlr=%#x sctlr=%#x ttbr0=%#llx\n",
++			    gg_rd(smmu, SMMU_SMR(2)),
++			    gg_rd(smmu, SMMU_S2CR(2)),
++			    gg_rd(smmu, SMMU_GR1 + SMMU_CBAR(GG_CB1)),
++			    gg_rd(smmu, SMMU_GR1 + SMMU_CBA2R(GG_CB1)),
++			    gg_rd(cb, SMMU_CB_TCR),
++			    gg_rd(cb, SMMU_CB_TTBCR2),
++			    gg_rd(cb, SMMU_CB_MAIR0),
++			    gg_rd(cb, SMMU_CB_ACTLR),
++			    gg_rd(cb, SMMU_CB_SCTLR),
++			    *(volatile uint64_t *)(cb + SMMU_CB_TTBR0));
+ 			(void)sweet_log_flush_now();
++			/*
++			 * 0183: boot's mem_setup routes stream ID 0 (the CP)
++			 * through CB1 via SMR2/S2CR2 and verifies every CB1
++			 * register; recovery only W1C'd FSR and invalidated
++			 * the CB1 TLB. PAS 13 AUTH_AND_RESET may reset the
++			 * GPU-side SMMU stream routing, so v129 saw the CP
++			 * FETCH packets (hw RPTR 0xc/0x11) yet never write
++			 * the WAI shadow or memwrite scratch - exactly the
++			 * "consumed but not performed" symptom the boot
++			 * comment attributes to the ROQ dropping packets.
++			 * Replay only the two global routing registers when
++			 * they drifted, then flush the global TLB. CB1 page
++			 * tables live in DRAM and are left untouched.
++			 */
++			if (gg_rd(smmu, SMMU_SMR(2)) !=
++			    (SMR_VALID | GG_SID_CP) ||
++			    gg_rd(smmu, SMMU_S2CR(2)) != S2CR_TRANS_CB1) {
++				printf("GAUGUIN CP: 0183 recover SMMU route"
++				    " drifted - replaying SMR2/S2CR2\n");
++				(void)sweet_log_flush_now();
++				gg_wr(smmu, SMMU_S2CR(2), S2CR_TRANS_CB1);
++				gg_wr(smmu, SMMU_SMR(2),
++				    SMR_VALID | GG_SID_CP);
++				gg_wr(smmu, SMMU_TLBIALLNSNH, 0);
++				(void)gg_tlb_sync(smmu, SMMU_sTLBGSYNC,
++				    SMMU_sTLBGSTATUS);
++			}
+ 			gg_wr(cb, SMMU_CB_FSR, gg_rd(cb, SMMU_CB_FSR));
+ 			gg_wr(smmu, SMMU_GFSR, gg_rd(smmu, SMMU_GFSR));
+ 			gg_wr(cb, SMMU_CB_TLBIALL, 0);
+@@ -4512,8 +4553,18 @@
+ 		}
+ 		delay(1000);
+ 	}
++	/* 0183: rreg==wptr only proves the SQE FETCHED the packet. The
++	 * WAI shadow is the only proof it actually EXECUTED; v129 logged
++	 * rptr=0 reg=0xc -> "RETIRED" while nothing landed in scratch.
++	 * Label that case FETCHED_ONLY and dump the exec-side state. */
+ 	printf("GAUGUIN CP: 0171 recover ME_INIT %s (rptr=%u reg=%#x"
+-	    " wptr=%u)\n", ok ? "RETIRED" : "STUCK", rptr, rreg, wptr);
++	    " wptr=%u status1=%#x protect=%#x roq=%#x/%#x)\n",
++	    !ok ? "STUCK" : (rptr == wptr ? "RETIRED" : "FETCHED_ONLY"),
++	    rptr, rreg, wptr,
++	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
++	    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)));
+ 	(void)sweet_log_flush_now();
+ 	if (!ok) {
+ 		return false;
+@@ -4539,8 +4590,14 @@
+ 		}
+ 		delay(1000);
+ 	}
+-	printf("GAUGUIN CP: 0171 recover SET_SECURE_MODE %s (rptr=%u reg=%#x"
+-	    " wptr=%u)\n", ok ? "RETIRED" : "STUCK", rptr, rreg, wptr);
++	printf("GAUGUIN CP: 0171 recover SET_SECURE_MODE %s (rptr=%u"
++	    " reg=%#x wptr=%u status1=%#x protect=%#x roq=%#x/%#x)\n",
++	    !ok ? "STUCK" : (rptr == wptr ? "RETIRED" : "FETCHED_ONLY"),
++	    rptr, rreg, wptr,
++	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
++	    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)));
+ 	(void)sweet_log_flush_now();
+ 	if (!ok) {
+ 		return false;
