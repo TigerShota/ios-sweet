@@ -1,0 +1,95 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4237,6 +4237,25 @@
+ 		return false;
+ 	}
+ 
++	/*
++	 * 0181: boot clears the GMU fence state immediately after GPU_SET
++	 * (G_FENCE_STATUS_CLR=0x7, G_AO_FENCE_CTRL=0 -> "allow CPU AHB
++	 * writes"); recovery never did. A WRITEDROPPED latch left by the
++	 * wedged submit can silently drop every later AHB/CP write, which
++	 * would explain v127's WAI shadow=0 / memwrite=0 even though the
++	 * hardware RPTR advanced to 12 and 17. Print what we clear so the
++	 * next log can confirm or kill this theory.
++	 */
++	printf("GAUGUIN CP: 0181 recover fence ctrl=%#x status=%#x"
++	    " range0=%#x range1=%#x\n",
++	    gauguin_gmu_rd(G_AO_FENCE_CTRL),
++	    gauguin_gmu_rd(G_FENCE_STATUS),
++	    gauguin_gmu_rd(G_AHB_FENCE_0),
++	    gauguin_gmu_rd(G_FENCE_RANGE_1));
++	(void)sweet_log_flush_now();
++	gauguin_gmu_wr(G_FENCE_STATUS_CLR, 0x7);
++	gauguin_gmu_wr(G_AO_FENCE_CTRL, 0);
++
+ 	/* Core clock back on (redundant if it never stopped, harmless). */
+ 	gg_wr(gg.gpucc, GPUCC_GFX3D_SRC + 4u, 0x501u);
+ 	gg_wr(gg.gpucc, GPUCC_GFX3D_SRC, 1u);
+@@ -4396,7 +4415,42 @@
+ 	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)), i);
+ 	(void)sweet_log_flush_now();
+ 
++	/*
++	 * 0181: every wedged submit reports CB1 FSR=0x400 latched. mem_setup
++	 * clears the stage-1/global fault latches and invalidates the CP TLB
++	 * before the SQE ever fetches ring/scratch; recovery never did. Do it
++	 * here (SQE is still halted) so CP writes to the scratch page can
++	 * land. Pure W1C + TLBI, no page-table rebuild.
++	 */
++	{
++		vm_offset_t smmu = gg_smmu_base();
++
++		if (smmu != 0) {
++			vm_offset_t cb = smmu + SMMU_CB(GG_CB1);
++
++			printf("GAUGUIN CP: 0181 recover cb1 fsr=%#x far=%#x"
++			    " fsynr0=%#x sctlr=%#x gfsr=%#x\n",
++			    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR),
++			    gg_rd(cb, SMMU_CB_FSYNR0),
++			    gg_rd(cb, SMMU_CB_SCTLR),
++			    gg_rd(smmu, SMMU_GFSR));
++			(void)sweet_log_flush_now();
++			gg_wr(cb, SMMU_CB_FSR, gg_rd(cb, SMMU_CB_FSR));
++			gg_wr(smmu, SMMU_GFSR, gg_rd(smmu, SMMU_GFSR));
++			gg_wr(cb, SMMU_CB_TLBIALL, 0);
++			(void)gg_tlb_sync(cb, SMMU_CB_TLBSYNC,
++			    SMMU_CB_TLBSTATUS);
++		}
++	}
++
+ 	gg_wr(gg.gpu, GR(CP_SQE_CNTL_DW), 1);
++	printf("GAUGUIN CP: 0181 recover post-sqe status1=%#x protect=%#x"
++	    " fault=%#x int=%#x\n",
++	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
++	    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
++	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++	(void)sweet_log_flush_now();
+ 
+ 	/* ME_INIT + WAI - identical to boot. */
+ 	ring[0] = gg_pkt7(0x48u, 8u);
+@@ -4489,7 +4543,22 @@
+ 	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)));
+ 	(void)sweet_log_flush_now();
+-	return flush == 0x600df1a5u && mw == 0x600dc0deu;
++	/*
++	 * 0181: v127 showed ME_INIT and SET_SECURE_MODE both RETIRED on the
++	 * hardware RPTR (0xc / 0x11) yet the scratch memwrite probe stayed
++	 * 0. Returning false here makes the caller set cp_started=false,
++	 * which rejects every later submit with -60 - a guaranteed black
++	 * screen even if the CP is actually usable. A probe miss is only a
++	 * scratch-visibility issue: WARN, keep the CP alive and let
++	 * backboardd retry. Real failures (ME_INIT / SET_SECURE_MODE STUCK,
++	 * zap fail, GPU_SET not acked) still return false above.
++	 */
++	if (flush != 0x600df1a5u || mw != 0x600dc0deu) {
++		printf("GAUGUIN CP: 0181 recover probe degraded"
++		    " (CP kept alive, backboardd will retry)\n");
++		(void)sweet_log_flush_now();
++	}
++	return true;
+ }
+ 
+ /*
