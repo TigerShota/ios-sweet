@@ -1,0 +1,88 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 1ab1d90..fd8ab2f 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3831,6 +3831,8 @@ static int gg_san_log;
+ static int gg_san_opt = -1;	/* gauguinsan: -1 unparsed, 0 off, 1 on */
+ static int gg_amb_opt = -1;	/* gauguinamb: 1 sanitize, 2 nop the amble */
+ static int gg_skip_nested = -1;	/* gauguinsk: >0 skip N guilty nested IBs */
++static int gg_pfd_opt = -1;	/* 0198: gauguinpfd=1: PFE -> PFD */
++static int gg_fclr_opt = -1;	/* 0198: gauguinfclr=1: all-ones W1C */
+ static uint32_t gg_mark_off[GG_MARK_IBS];	/* 0187: copy offset, bytes */
+ static uint32_t gg_mark_len[GG_MARK_IBS];	/* 0187: copy length, dwords */
+ 
+@@ -3984,6 +3986,12 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 		gg_skip_nested = PE_parse_boot_argn("gauguinsk", &sk,
+ 		    sizeof(sk)) ? sk : 0;
+ 	}
++	if (gg_pfd_opt < 0) {
++		int pfd = 0;
++
++		gg_pfd_opt = PE_parse_boot_argn("gauguinpfd", &pfd,
++		    sizeof(pfd)) ? pfd : 0;
++	}
+ 	if (gg_san_opt == 0 || depth > 6) {
+ 		return;
+ 	}
+@@ -4205,6 +4213,28 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				if (depth == 0 && gg_skip_nested >= 2) {
+ 					first_ind = 0;
+ 				}
++				/*
++				 * 0198: every wedge from v135 to v145 sits on
++				 * CP_INDIRECT_BUFFER_PFE (op 0x3f, header 0x70bf8003)
++				 * with sqe_pc frozen in the indirect microcode. PFD
++				 * (0x37) is the same packet without the ROQ prefetch.
++				 * Rewrite ONLY the header - gg_pkt7() recomputes the
++				 * opcode parity bit - and leave the 3-dword address /
++				 * size payload untouched, so the draw IB still runs.
++				 */
++				if (gg_pfd_opt > 0 &&
++				    ((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER) {
++					gg_san_wr2(iova, m, ismark, o,
++					    gg_pkt7(0x37u, plen));
++					fixed++;
++					if (gg_san_log < 240) {
++						gg_san_log++;
++						printf("GAUGUIN CP: 0198 pfd"
++						    " ib=%#llx n=%u hdr=%#x\n",
++						    (unsigned long long)
++						    (((uint64_t)ah << 32) | al), nst, h);
++					}
++				}
+ 				gg_ib_sanitize(((uint64_t)ah << 32) | al, nst,
+ 				    depth + 1);
+ 			}
+@@ -5194,15 +5224,30 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	if (gg_clr_opt > 0) {
+ 		uint32_t intr0 = 0, intr1 = 0, hf0 = 0, hf1 = 0;
+ 
++		if (gg_fclr_opt < 0) {
++			int fc = 0;
++
++			gg_fclr_opt = PE_parse_boot_argn("gauguinfclr", &fc,
++			    sizeof(fc)) ? fc : 0;
++		}
+ 		if (gg_clr_opt == 1 || gg_clr_opt >= 3) {
+ 			intr0 = gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW));
+ 			hf0 = gg_rd(gg.gpu, GR(CP_HW_FAULT_DW));
+-			gg_wr(gg.gpu, GR(CP_INTERRUPT_STATUS_DW), intr0);
++			/* 0198: a same-value W1C left int=0x4 and fault=0x40000
++			 * latched from SQE release onwards (v145: 9/9 submits).
++			 * Try an all-ones W1C so every sticky bit is addressed. */
++			gg_wr(gg.gpu, GR(CP_INTERRUPT_STATUS_DW),
++			    gg_fclr_opt > 0 ? 0xffffffffu : intr0);
+ 			if (gg_clr_opt == 4) {
+-				gg_wr(gg.gpu, GR(CP_HW_FAULT_DW), hf0);
++				gg_wr(gg.gpu, GR(CP_HW_FAULT_DW),
++				    gg_fclr_opt > 0 ? 0xffffffffu : hf0);
+ 			}
+ 			intr1 = gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW));
+ 			hf1 = gg_rd(gg.gpu, GR(CP_HW_FAULT_DW));
++			if (gg_fclr_opt > 0) {
++				printf("GAUGUIN CP: 0198 fclr int=%#x->%#x"
++				    " fault=%#x->%#x\n", intr0, intr1, hf0, hf1);
++			}
+ 		}
+ 		if (gg_clr_opt >= 2) {
+ 			gauguin_gem_tlb_flush();
