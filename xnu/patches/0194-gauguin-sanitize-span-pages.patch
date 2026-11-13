@@ -1,186 +1,181 @@
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -3904,10 +3904,39 @@
+@@ -3920,6 +3920,38 @@
  	return false;
  }
  
 +/*
-+ * 0194: gg_ib_sanitize() clipped every IB to the first 4 KiB GEM page
++ * 0194: gg_ib_sanitize() clipped every GEM IB to the first 4 KiB page
 + * (room = (GEM_PAGE - offset)/4), so any packet past dword 1024 was never
 + * rewritten. v141 proved it: the 2411-dword UI IB 0x56162000 was sanitized
 + * only up to off=1018, while 0191 pinned the hard stop at off=1359 -- the
 + * 0x8103 GRAS_LRZ_BUFFER_BASE type-4 write. 0192 fired 8 NOPs on OTHER
-+ * short IBs and the stop did not move a single dword. Access each dword
-+ * through the bounded page cache so the walker can span as many GEM pages
-+ * as the IB actually occupies.
++ * short IBs and the stop did not move a single dword. The mark window is a
++ * flat WCOMB alias (ismark), so it keeps using m + 4*o; GEM IBs now resolve
++ * each dword through the bounded page cache and can span every page.
 + */
 +#define GG_SAN_MAX_DW 8192u
 +
 +static uint32_t
-+gg_san_rd(uint64_t iova, uint32_t o)
++gg_san_rd2(uint64_t iova, vm_offset_t m, int ismark, uint32_t o)
 +{
-+	vm_offset_t m = gg_san_map(iova + 4u * (uint64_t)o);
++	vm_offset_t a = ismark ? m + 4u * (vm_offset_t)o :
++	    gg_san_map(iova + 4u * (uint64_t)o);
 +
-+	return m != 0 ? *(volatile uint32_t *)m : 0u;
++	return a != 0 ? *(volatile uint32_t *)a : 0u;
 +}
 +
 +static void
-+gg_san_wr(uint64_t iova, uint32_t o, uint32_t v)
++gg_san_wr2(uint64_t iova, vm_offset_t m, int ismark, uint32_t o, uint32_t v)
 +{
-+	vm_offset_t m = gg_san_map(iova + 4u * (uint64_t)o);
++	vm_offset_t a = ismark ? m + 4u * (vm_offset_t)o :
++	    gg_san_map(iova + 4u * (uint64_t)o);
 +
-+	if (m != 0) {
-+		*(volatile uint32_t *)m = v;
++	if (a != 0) {
++		*(volatile uint32_t *)a = v;
 +	}
 +}
 +
  static void
  gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
  {
--	vm_offset_t m;
- 	uint32_t room, o, k, fixed = 0;
- 
- 	/*
-@@ -3947,11 +3976,18 @@
+@@ -3977,6 +4009,14 @@
  	} else if (gg_skip_nested > 0 && depth > 0 && dwords < room) {
  		room = dwords;
  	}
 +	/*
-+	 * 0194: walk the WHOLE IB, not just the first GEM page. 0178's
-+	 * "walk the full page for depth 0" stays as the lower bound, so a
-+	 * short recorded dwords count still cannot hide a tail packet.
++	 * 0194: walk the WHOLE GEM IB, not just its first page. 0178/0187's
++	 * bounds stay as the lower bound for short recorded dwords counts.
++	 * The mark window is one flat alias, so it needs no extension.
 +	 */
-+	if (dwords > room) {
++	if (!ismark && dwords > room) {
 +		room = dwords < GG_SAN_MAX_DW ? dwords : GG_SAN_MAX_DW;
 +	}
  	if (room == 0u) {
  		return;
  	}
--	m = gg_san_map(iova);
--	if (m == 0) {
-+	if (gg_san_map(iova) == 0) {
- 		/*
- 		 * 0175: a followed buffer that is not a tracked GEM object
- 		 * silently produced no NOPs in v121. Say so instead.
-@@ -3965,7 +4001,7 @@
+@@ -3996,7 +4036,7 @@
  	}
  	o = 0;
  	while (o < room) {
 -		uint32_t h = *(volatile uint32_t *)(m + 4u * o);
-+		uint32_t h = gg_san_rd(iova, o);
++		uint32_t h = gg_san_rd2(iova, m, ismark, o);
  		uint32_t type = h >> 28;
  		uint32_t plen, len, al, ah, nst;
  		uint32_t al55, ah55, sz55, n55, ty55;
-@@ -3996,10 +4032,9 @@
+@@ -4027,10 +4067,9 @@
  			 * Length-preserving CP_NOP: header plus plen zero
  			 * dwords, so every following packet keeps its offset.
  			 */
 -			*(volatile uint32_t *)(m + 4u * o) =
 -			    gg_pkt7(CP_NOP, plen);
-+			gg_san_wr(iova, o, gg_pkt7(CP_NOP, plen));
++			gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
  			for (k = 1; k < len; ++k) {
 -				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
-+				gg_san_wr(iova, o + k, 0u);
++				gg_san_wr2(iova, m, ismark, o + k, 0u);
  			}
  			if (gg_san_log < 240) {
  				gg_san_log++;
-@@ -4024,10 +4059,9 @@
+@@ -4055,10 +4094,9 @@
  			 * promise of 0177 was never kept. Length-preserving
  			 * NOP short 0x3f/0x37/0x63 entries too, no recursion.
  			 */
 -			*(volatile uint32_t *)(m + 4u * o) =
 -			    gg_pkt7(CP_NOP, plen);
-+			gg_san_wr(iova, o, gg_pkt7(CP_NOP, plen));
++			gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
  			for (k = 1; k < len; ++k) {
 -				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
-+				gg_san_wr(iova, o + k, 0u);
++				gg_san_wr2(iova, m, ismark, o + k, 0u);
  			}
  			fixed++;
  			if (depth == 0) {
-@@ -4051,10 +4085,9 @@
+@@ -4082,10 +4120,9 @@
  			 * NOP them length-preservingly so the fence write at
  			 * the end of the IB can retire.
  			 */
 -			*(volatile uint32_t *)(m + 4u * o) =
 -			    gg_pkt7(CP_NOP, plen);
-+			gg_san_wr(iova, o, gg_pkt7(CP_NOP, plen));
++			gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
  			for (k = 1; k < len; ++k) {
 -				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
-+				gg_san_wr(iova, o + k, 0u);
++				gg_san_wr2(iova, m, ismark, o + k, 0u);
  			}
  			fixed++;
  			if (depth == 0) {
-@@ -4075,9 +4108,9 @@
+@@ -4106,9 +4143,9 @@
  			 * above uses & 0x7f for the same reason: bit 23 is the
  			 * opcode parity bit, not part of the opcode.
  			 */
 -			al = *(volatile uint32_t *)(m + 4u * (o + 1));
 -			ah = *(volatile uint32_t *)(m + 4u * (o + 2));
 -			nst = *(volatile uint32_t *)(m + 4u * (o + 3));
-+			al = gg_san_rd(iova, o + 1);
-+			ah = gg_san_rd(iova, o + 2);
-+			nst = gg_san_rd(iova, o + 3);
++			al = gg_san_rd2(iova, m, ismark, o + 1);
++			ah = gg_san_rd2(iova, m, ismark, o + 2);
++			nst = gg_san_rd2(iova, m, ismark, o + 3);
  			if (gg_san_log < 240) {
  				gg_san_log++;
  				printf("GAUGUIN CP: 0175 rec depth=%d ib=%#llx"
-@@ -4105,10 +4138,9 @@
+@@ -4136,10 +4173,9 @@
  				 * (CP_COND_INDIRECT_BUFFER) which 0176 never reached because
  				 * it was not in the recurse branch; op 0x3f/0x37 also wedge.
  				 */
 -				*(volatile uint32_t *)(m + 4u * o) =
 -				    gg_pkt7(CP_NOP, plen);
-+				gg_san_wr(iova, o, gg_pkt7(CP_NOP, plen));
++				gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
  				for (k = 1; k < len; ++k) {
 -					*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
-+					gg_san_wr(iova, o + k, 0u);
++					gg_san_wr2(iova, m, ismark, o + k, 0u);
  				}
  				fixed++;
  				if (gg_san_log < 240) {
-@@ -4134,9 +4166,9 @@
+@@ -4165,9 +4201,9 @@
  			 * privileged state that still reached the ME. Payload is
  			 * [ADDR_LO, ADDR_HI, DWORDS(19:0) | TYPE(21:20)].
  			 */
 -			al55 = *(volatile uint32_t *)(m + 4u * (o + 1));
 -			ah55 = *(volatile uint32_t *)(m + 4u * (o + 2));
 -			sz55 = *(volatile uint32_t *)(m + 4u * (o + 3));
-+			al55 = gg_san_rd(iova, o + 1);
-+			ah55 = gg_san_rd(iova, o + 2);
-+			sz55 = gg_san_rd(iova, o + 3);
++			al55 = gg_san_rd2(iova, m, ismark, o + 1);
++			ah55 = gg_san_rd2(iova, m, ismark, o + 2);
++			sz55 = gg_san_rd2(iova, m, ismark, o + 3);
  			n55 = sz55 & 0xfffffu;
  			ty55 = (sz55 >> 20) & 0x3u;
  			if (gg_san_log < 240) {
-@@ -4152,11 +4184,9 @@
+@@ -4183,11 +4219,9 @@
  				 * Experiment B: drop the amble itself. Length
  				 * preserving, so every later packet keeps its offset.
  				 */
 -				*(volatile uint32_t *)(m + 4u * o) =
 -				    gg_pkt7(CP_NOP, plen);
-+				gg_san_wr(iova, o, gg_pkt7(CP_NOP, plen));
++				gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
  				for (k = 1; k < len; ++k) {
 -					*(volatile uint32_t *)(m + 4u * (o + k)) =
 -					    0u;
-+					gg_san_wr(iova, o + k, 0u);
++					gg_san_wr2(iova, m, ismark, o + k, 0u);
  				}
  				fixed++;
  			} else if (gg_amb_opt == 1 && depth < 6 && n55 != 0u &&
-@@ -4168,9 +4198,28 @@
- 		o += len;
- 	}
- 	if (fixed != 0u) {
--		flush_dcache64((addr64_t)m, 4u * room, FALSE);
-+		/* 0194: flush every page the walker touched, not one flat VA span */
-+		uint32_t pg;
+@@ -4207,10 +4241,31 @@
+ 			flush_dcache64((addr64_t)(mark_pa +
+ 			    (iova - CP_VA_MARK)), 4u * room, TRUE);
+ 		} else {
+-			flush_dcache64((addr64_t)m, 4u * room, FALSE);
++			/* 0194: flush every page the walker touched */
++			uint32_t pg;
 +
-+		for (pg = 0; pg < room; pg += GEM_PAGE / 4u) {
-+			vm_offset_t pm = gg_san_map(iova + 4u * (uint64_t)pg);
++			for (pg = 0; pg < room; pg += GEM_PAGE / 4u) {
++				vm_offset_t pm =
++				    gg_san_map(iova + 4u * (uint64_t)pg);
 +
-+			if (pm != 0) {
-+				flush_dcache64((addr64_t)pm, GEM_PAGE, FALSE);
++				if (pm != 0) {
++					flush_dcache64((addr64_t)pm,
++					    GEM_PAGE, FALSE);
++				}
 +			}
-+		}
+ 		}
  		__asm__ volatile("dmb oshst" ::: "memory");
  	}
-+	if (depth == 0 && dwords > GEM_PAGE / 4u) {
++	if (depth == 0 && !ismark && dwords > GEM_PAGE / 4u) {
 +		static int span_log;
 +
 +		if (span_log < 4) {
@@ -191,5 +186,5 @@
 +		}
 +	}
  	if (depth == 0) {
- 		printf("GAUGUIN CP: 0175 san ib=%#llx dwords=%u fixed=%u\n",
- 		    (unsigned long long)iova, dwords, fixed);
+ 		printf("GAUGUIN CP: 0187 san ib=%#llx dwords=%u fixed=%u%s\n",
+ 		    (unsigned long long)iova, dwords, fixed,
