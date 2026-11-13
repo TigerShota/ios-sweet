@@ -1,5 +1,12 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+### >>> UPDATE 2026-11-13: v139 TESTED - 67 SUBMITS RETIRED, THEN 3 HUNG; THE FIRST HARD STOP IS IB1 OFFSET 1360 INSIDE A LEGAL LRZ TYPE-4 WRITE, NOT THE PRELOADED NESTED IB2; v140/0191 ADDS PARITY-AWARE PACKET FRAMING AND READ-ONLY LRZ/CLOCK SNAPSHOT <<<
+- **Runtime result**: `out/sweetlog-v139/v139.txt` records 67 normal retires followed by three `submit state HUNG` events. At the first useful snapshot, `CP_IB1_BASE=0x55562000`, `CP_IB1_REM_SIZE=1051`, IB1 length is 2411 dwords, so the hard stop is offset 1360; the 200 ms resample remains `1051->1051`.
+- **Recovered PM4 frame**: offset 1359 is parity-valid Type-4 header `0x48810385`, register `0x8103`, count 5. Offsets 1360-1364 are five zero payloads for `GRAS_LRZ_BUFFER_BASE`, `GRAS_LRZ_BUFFER_PITCH`, and `GRAS_LRZ_FAST_CLEAR_BUFFER_BASE`. Mesa intentionally emits this legal sequence when no LRZ buffer is active. The v139 `0190 pkt 1360 hdr=0 type=0` line was an instrumentation error caused by treating `CP_IB1_REM_SIZE`'s current payload dword as a packet header.
+- **What did not execute**: the following `CP_INDIRECT_BUFFER_PFE` targets `0x5556a000` for 106 dwords, but `CP_IB2_REM_SIZE` is still zero. The nested IB2 is preloaded, not the direct trigger.
+- **Busy state**: `RBBM_STATUS=0x800005` decodes to `GPU_BUSY_IGN_AHB`, `CP_BUSY`, and `CP_AHB_BUSY_CX_MASTER`; LRZ/GRAS/CCU/RB/SP/UCHE busy bits are clear and SMMU is not stalled. SpringBoard and backboardd remain alive; the desktop is blocked by the GPU wedge rather than a separate userspace crash.
+- **v140 / 0191**: `xnu/patches/0191-gauguin-stop-packet-frame.patch` keeps the command stream unchanged. It searches backward up to 16 dwords for a parity-valid Type-4/Type-7 packet that covers the stop offset, reports header/payload/register coordinates, and reads back LRZ base/pitch/fast-clear plus top-level/GRAS/LRZ clock controls before the existing 200 ms progress sample.
+
 ## Agent handoff / active work (latest handoff 2026-11-12 20:10)
 
 ### >>> UPDATE 2026-11-12 20:10 (latest): v138 TESTED - THE 8192-DWORD RING IS RIGHT (75 SUBMITS PAST THE OLD #137 WALL RETIRE, RING REACHES DWORD 6577); THE WEDGE MOVED INTO THE RAW 2411-DWORD UI IB AT OFFSET 1360 (`rem=1051`, NESTED IB2 PRELOADED); v139/0190 DUMPS THE STOP SITE, BUILD QUEUED <<<

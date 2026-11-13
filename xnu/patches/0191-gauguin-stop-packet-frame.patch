@@ -1,0 +1,153 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 9b5116d..b2231a2 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3523,6 +3523,11 @@ gg_reg_name(uint32_t r)
+ 	case 0x9e01u: return "PC_ADDR_MODE_CNTL";
+ 	case 0x9601u: return "VPC_ADDR_MODE_CNTL";
+ 	case 0x8601u: return "GRAS_ADDR_MODE_CNTL";
++	case 0x8103u: return "GRAS_LRZ_BUFFER_BASE_LO";
++	case 0x8104u: return "GRAS_LRZ_BUFFER_BASE_HI";
++	case 0x8105u: return "GRAS_LRZ_BUFFER_PITCH";
++	case 0x8106u: return "GRAS_LRZ_FAST_CLEAR_BUFFER_BASE_LO";
++	case 0x8107u: return "GRAS_LRZ_FAST_CLEAR_BUFFER_BASE_HI";
+ 	case 0xa601u: return "VFD_ADDR_MODE_CNTL";
+ 	case 0xbe05u: return "HLSQ_ADDR_MODE_CNTL";
+ 	case 0x0c01u: return "VSC_ADDR_MODE_CNTL";
+@@ -4886,7 +4891,7 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		    sizeof(mark)) ? mark : 0;
+ 		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
+ 		    sizeof(clr)) ? clr : 0;
+-		printf("GAUGUIN CP: impl 0190 mark=%d clr=%d markpa=%#llx window=%uK"
++		printf("GAUGUIN CP: impl 0191 mark=%d clr=%d markpa=%#llx window=%uK"
+ 		    " max=%u ibs=%u\n", gg_mark_opt, gg_clr_opt,
+ 		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+ 		    GG_MARK_MAX, GG_MARK_IBS);
+@@ -5347,15 +5352,14 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		    " rem=%u count=%u\n", stuck, rem, pos, orig, ib2, rem2,
+ 		    count);
+ 		/*
+-		 * 0190: nothing so far printed what is *at* the offset the CP
+-		 * stopped on - every dump clipped an IB to its first page
+-		 * (GEM_PAGE is 4 KiB, so the 2411-dword IB was never decoded).
+-		 * Walk the dwords around the stop site page by page through the
+-		 * cached gg_san_map() and decode the header the CP is about to
+-		 * execute.
++		 * 0191: CP_IB1_REM_SIZE names the next payload dword, not always a
++		 * packet header. Search backwards for a parity-valid type-4/type-7
++		 * header whose payload covers that dword. This avoids 0190's false
++		 * "type 0" diagnosis at offset 1360, one dword after the real
++		 * GRAS_LRZ_BUFFER_BASE header at 1359.
+ 		 */
+ 		for (k = 0; k < count; k++) {
+-			uint32_t at0, lo, hi, idx, hh, tt, r0;
++			uint32_t at0, lo, hi, idx, hh, r0, back, found;
+ 			vm_offset_t mp;
+ 
+ 			if ((uint32_t)ai[k] != stuck || rem == 0u ||
+@@ -5365,11 +5369,11 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			at0 = wi[k] - rem;
+ 			lo = at0 > 8u ? at0 - 8u : 0u;
+ 			hi = at0 + 48u < wi[k] ? at0 + 48u : wi[k];
+-			printf("GAUGUIN CP: 0190 stop ib=%u iova=%#llx at=%u"
++			printf("GAUGUIN CP: 0191 stop ib=%u iova=%#llx at=%u"
+ 			    " of=%u rem=%u\n", k,
+ 			    (unsigned long long)ai[k], at0, wi[k], rem);
+ 			for (idx = lo; idx < hi; idx += 8u) {
+-				printf("GAUGUIN CP: 0190 %u:", idx);
++				printf("GAUGUIN CP: 0191 %u:", idx);
+ 				for (hh = 0; hh < 8u && idx + hh < hi; hh++) {
+ 					mp = gg_san_map(ai[k] + 4u * (idx + hh));
+ 					printf(" %#x", mp != 0 ? gg_rd(mp, 0) :
+@@ -5377,23 +5381,71 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 				}
+ 				printf("\n");
+ 			}
+-			mp = gg_san_map(ai[k] + 4u * at0);
+-			if (mp != 0) {
++			found = 0u;
++			for (back = 0u; back <= 16u && back <= at0; back++) {
++				uint32_t ho = at0 - back;
++				uint32_t type, cnt, reg, op;
++
++				mp = gg_san_map(ai[k] + 4u * ho);
++				if (mp == 0) {
++					continue;
++				}
+ 				hh = gg_rd(mp, 0);
+-				tt = hh >> 28;
+-				printf("GAUGUIN CP: 0190 pkt %u hdr=%#x type=%u"
+-				    " plen=%u\n", at0, hh, tt,
+-				    tt == 7u ? (hh & 0x3fffu) :
+-				    (tt == 4u ? (hh & 0x7fu) :
+-				    ((hh >> 16) & 0x3fffu) + 1u));
++				type = hh >> 28;
++				if (type == 4u) {
++					cnt = hh & 0x7fu;
++					reg = (hh >> 8) & 0x7ffffu;
++					if (cnt == 0u ||
++					    ((gg_bits(cnt) & 1u) ^ ((hh >> 7) & 1u)) == 0u ||
++					    ((gg_bits(reg) & 1u) ^ ((hh >> 27) & 1u)) == 0u ||
++					    at0 <= ho || at0 > ho + cnt) {
++						continue;
++					}
++					printf("GAUGUIN CP: 0191 frame hdr_at=%u hdr=%#x"
++					    " type4 reg=%#x count=%u payload=%u reg_at=%#x"
++					    "%s%s\n", ho, hh, reg, cnt, at0 - ho,
++					    reg + at0 - ho - 1u,
++					    gg_reg_name(reg) ? " name=" : "",
++					    gg_reg_name(reg) ? gg_reg_name(reg) : "");
++					found = 1u;
++					break;
++				}
++				if (type == 7u && (hh & 0x0f000000u) == 0u) {
++					cnt = hh & 0x3fffu;
++					op = (hh >> 16) & 0x7fu;
++					if (cnt == 0u ||
++					    ((gg_bits(cnt) & 1u) ^ ((hh >> 15) & 1u)) == 0u ||
++					    ((gg_bits(op) & 1u) ^ ((hh >> 23) & 1u)) == 0u ||
++					    at0 <= ho || at0 > ho + cnt) {
++						continue;
++					}
++					printf("GAUGUIN CP: 0191 frame hdr_at=%u hdr=%#x"
++					    " type7 op=%#x count=%u payload=%u\n", ho, hh,
++					    op, cnt, at0 - ho);
++					found = 1u;
++					break;
++				}
++			}
++			if (found == 0u) {
++				printf("GAUGUIN CP: 0191 frame none at=%u back=16\n",
++				    at0);
+ 			}
+ 			/*
+-			 * 0190: stopped or merely slow? Sample the remaining
+-			 * size again 200 ms later.
++			 * Read back the exact LRZ state touched by the v139 stop packet,
++			 * plus the top-level and GRAS/LRZ clock controls. Read-only: no
++			 * command-stream or hardware state is modified.
+ 			 */
++			printf("GAUGUIN CP: 0191 lrz base=%#x:%#x pitch=%#x"
++			    " fc=%#x:%#x clk=%#x gras=%#x lrzclk=%#x\n",
++			    gg_rd(gg.gpu, GR(0x8104u)), gg_rd(gg.gpu, GR(0x8103u)),
++			    gg_rd(gg.gpu, GR(0x8105u)),
++			    gg_rd(gg.gpu, GR(0x8107u)), gg_rd(gg.gpu, GR(0x8106u)),
++			    gg_rd(gg.gpu, GR(0x000aeu)),
++			    gg_rd(gg.gpu, GR(0x000c9u)),
++			    gg_rd(gg.gpu, GR(0x000c8u)));
+ 			r0 = gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW));
+ 			delay(200);
+-			printf("GAUGUIN CP: 0190 progress rem=%u->%u rptr=%u"
++			printf("GAUGUIN CP: 0191 progress rem=%u->%u rptr=%u"
+ 			    " wptr=%u\n", r0,
+ 			    gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW)),
+ 			    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
+@@ -5403,7 +5455,7 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			uint32_t idx;
+ 			vm_offset_t mp;
+ 
+-			printf("GAUGUIN CP: 0190 next ib2=%#x head:", ib2);
++			printf("GAUGUIN CP: 0191 next ib2=%#x head:", ib2);
+ 			for (idx = 0; idx < 16u; idx++) {
+ 				mp = gg_san_map((uint64_t)ib2 + 4u * idx);
+ 				printf(" %#x", mp != 0 ? gg_rd(mp, 0) :
