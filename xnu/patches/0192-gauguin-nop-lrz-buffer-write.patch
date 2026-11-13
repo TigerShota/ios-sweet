@@ -1,0 +1,33 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3819,7 +3819,30 @@
+ gg_san_deny(uint32_t r)
+ {
+ 	unsigned k;
++	/*
++	 * 0192: v140/0191 pinned the hard stop to IB1 offset 1360, the first
++	 * payload dword of a type-4 packet writing GRAS_LRZ_BUFFER_BASE /
++	 * PITCH / FAST_CLEAR_BASE (0x8103..0x8107). All five payload dwords
++	 * are zero and the registers read back zero, so NOPing this packet is
++	 * state-preserving - the hardware already holds those values. When the
++	 * CP wedges here only CP_AHB_CX and GPU_BUSY are set, i.e. the AHB
++	 * write itself never completes. gauguinlrz=0 disables this NOP.
++	 */
++	static int lrz_opt = -1, lrz_log = 0;
+ 
++	if (lrz_opt < 0) {
++		int lrz = 1;
++
++		lrz_opt = PE_parse_boot_argn("gauguinlrz", &lrz,
++		    sizeof(lrz)) ? lrz : 1;
++	}
++	if (lrz_opt != 0 && r >= 0x8103u && r <= 0x8107u) {
++		if (lrz_log < 8) {
++			lrz_log++;
++			printf("GAUGUIN CP: 0192 lrz nop reg=%#x\n", r);
++		}
++		return true;
++	}
+ 	if ((r >= 0x800u && r <= 0x849u) ||
+ 	    (r >= 0x8e00u && r <= 0x8e1fu) ||
+ 	    (r >= 0xf800u && r <= 0xf813u)) {
