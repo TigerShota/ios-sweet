@@ -1,0 +1,134 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3347,6 +3347,62 @@
+ }
+ 
+ /*
++ * 0193: every temporary CPU view of a GEM page called ml_io_map() and was
++ * never unmapped. sanitize and the IB dumps run on every submit (571 submits
++ * in v140), which filled the 8 MiB io_submap; late userspace maps then died
++ * with kmem_alloc(16384) failed with 3 (KERN_NO_SPACE) -> panic(cpu 4).
++ * Share one bounded cache and unmap a slot before reusing it, so live
++ * mappings stay under GG_TMP_PG_N * 4 KiB. Every caller consumes the pointer
++ * immediately, so rotation cannot invalidate a view still in use. Boot-time
++ * one-shot mappings (scan probe, mark_rd, panel_rd) are left alone.
++ */
++#define GG_TMP_PG_N 32
++
++static struct {
++	uint64_t pa;
++	vm_offset_t base;
++} gg_tmp_pg[GG_TMP_PG_N];
++static int gg_tmp_pg_n;
++static unsigned gg_tmp_rot;
++static int gg_tmp_unmap_log;
++
++static vm_offset_t
++gg_tmp_map(uint64_t pa)
++{
++	vm_offset_t base;
++	int i;
++
++	pa &= ~0xfffull;
++	for (i = 0; i < gg_tmp_pg_n; ++i) {
++		if (gg_tmp_pg[i].pa == pa) {
++			return gg_tmp_pg[i].base;
++		}
++	}
++	base = ml_io_map((vm_offset_t)pa, GEM_PAGE);
++	if (base == 0) {
++		return 0;
++	}
++	if (gg_tmp_pg_n < GG_TMP_PG_N) {
++		i = gg_tmp_pg_n++;
++	} else {
++		i = (int)(gg_tmp_rot++ % GG_TMP_PG_N);
++		if (gg_tmp_pg[i].base != 0) {
++			ml_io_unmap(gg_tmp_pg[i].base, GEM_PAGE);
++			if (gg_tmp_unmap_log < 4) {
++				gg_tmp_unmap_log++;
++				printf("GAUGUIN CP: 0193 io cache unmap"
++				    " base=%#llx pa=%#llx\n",
++				    (unsigned long long)gg_tmp_pg[i].base,
++				    (unsigned long long)gg_tmp_pg[i].pa);
++			}
++		}
++	}
++	gg_tmp_pg[i].pa = pa;
++	gg_tmp_pg[i].base = base;
++	return base;
++}
++
++/*
+  * 0148: read a GPU-side IB back through its GEM page table entry, the same
+  * translation gg_gem_pa() does for the 0146 timestamp dump. Every IB the
+  * window server builds is page aligned and smaller than a page, so one
+@@ -3370,7 +3426,7 @@
+ 		    (unsigned long long)iova);
+ 		return;
+ 	}
+-	m = ml_io_map((vm_offset_t)(pa & ~0xfffull), GEM_PAGE);
++	m = gg_tmp_map(pa);
+ 	if (m == 0) {
+ 		return;
+ 	}
+@@ -3424,7 +3480,7 @@
+ 		    (unsigned long long)iova);
+ 		return 0;
+ 	}
+-	base = ml_io_map((vm_offset_t)(pa & ~0xfffull), GEM_PAGE);
++	base = gg_tmp_map(pa);
+ 	if (base == 0) {
+ 		return 0;
+ 	}
+@@ -3756,12 +3812,7 @@
+ static int gg_amb_opt = -1;	/* gauguinamb: 1 sanitize, 2 nop the amble */
+ static int gg_skip_nested = -1;	/* gauguinsk: >0 skip N guilty nested IBs */
+ 
+-static struct {
+-	uint64_t pa;
+-	vm_offset_t base;
+-} gg_san_pg[8];
+-static int gg_san_pg_n;
+-static int gg_san_rot;
++/* 0193: gg_san_map() now uses the bounded gg_tmp_map() cache. */
+ 
+ static const uint32_t gg_san_addr_modes[] = {
+ 	0x0842u, 0x0c01u, 0x8601u, 0x8e05u, 0x9e01u, 0xbe05u,
+@@ -3794,24 +3845,15 @@
+ {
+ 	uint64_t pg = gg_gem_pa(iova) & ~0xfffull;
+ 	vm_offset_t base;
+-	int i;
+ 
+ 	if (pg == 0u) {
+ 		return 0;
+ 	}
+-	for (i = 0; i < gg_san_pg_n; ++i) {
+-		if (gg_san_pg[i].pa == pg) {
+-			return gg_san_pg[i].base +
+-			    (vm_offset_t)(iova & 0xfffu);
+-		}
+-	}
+-	base = ml_io_map((vm_offset_t)pg, GEM_PAGE);
++	/* 0193: bounded shared cache; the old 8-slot cache leaked on rotation */
++	base = gg_tmp_map(pg);
+ 	if (base == 0) {
+ 		return 0;
+ 	}
+-	i = gg_san_pg_n < 8 ? gg_san_pg_n++ : (gg_san_rot++ % 8);
+-	gg_san_pg[i].pa = pg;
+-	gg_san_pg[i].base = base;
+ 	return base + (vm_offset_t)(iova & 0xfffu);
+ }
+ 
+@@ -5293,8 +5335,7 @@
+ 			uint32_t v = 0;
+ 
+ 			if (pa != 0u) {
+-				m = ml_io_map((vm_offset_t)(pa & ~0xfffull),
+-				    GEM_PAGE);
++				m = gg_tmp_map(pa);
+ 			}
+ 			if (m != 0) {
+ 				v = *(volatile uint32_t *)
