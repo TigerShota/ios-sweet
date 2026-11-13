@@ -1,0 +1,313 @@
+diff --git "a/temp\\relocbase\\bsd\\dev\\gauguin_gpu.c" "b/temp\\relocnew\\bsd\\dev\\gauguin_gpu.c"
+
+index 1ab1d90..877665e 100644
+
+--- "a/temp\\relocbase\\bsd\\dev\\gauguin_gpu.c"
+
++++ "b/temp\\relocnew\\bsd\\dev\\gauguin_gpu.c"
+
+@@ -3834,6 +3834,19 @@ static int gg_skip_nested = -1;	/* gauguinsk: >0 skip N guilty nested IBs */
+
+ static uint32_t gg_mark_off[GG_MARK_IBS];	/* 0187: copy offset, bytes */
+
+ static uint32_t gg_mark_len[GG_MARK_IBS];	/* 0187: copy length, dwords */
+
+ 
+
++/*
+
++ * 0198: the GEM self-test proves the ME fetches a GEM command buffer as IB1
+
++ * and executes it (memwrite/event PASS). The hang is specific to a NESTED
+
++ * entry: CP_IB2_BASE is loaded but CP_IB2_REM_SIZE stays 0 and the SQE freezes
+
++ * in the CP_INDIRECT_BUFFER microcode (sqe_pc 0x2883003f, identical v135..v145).
+
++ * The reference driver's IBs all live in CP memory, where its nested fetches
+
++ * work. So copy every nested IB into the mark block (CP VA, mapped in the CP's
+
++ * own L3) and point the entry there; the ME then fetches IB2 from the same
+
++ * place as the annotated top-level IB.
+
++ */
+
++static uint32_t gg_reloc_off;		/* next free byte in the mark block */
+
++static int gg_reloc_dirty;		/* a copy was written, needs a clean */
+
++
+
+ /* 0193: gg_san_map() now uses the bounded gg_tmp_map() cache. */
+
+ 
+
+ static const uint32_t gg_san_addr_modes[] = {
+
+@@ -3958,6 +3971,37 @@ gg_san_wr2(uint64_t iova, vm_offset_t m, int ismark, uint32_t o, uint32_t v)
+
+ 	}
+
+ }
+
+ 
+
++/*
+
++ * 0198: copy a nested command buffer into the mark block. The mark block is
+
++ * mapped in the CP's own L3 (CP_VA_MARK), so the ME fetches the copy through
+
++ * the same path as the annotated top-level IB; the original GEM IOVA is not
+
++ * reachable as an IB2. Returns the byte offset in the mark block, or 0.
+
++ */
+
++static uint32_t
+
++gg_reloc_ib(uint64_t src, uint32_t dwords)
+
++{
+
++	uint32_t off = gg_reloc_off, o;
+
++
+
++	if (mark_mem == 0 || dwords == 0u || dwords > GG_SAN_MAX_DW) {
+
++		return 0u;
+
++	}
+
++	if (off < GG_MARK_IB || off + 4u * dwords > CPMEM_MARK_SIZE) {
+
++		return 0u;
+
++	}
+
++	for (o = 0; o < dwords; o++) {
+
++		*(volatile uint32_t *)(mark_mem + off + 4u * (vm_offset_t)o) =
+
++		    gg_san_rd2(src, 0, 0, o);
+
++	}
+
++	gg_reloc_off = off + 4u * dwords;
+
++	gg_reloc_dirty = 1;
+
++	/*
+
++	 * The mark block is WCOMB. Clean the copy now: the sanitizer may make
+
++	 * no further edit to it, so its own "fixed" flush would not run.
+
++	 */
+
++	flush_dcache64((addr64_t)(mark_pa + off), 4u * dwords, TRUE);
+
++	return off;
+
++}
+
++
+
+ static void
+
+ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+
+ {
+
+@@ -4171,7 +4215,51 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+
+ 			 * IB. Decrement once per skipped buffer so a small count hits
+
+ 			 * only the first/guilty one.
+
+ 			 */
+
+-			if ((gg_skip_nested == 1 ||
+
++			if (gg_skip_nested == 3 && mark_mem != 0) {
+
++				/*
+
++				 * 0198: copy the nested IB into the mark block
+
++				 * (CP VA) and point the entry there. The ME
+
++				 * then fetches IB2 from CP memory, the path the
+
++				 * reference driver uses, instead of a GEM IOVA
+
++				 * that leaves CP_IB2_REM_SIZE at 0.
+
++				 */
+
++				uint64_t nsrc = ((uint64_t)ah << 32) | al;
+
++				uint32_t noff = gg_reloc_ib(nsrc, nst);
+
++
+
++				if (noff != 0u) {
+
++					gg_san_wr2(iova, m, ismark, o + 1,
+
++					    (uint32_t)(CP_VA_MARK + noff));
+
++					gg_san_wr2(iova, m, ismark, o + 2, 0u);
+
++					fixed++;
+
++					if (gg_san_log < 240) {
+
++						gg_san_log++;
+
++						printf("GAUGUIN CP: 0198 reloc"
+
++						    " depth=%d ib=%#llx n=%u"
+
++						    " -> %#x\n", depth + 1,
+
++						    (unsigned long long)nsrc,
+
++						    nst,
+
++						    (uint32_t)(CP_VA_MARK + noff));
+
++					}
+
++					gg_ib_sanitize(CP_VA_MARK + noff, nst,
+
++					    depth + 1);
+
++				} else {
+
++					/* no room: skip it, never let the ME fetch it */
+
++					gg_san_wr2(iova, m, ismark, o,
+
++					    gg_pkt7(CP_NOP, plen));
+
++					for (k = 1; k < len; ++k) {
+
++						gg_san_wr2(iova, m, ismark,
+
++						    o + k, 0u);
+
++					}
+
++					fixed++;
+
++					if (gg_san_log < 240) {
+
++						gg_san_log++;
+
++						printf("GAUGUIN CP: 0198 reloc"
+
++						    " full ib=%#llx n=%u\n",
+
++						    (unsigned long long)nsrc,
+
++						    nst);
+
++					}
+
++				}
+
++			} else if ((gg_skip_nested == 1 ||
+
+ 			    (gg_skip_nested >= 2 && depth == 0 && first_ind)) &&
+
+ 			    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
+
+ 			    ((h >> 16) & 0x7fu) == 0x37u ||
+
+@@ -5042,6 +5130,13 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+
+ 	 * below runs over ai[] - annotated copy or raw IB - and edits the
+
+ 	 * stream the CP actually fetches.
+
+ 	 */
+
++	/*
+
++	 * 0198: nested IBs are relocated into the free tail of the mark
+
++	 * block, after the annotated top-level copies (set again below once
+
++	 * the copies are placed).
+
++	 */
+
++	gg_reloc_off = GG_MARK_IB;
+
++	gg_reloc_dirty = 0;
+
+ 	if (gg_mark_opt && mark_mem != 0) {
+
+ 		uint32_t moff = GG_MARK_IB;
+
+ 		int why = 0, used = 0;
+
+@@ -5090,6 +5185,8 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+
+ 			printf("\n");
+
+ 			(void)sweet_log_flush_now();
+
+ 		}
+
++		/* 0198: relocations start after the annotated copies */
+
++		gg_reloc_off = (moff + 0xffu) & ~0xffu;
+
+ 	}
+
+ 
+
+ 	ring = (volatile uint32_t *)(cpmem + CPMEM_RING);
+
+@@ -5269,6 +5366,17 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+
+ 	for (i = 0; i < count; i++) {
+
+ 		gg_ib_sanitize(ai[i], wi[i], 0);
+
+ 	}
+
++	/*
+
++	 * 0198: the relocated copies live in the WCOMB mark block. The
+
++	 * per-copy clean already ran, but clean the whole block once more
+
++	 * after the walker in case a nested entry was rewritten in a copy.
+
++	 */
+
++	if (gg_reloc_dirty) {
+
++		printf("GAUGUIN CP: 0198 reloc end=%#x\n", gg_reloc_off);
+
++		(void)sweet_log_flush_now();
+
++		flush_dcache64((addr64_t)mark_pa, CPMEM_MARK_SIZE, TRUE);
+
++		gg_reloc_dirty = 0;
+
++	}
+
+ 	for (i = 0; i < count; i++) {
+
+ 		/*
+
+ 		 * a6xx (non-legacy PM4) cp_gpuaddr writes a 64-bit address, so
+
+�
