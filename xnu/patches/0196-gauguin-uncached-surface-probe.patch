@@ -1,0 +1,436 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index d445181..72994ae 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3350,6 +3350,68 @@ gg_rbbm_busy(void)
+ 	printf("]\n");
+ }
+ 
++/*
++ * 0193: every temporary CPU view of a GEM page called ml_io_map() and was
++ * never unmapped. sanitize and the IB dumps run on every submit (571 submits
++ * in v140), which filled the 8 MiB io_submap; late userspace maps then died
++ * with kmem_alloc(16384) failed with 3 (KERN_NO_SPACE) -> panic(cpu 4).
++ * Share one bounded cache and unmap a slot before reusing it, so live
++ * mappings stay under GG_TMP_PG_N * 4 KiB. Every caller consumes the pointer
++ * immediately, so rotation cannot invalidate a view still in use. Boot-time
++ * one-shot mappings (scan probe, mark_rd, panel_rd) are left alone.
++ */
++#define GG_TMP_PG_N 32
++#if defined(__arm64__)
++/* 0195: x86_64 has no ml_io_unmap; the phone kernel is arm64. */
++extern void ml_io_unmap(vm_offset_t, vm_size_t);
++#endif
++
++static struct {
++	uint64_t pa;
++	vm_offset_t base;
++} gg_tmp_pg[GG_TMP_PG_N];
++static int gg_tmp_pg_n;
++static unsigned gg_tmp_rot;
++static int gg_tmp_unmap_log;
++
++static vm_offset_t
++gg_tmp_map(uint64_t pa)
++{
++	vm_offset_t base;
++	int i;
++
++	pa &= ~0xfffull;
++	for (i = 0; i < gg_tmp_pg_n; ++i) {
++		if (gg_tmp_pg[i].pa == pa) {
++			return gg_tmp_pg[i].base;
++		}
++	}
++	base = ml_io_map((vm_offset_t)pa, GEM_PAGE);
++	if (base == 0) {
++		return 0;
++	}
++	if (gg_tmp_pg_n < GG_TMP_PG_N) {
++		i = gg_tmp_pg_n++;
++	} else {
++		i = (int)(gg_tmp_rot++ % GG_TMP_PG_N);
++		if (gg_tmp_pg[i].base != 0) {
++#if defined(__arm64__)
++			ml_io_unmap(gg_tmp_pg[i].base, GEM_PAGE);
++#endif
++			if (gg_tmp_unmap_log < 4) {
++				gg_tmp_unmap_log++;
++				printf("GAUGUIN CP: 0193 io cache unmap"
++				    " base=%#llx pa=%#llx\n",
++				    (unsigned long long)gg_tmp_pg[i].base,
++				    (unsigned long long)gg_tmp_pg[i].pa);
++			}
++		}
++	}
++	gg_tmp_pg[i].pa = pa;
++	gg_tmp_pg[i].base = base;
++	return base;
++}
++
+ /*
+  * 0148: read a GPU-side IB back through its GEM page table entry, the same
+  * translation gg_gem_pa() does for the 0146 timestamp dump. Every IB the
+@@ -3374,7 +3436,7 @@ gg_ib_dwords(const char *tag, uint64_t iova, uint32_t dwords, uint32_t at)
+ 		    (unsigned long long)iova);
+ 		return;
+ 	}
+-	m = ml_io_map((vm_offset_t)(pa & ~0xfffull), GEM_PAGE);
++	m = gg_tmp_map(pa);
+ 	if (m == 0) {
+ 		return;
+ 	}
+@@ -3428,7 +3490,7 @@ gg_ib_map(uint64_t iova, uint32_t dwords)
+ 		    (unsigned long long)iova);
+ 		return 0;
+ 	}
+-	base = ml_io_map((vm_offset_t)(pa & ~0xfffull), GEM_PAGE);
++	base = gg_tmp_map(pa);
+ 	if (base == 0) {
+ 		return 0;
+ 	}
+@@ -3772,12 +3834,7 @@ static int gg_skip_nested = -1;	/* gauguinsk: >0 skip N guilty nested IBs */
+ static uint32_t gg_mark_off[GG_MARK_IBS];	/* 0187: copy offset, bytes */
+ static uint32_t gg_mark_len[GG_MARK_IBS];	/* 0187: copy length, dwords */
+ 
+-static struct {
+-	uint64_t pa;
+-	vm_offset_t base;
+-} gg_san_pg[8];
+-static int gg_san_pg_n;
+-static int gg_san_rot;
++/* 0193: gg_san_map() now uses the bounded gg_tmp_map() cache. */
+ 
+ static const uint32_t gg_san_addr_modes[] = {
+ 	0x0842u, 0x0c01u, 0x8601u, 0x8e05u, 0x9e01u, 0xbe05u,
+@@ -3810,24 +3867,15 @@ gg_san_map(uint64_t iova)
+ {
+ 	uint64_t pg = gg_gem_pa(iova) & ~0xfffull;
+ 	vm_offset_t base;
+-	int i;
+ 
+ 	if (pg == 0u) {
+ 		return 0;
+ 	}
+-	for (i = 0; i < gg_san_pg_n; ++i) {
+-		if (gg_san_pg[i].pa == pg) {
+-			return gg_san_pg[i].base +
+-			    (vm_offset_t)(iova & 0xfffu);
+-		}
+-	}
+-	base = ml_io_map((vm_offset_t)pg, GEM_PAGE);
++	/* 0193: bounded shared cache; the old 8-slot cache leaked on rotation */
++	base = gg_tmp_map(pg);
+ 	if (base == 0) {
+ 		return 0;
+ 	}
+-	i = gg_san_pg_n < 8 ? gg_san_pg_n++ : (gg_san_rot++ % 8);
+-	gg_san_pg[i].pa = pg;
+-	gg_san_pg[i].base = base;
+ 	return base + (vm_offset_t)(iova & 0xfffu);
+ }
+ 
+@@ -3835,7 +3883,30 @@ static bool
+ gg_san_deny(uint32_t r)
+ {
+ 	unsigned k;
++	/*
++	 * 0192: v140/0191 pinned the hard stop to IB1 offset 1360, the first
++	 * payload dword of a type-4 packet writing GRAS_LRZ_BUFFER_BASE /
++	 * PITCH / FAST_CLEAR_BASE (0x8103..0x8107). All five payload dwords
++	 * are zero and the registers read back zero, so NOPing this packet is
++	 * state-preserving - the hardware already holds those values. When the
++	 * CP wedges here only CP_AHB_CX and GPU_BUSY are set, i.e. the AHB
++	 * write itself never completes. gauguinlrz=0 disables this NOP.
++	 */
++	static int lrz_opt = -1, lrz_log = 0;
++
++	if (lrz_opt < 0) {
++		int lrz = 1;
+ 
++		lrz_opt = PE_parse_boot_argn("gauguinlrz", &lrz,
++		    sizeof(lrz)) ? lrz : 1;
++	}
++	if (lrz_opt != 0 && r >= 0x8103u && r <= 0x8107u) {
++		if (lrz_log < 8) {
++			lrz_log++;
++			printf("GAUGUIN CP: 0192 lrz nop reg=%#x\n", r);
++		}
++		return true;
++	}
+ 	if ((r >= 0x800u && r <= 0x849u) ||
+ 	    (r >= 0x8e00u && r <= 0x8e1fu) ||
+ 	    (r >= 0xf800u && r <= 0xf813u)) {
+@@ -3855,6 +3926,38 @@ gg_san_deny(uint32_t r)
+ 	return false;
+ }
+ 
++/*
++ * 0194: gg_ib_sanitize() clipped every GEM IB to the first 4 KiB page
++ * (room = (GEM_PAGE - offset)/4), so any packet past dword 1024 was never
++ * rewritten. v141 proved it: the 2411-dword UI IB 0x56162000 was sanitized
++ * only up to off=1018, while 0191 pinned the hard stop at off=1359 -- the
++ * 0x8103 GRAS_LRZ_BUFFER_BASE type-4 write. 0192 fired 8 NOPs on OTHER
++ * short IBs and the stop did not move a single dword. The mark window is a
++ * flat WCOMB alias (ismark), so it keeps using m + 4*o; GEM IBs now resolve
++ * each dword through the bounded page cache and can span every page.
++ */
++#define GG_SAN_MAX_DW 8192u
++
++static uint32_t
++gg_san_rd2(uint64_t iova, vm_offset_t m, int ismark, uint32_t o)
++{
++	vm_offset_t a = ismark ? m + 4u * (vm_offset_t)o :
++	    gg_san_map(iova + 4u * (uint64_t)o);
++
++	return a != 0 ? *(volatile uint32_t *)a : 0u;
++}
++
++static void
++gg_san_wr2(uint64_t iova, vm_offset_t m, int ismark, uint32_t o, uint32_t v)
++{
++	vm_offset_t a = ismark ? m + 4u * (vm_offset_t)o :
++	    gg_san_map(iova + 4u * (uint64_t)o);
++
++	if (a != 0) {
++		*(volatile uint32_t *)a = v;
++	}
++}
++
+ static void
+ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ {
+@@ -3912,6 +4015,14 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 	} else if (gg_skip_nested > 0 && depth > 0 && dwords < room) {
+ 		room = dwords;
+ 	}
++	/*
++	 * 0194: walk the WHOLE GEM IB, not just its first page. 0178/0187's
++	 * bounds stay as the lower bound for short recorded dwords counts.
++	 * The mark window is one flat alias, so it needs no extension.
++	 */
++	if (!ismark && dwords > room) {
++		room = dwords < GG_SAN_MAX_DW ? dwords : GG_SAN_MAX_DW;
++	}
+ 	if (room == 0u) {
+ 		return;
+ 	}
+@@ -3931,7 +4042,7 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 	}
+ 	o = 0;
+ 	while (o < room) {
+-		uint32_t h = *(volatile uint32_t *)(m + 4u * o);
++		uint32_t h = gg_san_rd2(iova, m, ismark, o);
+ 		uint32_t type = h >> 28;
+ 		uint32_t plen, len, al, ah, nst;
+ 		uint32_t al55, ah55, sz55, n55, ty55;
+@@ -3962,10 +4073,9 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			 * Length-preserving CP_NOP: header plus plen zero
+ 			 * dwords, so every following packet keeps its offset.
+ 			 */
+-			*(volatile uint32_t *)(m + 4u * o) =
+-			    gg_pkt7(CP_NOP, plen);
++			gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
+ 			for (k = 1; k < len; ++k) {
+-				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
++				gg_san_wr2(iova, m, ismark, o + k, 0u);
+ 			}
+ 			if (gg_san_log < 240) {
+ 				gg_san_log++;
+@@ -3990,10 +4100,9 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			 * promise of 0177 was never kept. Length-preserving
+ 			 * NOP short 0x3f/0x37/0x63 entries too, no recursion.
+ 			 */
+-			*(volatile uint32_t *)(m + 4u * o) =
+-			    gg_pkt7(CP_NOP, plen);
++			gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
+ 			for (k = 1; k < len; ++k) {
+-				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
++				gg_san_wr2(iova, m, ismark, o + k, 0u);
+ 			}
+ 			fixed++;
+ 			if (depth == 0) {
+@@ -4017,10 +4126,9 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			 * NOP them length-preservingly so the fence write at
+ 			 * the end of the IB can retire.
+ 			 */
+-			*(volatile uint32_t *)(m + 4u * o) =
+-			    gg_pkt7(CP_NOP, plen);
++			gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
+ 			for (k = 1; k < len; ++k) {
+-				*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
++				gg_san_wr2(iova, m, ismark, o + k, 0u);
+ 			}
+ 			fixed++;
+ 			if (depth == 0) {
+@@ -4041,9 +4149,9 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			 * above uses & 0x7f for the same reason: bit 23 is the
+ 			 * opcode parity bit, not part of the opcode.
+ 			 */
+-			al = *(volatile uint32_t *)(m + 4u * (o + 1));
+-			ah = *(volatile uint32_t *)(m + 4u * (o + 2));
+-			nst = *(volatile uint32_t *)(m + 4u * (o + 3));
++			al = gg_san_rd2(iova, m, ismark, o + 1);
++			ah = gg_san_rd2(iova, m, ismark, o + 2);
++			nst = gg_san_rd2(iova, m, ismark, o + 3);
+ 			if (gg_san_log < 240) {
+ 				gg_san_log++;
+ 				printf("GAUGUIN CP: 0175 rec depth=%d ib=%#llx"
+@@ -4071,10 +4179,9 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				 * (CP_COND_INDIRECT_BUFFER) which 0176 never reached because
+ 				 * it was not in the recurse branch; op 0x3f/0x37 also wedge.
+ 				 */
+-				*(volatile uint32_t *)(m + 4u * o) =
+-				    gg_pkt7(CP_NOP, plen);
++				gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
+ 				for (k = 1; k < len; ++k) {
+-					*(volatile uint32_t *)(m + 4u * (o + k)) = 0u;
++					gg_san_wr2(iova, m, ismark, o + k, 0u);
+ 				}
+ 				fixed++;
+ 				if (gg_san_log < 240) {
+@@ -4100,9 +4207,9 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			 * privileged state that still reached the ME. Payload is
+ 			 * [ADDR_LO, ADDR_HI, DWORDS(19:0) | TYPE(21:20)].
+ 			 */
+-			al55 = *(volatile uint32_t *)(m + 4u * (o + 1));
+-			ah55 = *(volatile uint32_t *)(m + 4u * (o + 2));
+-			sz55 = *(volatile uint32_t *)(m + 4u * (o + 3));
++			al55 = gg_san_rd2(iova, m, ismark, o + 1);
++			ah55 = gg_san_rd2(iova, m, ismark, o + 2);
++			sz55 = gg_san_rd2(iova, m, ismark, o + 3);
+ 			n55 = sz55 & 0xfffffu;
+ 			ty55 = (sz55 >> 20) & 0x3u;
+ 			if (gg_san_log < 240) {
+@@ -4118,11 +4225,9 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				 * Experiment B: drop the amble itself. Length
+ 				 * preserving, so every later packet keeps its offset.
+ 				 */
+-				*(volatile uint32_t *)(m + 4u * o) =
+-				    gg_pkt7(CP_NOP, plen);
++				gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
+ 				for (k = 1; k < len; ++k) {
+-					*(volatile uint32_t *)(m + 4u * (o + k)) =
+-					    0u;
++					gg_san_wr2(iova, m, ismark, o + k, 0u);
+ 				}
+ 				fixed++;
+ 			} else if (gg_amb_opt == 1 && depth < 6 && n55 != 0u &&
+@@ -4142,10 +4247,31 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			flush_dcache64((addr64_t)(mark_pa +
+ 			    (iova - CP_VA_MARK)), 4u * room, TRUE);
+ 		} else {
+-			flush_dcache64((addr64_t)m, 4u * room, FALSE);
++			/* 0194: flush every page the walker touched */
++			uint32_t pg;
++
++			for (pg = 0; pg < room; pg += GEM_PAGE / 4u) {
++				vm_offset_t pm =
++				    gg_san_map(iova + 4u * (uint64_t)pg);
++
++				if (pm != 0) {
++					flush_dcache64((addr64_t)pm,
++					    GEM_PAGE, FALSE);
++				}
++			}
+ 		}
+ 		__asm__ volatile("dmb oshst" ::: "memory");
+ 	}
++	if (depth == 0 && !ismark && dwords > GEM_PAGE / 4u) {
++		static int span_log;
++
++		if (span_log < 4) {
++			span_log++;
++			printf("GAUGUIN CP: 0194 span ib=%#llx dwords=%u"
++			    " room=%u fixed=%u\n",
++			    (unsigned long long)iova, dwords, room, fixed);
++		}
++	}
+ 	if (depth == 0) {
+ 		printf("GAUGUIN CP: 0187 san ib=%#llx dwords=%u fixed=%u%s\n",
+ 		    (unsigned long long)iova, dwords, fixed,
+@@ -5549,8 +5675,7 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			uint32_t v = 0;
+ 
+ 			if (pa != 0u) {
+-				m = ml_io_map((vm_offset_t)(pa & ~0xfffull),
+-				    GEM_PAGE);
++				m = gg_tmp_map(pa);
+ 			}
+ 			if (m != 0) {
+ 				v = *(volatile uint32_t *)
+@@ -5919,3 +6044,45 @@ gauguin_gem_selftest(void)
+ }
+ 
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
++
++/*
++ * 0196: read one 32-bit word through an uncached ml_io_map view of the
++ * physical page behind a kernel virtual address. v143 proved the CP wedge
++ * is gone (HUNG/STUCK/stop = 0, 409 submits, panic 0) but SWEET FB: src px
++ * is still all zero. present() memcpy()s from a cached CPU mapping and the
++ * driver's cpu_prep/bo_sync do no cache maintenance when patience_ns == 0,
++ * so a real GPU write could be invisible to the CPU. SweetFramebuffer prints
++ * this value next to the cached texel: non-zero uncached => stale cache,
++ * zero uncached => the GPU never wrote (over-NOPing / render-target bind).
++ * Four cached pages, no unmap needed for a boot-long diagnostic.
++ */
++uint32_t
++gauguin_uncached_read(uint64_t kva)
++{
++	static struct {
++		ppnum_t pn;
++		vm_offset_t base;
++	} uc[4];
++	static unsigned rot;
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)kva);
++	vm_offset_t m;
++	int i;
++
++	if (pn == 0) {
++		return 0;
++	}
++	for (i = 0; i < 4; ++i) {
++		if (uc[i].pn == pn && uc[i].base != 0) {
++			return *(volatile uint32_t *)(uc[i].base +
++			    (vm_offset_t)(kva & 0xfffu));
++		}
++	}
++	m = ml_io_map((vm_offset_t)(ptoa_64(pn) & ~0xfffull), 0x1000);
++	if (m == 0) {
++		return 0;
++	}
++	i = (int)(rot++ % 4);
++	uc[i].pn = pn;
++	uc[i].base = m;
++	return *(volatile uint32_t *)(m + (vm_offset_t)(kva & 0xfffu));
++}
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 3f8fdc2..f3eff35 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -37,6 +37,7 @@
+ #include "SweetSurface.h"
+ 
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
++extern "C" uint32_t gauguin_uncached_read(uint64_t kva);  /* 0196: uncached surface read-back */
+ 
+ #if defined(SWEET)
+ #include <IOKit/IOService.h>
+@@ -404,6 +405,16 @@ AppleCLCD::present(const uint8_t *rec)
+ 				IOLog("SWEET FB: src px c 0x%08x tl 0x%08x br 0x%08x ml 0x%08x\n",
+ 				    p[(uint64_t)(sy + h / 2) * st + (sx + w / 2)], p[(uint64_t)sy * st + sx],
+ 				    p[(uint64_t)(sy + h - 1) * st + (sx + w - 1)], p[(uint64_t)(sy + h / 2) * st + sx]);
++				{
++					/* 0196: same centre texel, but through an uncached view of
++					 * the physical page. Non-zero here + zero above = stale CPU
++					 * cache; zero here too = the GPU never wrote the surface. */
++					uint64_t co = src + s->offset +
++					    (uint64_t)(sy + h / 2) * s->bytesPerRow +
++					    (uint64_t)(sx + w / 2) * 4;
++					IOLog("SWEET FB: 0196 uncached px c 0x%08x va=%llx\n",
++					    gauguin_uncached_read(co), (unsigned long long)co);
++				}
+ 			}
+ 		}
+ 		if (src != 0 && bpe == 4) {
