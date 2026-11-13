@@ -1,0 +1,55 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3963,6 +3963,7 @@
+ {
+ 	vm_offset_t m;
+ 	uint32_t room, o, k, fixed = 0;
++	int first_ind = 1;	/* 0197: gauguinsk=2 skips only the first long indirect */
+ 	int ismark;
+ 
+ 	/*
+@@ -4170,7 +4171,8 @@
+ 			 * IB. Decrement once per skipped buffer so a small count hits
+ 			 * only the first/guilty one.
+ 			 */
+-			if (gg_skip_nested > 0 &&
++			if ((gg_skip_nested == 1 ||
++			    (gg_skip_nested >= 2 && depth == 0 && first_ind)) &&
+ 			    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
+ 			    ((h >> 16) & 0x7fu) == 0x37u ||
+ 			    ((h >> 16) & 0x7fu) == 0x63u)) {
+@@ -4178,20 +4180,31 @@
+ 				 * (no per-buffer decrement). The ME wedges on op 0x63
+ 				 * (CP_COND_INDIRECT_BUFFER) which 0176 never reached because
+ 				 * it was not in the recurse branch; op 0x3f/0x37 also wedge.
++				 *
++				 * 0197: gauguinsk=2 skips only the FIRST long indirect of a
++				 * top-level IB (the 196-dword PFE amble at packet 11 that
++				 * v135/v144 wedge on) and recurses the rest, so the draw
++				 * IBs that v143 NOPed can finally execute. gauguinsk=1 keeps
++				 * the old skip-all behaviour.
+ 				 */
+ 				gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
+ 				for (k = 1; k < len; ++k) {
+ 					gg_san_wr2(iova, m, ismark, o + k, 0u);
+ 				}
+ 				fixed++;
++				first_ind = 0;
+ 				if (gg_san_log < 240) {
+ 					gg_san_log++;
+-					printf("GAUGUIN CP: 0176 skip ib=%#llx"
+-					    " n=%u (guilty entry NOPed)\n",
++					printf("GAUGUIN CP: 0197 skip %s ib=%#llx"
++					    " n=%u\n",
++					    gg_skip_nested >= 2 ? "first" : "all",
+ 					    (unsigned long long)
+ 					    (((uint64_t)ah << 32) | al), nst);
+ 				}
+ 			} else {
++				if (depth == 0 && gg_skip_nested >= 2) {
++					first_ind = 0;
++				}
+ 				gg_ib_sanitize(((uint64_t)ah << 32) | al, nst,
+ 				    depth + 1);
+ 			}
