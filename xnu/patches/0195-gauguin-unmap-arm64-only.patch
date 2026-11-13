@@ -1,0 +1,23 @@
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3357,6 +3357,10 @@
+  * one-shot mappings (scan probe, mark_rd, panel_rd) are left alone.
+  */
+ #define GG_TMP_PG_N 32
++#if defined(__arm64__)
++/* 0195: x86_64 has no ml_io_unmap; the phone kernel is arm64. */
++extern void ml_io_unmap(vm_offset_t, vm_size_t);
++#endif
+ 
+ static struct {
+ 	uint64_t pa;
+@@ -3387,7 +3391,9 @@
+ 	} else {
+ 		i = (int)(gg_tmp_rot++ % GG_TMP_PG_N);
+ 		if (gg_tmp_pg[i].base != 0) {
++#if defined(__arm64__)
+ 			ml_io_unmap(gg_tmp_pg[i].base, GEM_PAGE);
++#endif
+ 			if (gg_tmp_unmap_log < 4) {
+ 				gg_tmp_unmap_log++;
+ 				printf("GAUGUIN CP: 0193 io cache unmap"
