@@ -1,0 +1,262 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index b53c6c8..e37946c 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3840,6 +3840,7 @@ static int gg_clr_opt = -1;	/* 0158: -1 unparsed, 0 off, 1..4 below */
+  * gg_ib_map() leaks an ml_io_map per call and sanitize runs per submit.
+  */
+ static int gg_san_log;
++static int gg_quiet;	/* 0204: per-submit detail off past the logged window */
+ static int gg_san_opt = -1;	/* gauguinsan: -1 unparsed, 0 off, 1 on */
+ static int gg_amb_opt = -1;	/* gauguinamb: 1 sanitize, 2 nop the amble */
+ static int gg_skip_nested = -1;	/* gauguinsk: >0 skip N guilty nested IBs */
+@@ -4137,7 +4138,7 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				gg_san_wr2(iova, m, ismark, o + k, 0u);
+ 			}
+ 			fixed++;
+-			if (depth == 0) {
++			if (depth == 0 && !gg_quiet) {
+ 				printf("GAUGUIN CP: 0184 nop short op=%#x"
+ 				    " plen=%u ib=%#llx off=%u hdr=%#x\n",
+ 				    (h >> 16) & 0x7fu, plen,
+@@ -4163,7 +4164,7 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				gg_san_wr2(iova, m, ismark, o + k, 0u);
+ 			}
+ 			fixed++;
+-			if (depth == 0) {
++			if (depth == 0 && !gg_quiet) {
+ 				printf("GAUGUIN CP: 0185 nop wfi plen=%u"
+ 				    " ib=%#llx off=%u hdr=%#x\n",
+ 				    plen, (unsigned long long)iova, o, h);
+@@ -4338,7 +4339,7 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			    (unsigned long long)iova, dwords, room, fixed);
+ 		}
+ 	}
+-	if (depth == 0) {
++	if (depth == 0 && !gg_quiet) {
+ 		printf("GAUGUIN CP: 0187 san ib=%#llx dwords=%u fixed=%u%s\n",
+ 		    (unsigned long long)iova, dwords, fixed,
+ 		    ismark ? " mark" : "");
+@@ -5010,6 +5011,16 @@ gauguin_cp_recover(void)
+  * step22 path that is proven on this device.
+  */
+ static int gg_smmu_log;
++/*
++ * 0204: v151 logged 1001 wedged submits at ~29 lines each and the 4 MiB log
++ * ring wrapped, discarding the only submits that still had a live CP. Keep
++ * per-submit detail for the first eight submissions (the boot chain uses
++ * two, so this covers the transition to userspace) and one line every 64
++ * wedged submits after that.
++ */
++static uint32_t gg_sub_n;
++static uint32_t gg_stuck_n;
++static int gg_wai_opt = -1;	/* 0204: gauguinwai=1 appends CP_WHERE_AM_I */
+ 
+ uint32_t
+ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t count)
+@@ -5041,6 +5052,23 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		return 0;
+ 	}
+ 	need = 4u * count + 13u;	/* + 2 invalidates, + scratch, + RB_CCU_CNTL */
++	if (gg_wai_opt < 0) {
++		int wai = 0;
++
++		gg_wai_opt = PE_parse_boot_argn("gauguinwai", &wai,
++		    sizeof(wai)) ? wai : 0;
++	}
++	if (gg_wai_opt) {
++		/*
++		 * 0204: a6xx publishes the authoritative RPTR into
++		 * CP_RB_RPTR_ADDR memory when it executes CP_WHERE_AM_I, and
++		 * every 13-dword submit lands the next one at the opposite
++		 * dword parity. Append the 3-dword WHERE_AM_I so the submit is
++		 * 4*count+16 (even) and the shadow word becomes a second,
++		 * independent view of how far the front end really got.
++		 */
++		need = 4u * count + 16u;
++	}
+ 	if (need >= ring_dw / 2u) {
+ 		return 0;
+ 	}
+@@ -5062,6 +5090,9 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		}
+ 	}
+ 
++	gg_sub_n++;
++	gg_quiet = (gg_sub_n > 8u);
++
+ 	/*
+ 	 * 0152: with gauguinmark=1 submit annotated copies so the last stamp the
+ 	 * GPU writes names the packet that faulted. Any buffer that cannot be
+@@ -5137,13 +5168,15 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			flush_dcache64((addr64_t)mark_pa, CPMEM_MARK_SIZE, TRUE);
+ 			ai = maddr;
+ 			wi = mwords;
+-			printf("GAUGUIN CP: mark count=%u used=%d bytes=%u",
+-			    count, used, moff - GG_MARK_IB);
+-			for (i = 0; i < count; i++) {
+-				printf(" %u->%u", words[i], mwords[i]);
++			if (!gg_quiet) {
++				printf("GAUGUIN CP: mark count=%u used=%d bytes=%u",
++				    count, used, moff - GG_MARK_IB);
++				for (i = 0; i < count; i++) {
++					printf(" %u->%u", words[i], mwords[i]);
++				}
++				printf("\n");
++				(void)sweet_log_flush_now();
+ 			}
+-			printf("\n");
+-			(void)sweet_log_flush_now();
+ 		}
+ 	}
+ 
+@@ -5235,11 +5268,13 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			 */
+ 			f0 = gg_rd(cb, SMMU_CB_FSR);
+ 			g0 = gg_rd(s, SMMU_GFSR);
+-			printf("GAUGUIN CP: pre submit cb1 fsr=%#x far=%#x"
+-			    " fsynr0=%#x gfsr=%#x gfsynr0=%#x\n",
+-			    f0, gg_rd(cb, SMMU_CB_FAR),
+-			    gg_rd(cb, SMMU_CB_FSYNR0), g0,
+-			    gg_rd(s, SMMU_GFSYNR0));
++			if (!gg_quiet) {
++				printf("GAUGUIN CP: pre submit cb1 fsr=%#x far=%#x"
++				    " fsynr0=%#x gfsr=%#x gfsynr0=%#x\n",
++				    f0, gg_rd(cb, SMMU_CB_FAR),
++				    gg_rd(cb, SMMU_CB_FSYNR0), g0,
++				    gg_rd(s, SMMU_GFSYNR0));
++			}
+ 			/*
+ 			 * 0202: v148 read cb1 fsr=0x400 (MULTI) before and after
+ 			 * the same-value W1C on every submit. The W1C is only
+@@ -5310,7 +5345,7 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			}
+ 			intr1 = gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW));
+ 			hf1 = gg_rd(gg.gpu, GR(CP_HW_FAULT_DW));
+-			if (gg_fclr_opt > 0) {
++			if (gg_fclr_opt > 0 && !gg_quiet) {
+ 				printf("GAUGUIN CP: 0198 fclr int=%#x->%#x"
+ 				    " fault=%#x->%#x\n", intr0, intr1, hf0, hf1);
+ 			}
+@@ -5318,10 +5353,12 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		if (gg_clr_opt >= 2) {
+ 			gauguin_gem_tlb_flush();
+ 		}
+-		printf("GAUGUIN CP: 0158 clr=%d int=%#x->%#x fault=%#x->%#x"
+-		    " tlb=%d\n", gg_clr_opt, intr0, intr1, hf0, hf1,
+-		    gg_clr_opt >= 2);
+-		(void)sweet_log_flush_now();
++		if (!gg_quiet) {
++			printf("GAUGUIN CP: 0158 clr=%d int=%#x->%#x fault=%#x->%#x"
++			    " tlb=%d\n", gg_clr_opt, intr0, intr1, hf0, hf1,
++			    gg_clr_opt >= 2);
++			(void)sweet_log_flush_now();
++		}
+ 	}
+ 
+ 	fence = ++gg_next_fence;
+@@ -5412,9 +5449,34 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	wp++;
+ 	ring[wp % ring_dw] = fence;
+ 	wp++;
++	if (gg_wai_opt) {
++		/* 0204: see the need computation - publishes the shadow RPTR. */
++		ring[wp % ring_dw] = gg_pkt7(0x62u, 2u);
++		wp++;
++		ring[wp % ring_dw] = CP_VA_SCRATCH;
++		wp++;
++		ring[wp % ring_dw] = 0u;
++		wp++;
++	}
+ 
+ 	__asm__ volatile("dmb oshst" ::: "memory");
+ 	gg_wr(gg.gpu, GR(CP_RB_WPTR_DW), wp % ring_dw);
++	if (!gg_quiet) {
++		/*
++		 * 0204: v151 read rptr=145 against wptr=5008 for 1001 submits
++		 * while the WPTR register did hold the value we wrote, so the
++		 * write path is not the suspect. Print the four pointers the
++		 * front end works from - ring register RPTR, WPTR, the shadow
++		 * RPTR word CP_WHERE_AM_I fills and this submit's end - so a
++		 * frozen front end is distinguishable from a frozen shadow.
++		 */
++		flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 8u, FALSE);
++		printf("GAUGUIN CP: 0204 kick #%u start=%u end=%u wptr=%u rptr=%u"
++		    " sptr=%u wai=%d\n", gg_sub_n, start, wp,
++		    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)),
++		    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++		    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH), gg_wai_opt);
++	}
+ 
+ 	for (i = 0; i < 10000; i++) {
+ 		if (gauguin_cp_done(fence)) {
+@@ -5443,6 +5505,22 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
++	gg_stuck_n++;
++	if (gg_quiet) {
++		if ((gg_stuck_n & 0x3fu) == 1u) {
++			flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 8u,
++			    FALSE);
++			printf("GAUGUIN CP: 0204 stuck #%u rptr=%u wptr=%u"
++			    " sptr=%u ib1=%#x/%#x\n", gg_stuck_n,
++			    gg_rd(gg.gpu, GR(CP_RB_RPTR_DW)),
++			    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)),
++			    *(volatile uint32_t *)(cpmem + CPMEM_SCRATCH),
++			    gg_rd(gg.gpu, GR(CP_IB1_BASE_DW)),
++			    gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW)));
++		}
++		(void)sweet_log_flush_now();
++		goto recover;
++	}
+ 	/*
+ 	 * 0188: the submit is 4*count+13 dwords; printing its range proves
+ 	 * at a glance whether the CP was pointed past the end of the ring.
+@@ -5771,22 +5849,27 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		 * which fed the CP the raw GEM IBs instead of the mark copies,
+ 		 * left rptr frozen at 145 for 598 submits. Dump the dwords the
+ 		 * front end is parked in front of, so the v150 stall is named.
++		 * 0204: the 8-line budget was spent by the boot chain and this
++		 * never printed; the quiet gate above now keeps the whole dump
++		 * for the first eight submissions, so print both windows - the
++		 * frozen RPTR and this submit's start.
+ 		 */
+ 		{
+-			static int rpdump;
+ 			uint32_t rp = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++			uint32_t base = rp < ring_dw ? rp : start;
+ 
+-			if (rpdump < 8 && rp < ring_dw) {
+-				rpdump++;
+-				printf("GAUGUIN CP: 0203 rptr=%u wptr=%u:",
+-				    rp, wp);
+-				for (k = 0; k < 8u; k++) {
+-					printf(" %#x",
+-					    gm_rd32_raw(CPMEM_RING +
+-					    4u * ((rp + k) % ring_dw)));
+-				}
+-				printf("\n");
++			printf("GAUGUIN CP: 0204 rptr=%u wptr=%u rp:", rp, wp);
++			for (k = 0; k < 16u; k++) {
++				printf(" %#x", gm_rd32_raw(CPMEM_RING +
++				    4u * ((base + k) % ring_dw)));
++			}
++			printf("\n");
++			printf("GAUGUIN CP: 0204 start=%u start:", start);
++			for (k = 0; k < 16u; k++) {
++				printf(" %#x", gm_rd32_raw(CPMEM_RING +
++				    4u * ((start + k) % ring_dw)));
+ 			}
++			printf("\n");
+ 		}
+ 	}
+ 	/*
+@@ -5833,6 +5916,7 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		}
+ 	}
+ 	(void)sweet_log_flush_now();
++recover:
+ 	/*
+ 	 * 0171: the ME is wedged for good (v118: every later submit hits the
+ 	 * same STUCK and backboardd sees -60 forever). Reset the core with the
