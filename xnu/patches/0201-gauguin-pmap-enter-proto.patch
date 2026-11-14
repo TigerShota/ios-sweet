@@ -1,0 +1,13 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index ab1213b..42b274a 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -28,6 +28,8 @@ extern void sweet_log_flush_now(void);
+ extern void gauguin_inject_install(void);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
++extern kern_return_t pmap_enter(pmap_t, vm_map_offset_t, ppnum_t, vm_prot_t,
++    vm_prot_t, unsigned int, boolean_t);
+ extern const unsigned int gauguin_gmu_fw[5120];
+ extern const unsigned int gauguin_sqe_fw[8066];
+ extern const unsigned int gauguin_zap_mdt[1715];
