@@ -1,0 +1,133 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 0ef1593..a975f6f 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -313,6 +313,12 @@
+ #define ACTLR_QCOM        ((1u << 28) | (1u << 29) | (1u << 30))
+ #define SCTLR_GMU         ((1u << 0) | (1u << 1) | (1u << 2) | (1u << 5) | \
+ 	                   (1u << 6) | (1u << 12) | (3u << 22))  /* 0x00c01067 */
++/* 0209: SERVE_AFTER_FAULT. Downstream's qcom_adreno_smmu_write_sctlr and
++ * both working ports (raphael hakios.adreno.c, willow redwood_adreno.c) set
++ * this on the 3D core's context: without it a single faulted fetch stops the
++ * context from serving anything else and the SQE waits in its microcode
++ * forever instead of the fault being recorded and the stream continuing. */
++#define SCTLR_SERVE_AFTER_FAULT (1u << 8)
+ #define S2CR_TRANS_CB0    ((3u << 8) | GG_CB)               /* 0x300 */
+ #define SMR_VALID         (1u << 31)
+ 
+@@ -1309,7 +1315,18 @@
+ #define GG_CB1           1
+ #define GG_ASID1         2u
+ #define GG_SID_CP        0u        /* gfx3d_user stream */
++/*
++ * 0209: the core's second stream. The vendor DT calls it gfx3d_priv (it is
++ * gfx3d_lpac on a6xx gen2): stream 1 is the privileged side the CP uses for
++ * fetches the unprivileged stream 0 is not trusted with. The working ports
++ * map it onto the core's own context (raphael hakios.adreno.c does this for
++ * stream 0 and 1 alike). On sweet only SID 0 was in the SMR, so any stream-1
++ * fetch found whatever the reset S2CR entry points at instead of the CP's
++ * ring/SQE/mark tables.
++ */
++#define GG_SID_LPAC      1u        /* gfx3d_priv stream */
+ #define S2CR_TRANS_CB1   ((3u << 8) | GG_CB1)
++#define SCTLR_CP         (SCTLR_GMU | SCTLR_SERVE_AFTER_FAULT)
+ /*
+  * LPAE AP[2:1] is bits 7:6: AP[2]=1 makes a page read-only, AP[1]=1 lets the
+  * *unprivileged* master read it. The CP (gfx3d_user, SID 0) is an
+@@ -1384,7 +1401,7 @@
+ 	kern_return_t kr;
+ 	ppnum_t pn;
+ 	uint64_t ttbr_want, ttbr_got;
+-	uint32_t smr2, val;
++	uint32_t smr2, smr3, val;
+ 	unsigned i, bad = 0;
+ 	bool ok = true;
+ 
+@@ -1653,12 +1670,14 @@
+ 		return;
+ 	}
+ 
+-	/* SMMU CB1 + exact SMR2 for stream ID 0. */
++	/* SMMU CB1 + exact SMR2 for stream ID 0, SMR3 for the private stream. */
+ 	cb = gg_smmu + SMMU_CB(GG_CB1);
+ 	smr2 = gg_rd(gg_smmu, SMMU_SMR(2));
+-	if (gg_rd(cb, SMMU_CB_SCTLR) != 0 || (smr2 & SMR_VALID)) {
+-		printf("GAUGUIN CP: CB1/SMR2 in use, skip (sctlr=%#x smr2=%#x)\n",
+-		    gg_rd(cb, SMMU_CB_SCTLR), smr2);
++	smr3 = gg_rd(gg_smmu, SMMU_SMR(3));
++	if (gg_rd(cb, SMMU_CB_SCTLR) != 0 || (smr2 & SMR_VALID) ||
++	    (smr3 & SMR_VALID)) {
++		printf("GAUGUIN CP: CB1/SMR2/SMR3 in use, skip (sctlr=%#x"
++		    " smr2=%#x smr3=%#x)\n", gg_rd(cb, SMMU_CB_SCTLR), smr2, smr3);
+ 		return;
+ 	}
+ 	gg_wr(cb, SMMU_CB_SCTLR, 0);
+@@ -1678,9 +1697,11 @@
+ 	if (!gg_tlb_sync(cb, SMMU_CB_TLBSYNC, SMMU_CB_TLBSTATUS)) {
+ 		return;
+ 	}
+-	gg_wr(cb, SMMU_CB_SCTLR, SCTLR_GMU);
++	gg_wr(cb, SMMU_CB_SCTLR, SCTLR_CP);
+ 	gg_wr(gg_smmu, SMMU_S2CR(2), S2CR_TRANS_CB1);
+ 	gg_wr(gg_smmu, SMMU_SMR(2), SMR_VALID | GG_SID_CP);
++	gg_wr(gg_smmu, SMMU_S2CR(3), S2CR_TRANS_CB1);
++	gg_wr(gg_smmu, SMMU_SMR(3), SMR_VALID | GG_SID_LPAC);
+ 	gg_wr(gg_smmu, SMMU_TLBIALLNSNH, 0);
+ 	if (!gg_tlb_sync(gg_smmu, SMMU_sTLBGSYNC, SMMU_sTLBGSTATUS)) {
+ 		return;
+@@ -1695,9 +1716,11 @@
+ } while (0)
+ 	CP_CHK("SMR2", gg_rd(gg_smmu, SMMU_SMR(2)), SMR_VALID | GG_SID_CP);
+ 	CP_CHK("S2CR2", gg_rd(gg_smmu, SMMU_S2CR(2)), S2CR_TRANS_CB1);
++	CP_CHK("SMR3", gg_rd(gg_smmu, SMMU_SMR(3)), SMR_VALID | GG_SID_LPAC);
++	CP_CHK("S2CR3", gg_rd(gg_smmu, SMMU_S2CR(3)), S2CR_TRANS_CB1);
+ 	CP_CHK("CBAR1", gg_rd(gg_smmu, SMMU_GR1 + SMMU_CBAR(GG_CB1)), CBAR_S1_BYPASS_S2);
+ 	CP_CHK("CBA2R1", gg_rd(gg_smmu, SMMU_GR1 + SMMU_CBA2R(GG_CB1)), CBA2R_RW64_64BIT);
+-	CP_CHK("SCTLR1", gg_rd(cb, SMMU_CB_SCTLR), SCTLR_GMU);
++	CP_CHK("SCTLR1", gg_rd(cb, SMMU_CB_SCTLR), SCTLR_CP);
+ 	CP_CHK("TCR1", gg_rd(cb, SMMU_CB_TCR), TTBCR_GMU);
+ 	CP_CHK("TCR2_1", gg_rd(cb, SMMU_CB_TTBCR2), TTBCR2_GMU);
+ 	CP_CHK("MAIR0_1", gg_rd(cb, SMMU_CB_MAIR0), MAIR0_GMU);
+@@ -2301,15 +2324,29 @@
+ 	CP_WRV(UCHE_FILTER_CNTL_DW, 0x804);
+ 	CP_WRV(UCHE_CACHE_WAYS_DW, 0x4);
+ 	/*
+-	 * 0148: four 0147 writes this chip does not implement -- ROQ_THRESHOLDS_2
+-	 * (0x8c2 reads 0), CP_APRIV_CNTL (0x844 reads 0xffffffff),
+-	 * CP_LPAC_PROG_FIFO_SIZE (0xb34 reads 0xffffffff) and
+-	 * RBBM_NC_MODE_CNTL (0x534 reads 0xdeafbead). They never configured
+-	 * anything here and only made hw_init report a failure it did not have.
++	 * 0148: three of the 0147 writes are dead here: CP_APRIV_CNTL (0x844
++	 * reads 0xffffffff) and CP_LPAC_PROG_FIFO_SIZE (0xb34 reads 0xffffffff)
++	 * are a660-family features, and RBBM_NC_MODE_CNTL (0x534 reads
++	 * 0xdeafbead) does not exist on this chip. ROQ_THRESHOLDS_2 is *not* in
++	 * that class -- see 0209 below.
+ 	 */
+ 	CP_WRV(CP_ROQ_THRESHOLDS_1_DW, 0x8040362c);
+ 	CP_WRV(CP_MEM_POOL_SIZE_DW, 128);
+ 	/*
++	 * 0209: ROQ_THRESHOLDS_2 is where the CP learns how big its ROQ is
++	 * (ROQ_SIZE, dwords >> 2) and where SET_DRAW_STATE objects start.
++	 * 0148 dropped this because the register reads back 0 on sweet -- it is
++	 * write-only here, not missing. Linux's a6xx_hw_init writes 0x010000c0
++	 * for gen1 (a615/a630) and 0x02000140 for a640/a680. With ROQ_SIZE left
++	 * at 0, the 16-dword IB1_START that THRESHOLDS_1 puts at offset 64 is
++	 * past the end of a zero-sized queue, and the SQE parks in its indirect
++	 * microcode the moment it has an IB to fetch.
++	 */
++	gg_wr(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW), 0x010000c0);
++	printf("GAUGUIN CP: 0209 roq1=%#x roq2=%#x (roq2 write-only)\n",
++	    gg_rd(gg.gpu, GR(CP_ROQ_THRESHOLDS_1_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW)));
++	/*
+ 	 * 0147: the a6xx hw_init values of the reference, not the a5xx ones
+ 	 * 0099 brought over. PC_DBG_ECO_CNTL and RB_DBG_ECO_CNTL are per-gen1
+ 	 * (Mesa programs the same two for a619/a642L); the rest are structural:
+@@ -4890,6 +4927,7 @@
+ 	CP_WRV(UCHE_FILTER_CNTL_DW, 0x804);
+ 	CP_WRV(UCHE_CACHE_WAYS_DW, 0x4);
+ 	CP_WRV(CP_ROQ_THRESHOLDS_1_DW, 0x8040362c);
++	gg_wr(gg.gpu, GR(CP_ROQ_THRESHOLDS_2_DW), 0x010000c0);   /* 0209 */
+ 	CP_WRV(CP_MEM_POOL_SIZE_DW, 128);
+ 	CP_WRV(PC_DBG_ECO_CNTL_DW, 0x00200200);
+ 	CP_WRV(CP_AHB_CNTL_DW, 0x1);
