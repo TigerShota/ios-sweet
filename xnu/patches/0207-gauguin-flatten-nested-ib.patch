@@ -1,0 +1,202 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 752281f..4972cdf 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -1232,9 +1232,11 @@ gauguin_gx_pdc_rsc(void)
+  * CPMEM_SCRATCH, but that block is 16 KiB and CPMEM_L3T/CPMEM_L3P start right
+  * after it, so six copies of up to 12 KiB both corrupted the target/panel L3
+  * tables and walked into CP VAs that are not mapped at all. Give the copies
+- * their own 64 KiB block plus 64 KiB of CP VA: L3 table 0 entries
+- * 0x100..0x10f (VA 0x40100000) are unused by ring/SQE/scratch. */
+-#define CPMEM_MARK_SIZE  0x10000u
++ * their own block plus the same amount of CP VA: L3 table 0 entries
++ * 0x100..0x1ff (VA 0x40100000) are unused by ring/SQE/scratch.
++ * 0207: 64 KiB -> 1 MiB. Flattening inlines every nested indirect, so one UI
++ * submit now needs hundreds of KiB of stream instead of a few KiB per IB. */
++#define CPMEM_MARK_SIZE  0x100000u
+ #define CP_VA_MARK       0x40100000u
+ 
+ /* Step 22 target: a 512x512 BGRA buffer the 2D pipe fills with three colour
+@@ -3804,6 +3806,24 @@ gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
+  */
+ #define GG_MARK_IBS    64u	/* one entry per submit IB */
+ 
++/*
++ * 0207: the ME wedges on ENTERING an indirect buffer (op 0x3f/0x37/0x63),
++ * whatever that buffer contains - v143 skipped all of them and ran 409
++ * ring-level submits with no wedge but no draws, while every variant that
++ * executes one dies with sqe_pc frozen in the indirect microcode. The
++ * ring-level CP_INDIRECT_BUFFER is the only fetch path proven to work, so the
++ * whole submit is rewritten as one flat stream: every indirect's payload is
++ * inlined (read through the GEM page cache, so a buffer may span pages) and
++ * no indirect packet is ever emitted inside the copy. A buffer that cannot be
++ * inlined becomes a length-preserving CP_NOP instead.
++ */
++#define GG_FLAT_MAX   0x18000u	/* dwords per flattened copy */
++#define GG_FLAT_DEPTH 6
++
++static int gg_flat_opt = -1;	/* gauguinflat: 0 off, 1 inline (default) */
++static uint32_t gg_flat_nib;	/* indirects inlined in the current copy */
++static uint32_t gg_flat_nop;	/* indirects replaced by a NOP */
++
+ static int gg_mark_opt = -1;	/* -1 unparsed, 0 off, 1 annotate */
+ static int gg_clr_opt = -1;	/* 0158: -1 unparsed, 0 off, 1..4 below */
+ 
+@@ -4449,6 +4469,85 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 	}
+ }
+ 
++static uint32_t
++gg_flat_rd(uint64_t iova, uint32_t o)
++{
++	vm_offset_t a = gg_san_map(iova + 4u * (uint64_t)o);
++
++	return a != 0 ? *(volatile uint32_t *)a : 0u;
++}
++
++static int
++gg_flat_copy(uint32_t index, uint64_t iova, uint32_t dwords,
++    volatile uint32_t *out, uint32_t max, uint32_t *np, int depth)
++{
++	uint32_t o = 0, k;
++
++	if (depth > GG_FLAT_DEPTH) {
++		return 0;
++	}
++	while (o < dwords) {
++		uint32_t h = gg_flat_rd(iova, o);
++		uint32_t type = h >> 28;
++		uint32_t op = (h >> 16) & 0x7fu;
++		uint32_t plen, len;
++		int isind, ind;
++
++		if (type == 7u) {
++			plen = h & 0x3fffu;
++		} else if (type == 4u) {
++			plen = h & 0x7fu;
++		} else if (type == 0u) {
++			plen = ((h >> 16) & 0x3fffu) + 1u;
++		} else {
++			return 0;
++		}
++		len = 1u + plen;
++		if (o + len > dwords) {
++			return 0;
++		}
++		isind = (type == 7u && (op == CP_INDIRECT_BUFFER ||
++		    op == 0x37u || op == 0x63u));
++		ind = isind && plen >= 3u;
++		if (ind) {
++			uint64_t niova = ((uint64_t)gg_flat_rd(iova, o + 2u) << 32) |
++			    gg_flat_rd(iova, o + 1u);
++			uint32_t nst = gg_flat_rd(iova, o + 3u);
++			uint32_t before = *np;
++
++			if (depth < GG_FLAT_DEPTH && nst != 0u &&
++			    nst <= GG_FLAT_MAX && gg_gem_pa(niova) != 0u) {
++				gg_flat_nib++;
++				if (gg_flat_copy(index, niova, nst, out, max,
++				    np, depth + 1)) {
++					o += len;
++					continue;
++				}
++				*np = before;
++			}
++		}
++		if (*np + len + 5u > max) {
++			return 0;
++		}
++		for (k = 0; k < len; ++k) {
++			out[(*np)++] = isind ?
++			    (k == 0u ? gg_pkt7(CP_NOP, plen) : 0u) :
++			    gg_flat_rd(iova, o + k);
++		}
++		if (isind) {
++			gg_flat_nop++;
++		}
++		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
++		out[(*np)++] = 0x04u;
++		out[(*np)++] = CP_VA_MARK + GG_MARK_BASE + 4u * index;
++		out[(*np)++] = 0u;
++		out[(*np)++] = 0x4d000000u | ((index & 0x3fu) << 16) |
++		    ((o + len) & 0xffffu);
++		o += len;
++	}
++	return 1;
++}
++
+ static uint32_t
+ gg_ib_annotate(uint32_t index, uint64_t iova, uint32_t dwords,
+     volatile uint32_t *out, uint32_t max, int *why)
+@@ -4465,6 +4564,30 @@ gg_ib_annotate(uint32_t index, uint64_t iova, uint32_t dwords,
+ 		*why = 1;
+ 		return 0;
+ 	}
++	/*
++	 * 0207: the flattening copy resolves every dword through the GEM page
++	 * cache, so unlike the plain annotator it may span pages.
++	 */
++	if (gg_flat_opt > 0) {
++		if (dwords > GG_FLAT_MAX) {
++			*why = 2;
++			return 0;
++		}
++		gg_flat_nib = 0;
++		gg_flat_nop = 0;
++		if (!gg_flat_copy(index, iova, dwords, out, max, &n, 0) ||
++		    n == 0u) {
++			*why = 8;
++			return 0;
++		}
++		if (!gg_quiet) {
++			printf("GAUGUIN CP: 0207 flat ib=%u iova=%#llx dwords=%u"
++			    " copy=%u inl=%u nop=%u\n", index,
++			    (unsigned long long)iova, dwords, n, gg_flat_nib,
++			    gg_flat_nop);
++		}
++		return n;
++	}
+ 	if (dwords > max) {
+ 		*why = 2;
+ 		return 0;
+@@ -5203,7 +5326,7 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	 * leave enabled.
+ 	 */
+ 	if (gg_mark_opt < 0) {
+-		int mark = 0, clr = 0;
++		int mark = 0, clr = 0, flat = 1;
+ 
+ 		/*
+ 		 * 0156: any non-zero level only means "submit annotated copies".
+@@ -5219,10 +5342,12 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		    sizeof(mark)) ? mark : 0;
+ 		gg_clr_opt = PE_parse_boot_argn("gauguinclr", &clr,
+ 		    sizeof(clr)) ? clr : 0;
+-		printf("GAUGUIN CP: impl 0191 mark=%d clr=%d markpa=%#llx window=%uK"
+-		    " max=%u ibs=%u\n", gg_mark_opt, gg_clr_opt,
+-		    (unsigned long long)mark_pa, CPMEM_MARK_SIZE >> 10,
+-		    GG_MARK_MAX, GG_MARK_IBS);
++		gg_flat_opt = PE_parse_boot_argn("gauguinflat", &flat,
++		    sizeof(flat)) ? flat : 1;
++		printf("GAUGUIN CP: impl 0207 mark=%d clr=%d flat=%d markpa=%#llx"
++		    " window=%uK max=%u ibs=%u\n", gg_mark_opt, gg_clr_opt,
++		    gg_flat_opt, (unsigned long long)mark_pa,
++		    CPMEM_MARK_SIZE >> 10, GG_MARK_MAX, GG_MARK_IBS);
+ 	}
+ 	/*
+ 	 * 0187: annotate whatever fits instead of all-or-nothing. The first
+@@ -5236,11 +5361,12 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		int why = 0, used = 0;
+ 
+ 		for (i = 0; i < count; i++) {
++			uint32_t lim = gg_flat_opt > 0 ? GG_FLAT_MAX : GG_MARK_MAX;
+ 			uint32_t max = (CPMEM_MARK_SIZE - moff) / 4u;
+ 			uint32_t n = 0u;
+ 
+-			if (max > GG_MARK_MAX) {
+-				max = GG_MARK_MAX;
++			if (max > lim) {
++				max = lim;
+ 			}
+ 			if (max != 0u) {
+ 				n = gg_ib_annotate(i, addresses[i], words[i],
