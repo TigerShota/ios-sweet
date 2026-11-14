@@ -1,0 +1,88 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 42b274a..f921149 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4998,6 +4998,8 @@ gauguin_cp_recover(void)
+  * ring also carries a CACHE_FLUSH_TS completion fence, exactly like the
+  * step22 path that is proven on this device.
+  */
++static int gg_smmu_log;
++
+ uint32_t
+ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t count)
+ {
+@@ -5173,8 +5175,25 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	 * an empty ring and shrinks as the CP falls behind.
+ 	 */
+ 	for (tries = 0; tries < 4000; tries++) {
++		uint32_t used, ahead;
++
+ 		rp = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
+-		if (ring_dw - (uint32_t)((wp - rp) % ring_dw) >= need) {
++		used = (uint32_t)((wp - rp) % ring_dw);
++		/*
++		 * 0202: the CP prefetches dwords past RB_WPTR, so rptr can sit a
++		 * few dwords ahead of wptr; the modulo then reports a nearly
++		 * full ring for ever (v148: "no ring space need=17 rptr=145
++		 * wptr=141", 336 times, no submit ever left this loop again).
++		 * A small rptr-ahead distance is prefetch, not backpressure:
++		 * rewind wptr to rptr so the new packet lands where the CP
++		 * fetches next. A large distance keeps the old accounting.
++		 */
++		ahead = (uint32_t)((rp + ring_dw - wp) % ring_dw);
++		if (rp < ring_dw && ahead != 0u && ahead <= 64u) {
++			wp = rp;
++			used = 0;
++		}
++		if (ring_dw - used >= need) {
+ 			break;
+ 		}
+ 		delay(10);
+@@ -5196,19 +5215,43 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 
+ 		if (s != 0) {
+ 			vm_offset_t cb = s + SMMU_CB(GG_CB1);
++			uint32_t f0, g0, n;
+ 
+ 			/*
+ 			 * 0155: print what is being cleared. 0154 cleared only
+ 			 * CB1 FSR and left GFSR alone; a global fault that
+ 			 * latches here would then be attributed to this submit.
+ 			 */
++			f0 = gg_rd(cb, SMMU_CB_FSR);
++			g0 = gg_rd(s, SMMU_GFSR);
+ 			printf("GAUGUIN CP: pre submit cb1 fsr=%#x far=%#x"
+ 			    " fsynr0=%#x gfsr=%#x gfsynr0=%#x\n",
+-			    gg_rd(cb, SMMU_CB_FSR), gg_rd(cb, SMMU_CB_FAR),
+-			    gg_rd(cb, SMMU_CB_FSYNR0), gg_rd(s, SMMU_GFSR),
++			    f0, gg_rd(cb, SMMU_CB_FAR),
++			    gg_rd(cb, SMMU_CB_FSYNR0), g0,
+ 			    gg_rd(s, SMMU_GFSYNR0));
+-			gg_wr(cb, SMMU_CB_FSR, gg_rd(cb, SMMU_CB_FSR));
+-			gg_wr(s, SMMU_GFSR, gg_rd(s, SMMU_GFSR));
++			/*
++			 * 0202: v148 read cb1 fsr=0x400 (MULTI) before and after
++			 * the same-value W1C on every submit. The W1C is only
++			 * committed once sCR0.ACK has drained, so a latched-fault
++			 * bank stayed set for the whole run. Clear all bits and
++			 * sync.
++			 */
++			gg_wr(cb, SMMU_CB_FSR, 0xffffffffu);
++			gg_wr(s, SMMU_GFSR, 0xffffffffu);
++			gg_wr(s, SMMU_sCR0, 1u);
++			for (n = 0; n < 100u; n++) {
++				if ((gg_rd(s, SMMU_sCR0) & 1u) == 0u) {
++					break;
++				}
++				delay(1);
++			}
++			if (gg_smmu_log < 4) {
++				gg_smmu_log++;
++				printf("GAUGUIN CP: 0202 smmu fsr=%#x->%#x"
++				    " gfsr=%#x->%#x ack=%u\n", f0,
++				    gg_rd(cb, SMMU_CB_FSR), g0,
++				    gg_rd(s, SMMU_GFSR), n);
++			}
+ 		}
+ 	}
+ 
