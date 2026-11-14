@@ -1,0 +1,64 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 75bf930..752281f 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -25,6 +25,7 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern kern_return_t thread_terminate(thread_t);
+ extern void sweet_log_flush_now(void);
++extern void sweet_log_freeze(void);
+ extern void gauguin_inject_install(void);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
+@@ -6041,6 +6042,17 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		}
+ 	}
+ 	(void)sweet_log_flush_now();
++	if (gg_stuck_n == 1u) {
++		/*
++		 * 0206: the first wedge of the boot is the only one whose dump we
++		 * need, and every later retry floods the console ring with Mesa's
++		 * submit-failure dump. Push this one out and freeze the ring so the
++		 * 1720 retries of v154 cannot wrap it away.
++		 */
++		printf("GAUGUIN CP: 0206 log frozen after first wedge\n");
++		(void)sweet_log_flush_now();
++		sweet_log_freeze();
++	}
+ recover:
+ 	gg_quiet = (gg_sub_n > 8u);
+ 	/*
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index dca4921..76d8e35 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -707,13 +707,28 @@ static volatile int sweet_panic_busy;
+ static volatile int sweet_panic_done;
+ static void sweet_log_panic_flush(void);
+ 
++/*
++ * 0206: stop the RAM ring from wrapping once the interesting event has been
++ * logged. v152/v154 lost the whole first-wedge dump because every later retry
++ * prints a ~60-line Mesa/BO block and 1700 of them wrap 4 MiB within seconds.
++ * After the freeze the ring keeps the last 4 MiB, i.e. exactly the dump, and
++ * the periodic flusher still pushes it out.
++ */
++static volatile int sweet_log_frozen;
++
++void
++sweet_log_freeze(void)
++{
++	sweet_log_frozen = 1;
++}
++
+ /* Called for all console output, any context: never blocks. */
+ void sweet_log_append(const char *c, int size);
+ 
+ void
+ sweet_log_append(const char *c, int size)
+ {
+-	if (size <= 0) {
++	if (size <= 0 || sweet_log_frozen) {
+ 		return;
+ 	}
+ 	uint64_t at = os_atomic_add_orig(&sweet_log_total, (uint64_t)size, relaxed);
