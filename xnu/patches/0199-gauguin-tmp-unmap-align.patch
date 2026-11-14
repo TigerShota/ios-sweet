@@ -1,0 +1,25 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index fd8ab2f..a12ea5e 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3396,7 +3396,19 @@ gg_tmp_map(uint64_t pa)
+ 		i = (int)(gg_tmp_rot++ % GG_TMP_PG_N);
+ 		if (gg_tmp_pg[i].base != 0) {
+ #if defined(__arm64__)
+-			ml_io_unmap(gg_tmp_pg[i].base, GEM_PAGE);
++			/*
++			 * 0199: io_map() rounds the 4 KiB request up to the
++			 * kernel page size but returns start + page offset, and
++			 * pmap_remove_options() asserts leaf alignment
++			 * (MACH_ASSERT, pmap.c:4296). Unmapping GEM_PAGE at the
++			 * raw base therefore panicked on the 33rd distinct GEM
++			 * page of a submit:
++			 *   pmap_remove_options() pmap ... start
++			 *   0xfffffe4acfe40000 end 0xfffffe4acfe41000
++			 * Undo io_map()'s arithmetic for the unmap.
++			 */
++			ml_io_unmap(trunc_page(gg_tmp_pg[i].base),
++			    round_page(GEM_PAGE));
+ #endif
+ 			if (gg_tmp_unmap_log < 4) {
+ 				gg_tmp_unmap_log++;
