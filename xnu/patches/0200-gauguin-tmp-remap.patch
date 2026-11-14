@@ -1,0 +1,112 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index a12ea5e..ab1213b 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3355,20 +3355,24 @@ gg_rbbm_busy(void)
+  * never unmapped. sanitize and the IB dumps run on every submit (571 submits
+  * in v140), which filled the 8 MiB io_submap; late userspace maps then died
+  * with kmem_alloc(16384) failed with 3 (KERN_NO_SPACE) -> panic(cpu 4).
+- * Share one bounded cache and unmap a slot before reusing it, so live
++ * Share one bounded cache and recycle a slot before reusing it, so live
+  * mappings stay under GG_TMP_PG_N * 4 KiB. Every caller consumes the pointer
+  * immediately, so rotation cannot invalidate a view still in use. Boot-time
+  * one-shot mappings (scan probe, mark_rd, panel_rd) are left alone.
++ *
++ * 0200: io_map() allocates the VA in io_submap with KMA_PERMANENT, so
++ * ml_io_unmap()'s kmem_free(kernel_map, ...) panics in vm_map_delete at
++ * vm_map.c:7940 ("Attempting to remove permanent VM map entry") -- 0199 only
++ * moved that panic from pmap.c:4296 to vm_map.c. The VA therefore stays owned
++ * by io_submap forever; recycling replaces the pmap translation only, and one
++ * slot covers the whole 16 KiB kernel page that holds the 4 KiB GEM page.
+  */
+ #define GG_TMP_PG_N 32
+-#if defined(__arm64__)
+-/* 0195: x86_64 has no ml_io_unmap; the phone kernel is arm64. */
+-extern void ml_io_unmap(vm_offset_t, vm_size_t);
+-#endif
++#define GG_TMP_SZ   (round_page(GEM_PAGE))
+ 
+ static struct {
+-	uint64_t pa;
+-	vm_offset_t base;
++	uint64_t pa;		/* 16 KiB aligned physical page mapped */
++	vm_offset_t base;	/* 16 KiB aligned VA page, 0 = never used */
+ } gg_tmp_pg[GG_TMP_PG_N];
+ static int gg_tmp_pg_n;
+ static unsigned gg_tmp_rot;
+@@ -3378,50 +3382,44 @@ static vm_offset_t
+ gg_tmp_map(uint64_t pa)
+ {
+ 	vm_offset_t base;
++	uint64_t pg;
+ 	int i;
+ 
+ 	pa &= ~0xfffull;
++	pg = pa & ~(uint64_t)(GG_TMP_SZ - 1);
+ 	for (i = 0; i < gg_tmp_pg_n; ++i) {
+-		if (gg_tmp_pg[i].pa == pa) {
+-			return gg_tmp_pg[i].base;
++		if (gg_tmp_pg[i].pa == pg) {
++			return gg_tmp_pg[i].base +
++			    (vm_offset_t)(pa & (GG_TMP_SZ - 1));
+ 		}
+ 	}
+-	base = ml_io_map((vm_offset_t)pa, GEM_PAGE);
+-	if (base == 0) {
+-		return 0;
+-	}
+ 	if (gg_tmp_pg_n < GG_TMP_PG_N) {
+ 		i = gg_tmp_pg_n++;
++		base = ml_io_map((vm_offset_t)pg, GEM_PAGE);
++		if (base == 0) {
++			gg_tmp_pg_n--;
++			return 0;
++		}
+ 	} else {
+ 		i = (int)(gg_tmp_rot++ % GG_TMP_PG_N);
+-		if (gg_tmp_pg[i].base != 0) {
+-#if defined(__arm64__)
+-			/*
+-			 * 0199: io_map() rounds the 4 KiB request up to the
+-			 * kernel page size but returns start + page offset, and
+-			 * pmap_remove_options() asserts leaf alignment
+-			 * (MACH_ASSERT, pmap.c:4296). Unmapping GEM_PAGE at the
+-			 * raw base therefore panicked on the 33rd distinct GEM
+-			 * page of a submit:
+-			 *   pmap_remove_options() pmap ... start
+-			 *   0xfffffe4acfe40000 end 0xfffffe4acfe41000
+-			 * Undo io_map()'s arithmetic for the unmap.
+-			 */
+-			ml_io_unmap(trunc_page(gg_tmp_pg[i].base),
+-			    round_page(GEM_PAGE));
+-#endif
+-			if (gg_tmp_unmap_log < 4) {
+-				gg_tmp_unmap_log++;
+-				printf("GAUGUIN CP: 0193 io cache unmap"
+-				    " base=%#llx pa=%#llx\n",
+-				    (unsigned long long)gg_tmp_pg[i].base,
+-				    (unsigned long long)gg_tmp_pg[i].pa);
+-			}
++		base = gg_tmp_pg[i].base;
++		pmap_remove(kernel_pmap, base, base + GG_TMP_SZ);
++		if (pmap_enter(kernel_pmap, base, (ppnum_t)(pg >> PAGE_SHIFT),
++		    VM_PROT_READ | VM_PROT_WRITE, VM_PROT_NONE, VM_WIMG_IO,
++		    FALSE) != KERN_SUCCESS) {
++			gg_tmp_pg[i].pa = 0;
++			return 0;
++		}
++		if (gg_tmp_unmap_log < 4) {
++			gg_tmp_unmap_log++;
++			printf("GAUGUIN CP: 0200 tmp remap base=%#llx"
++			    " pa=%#llx\n", (unsigned long long)base,
++			    (unsigned long long)pg);
+ 		}
+ 	}
+-	gg_tmp_pg[i].pa = pa;
++	gg_tmp_pg[i].pa = pg;
+ 	gg_tmp_pg[i].base = base;
+-	return base;
++	return base + (vm_offset_t)(pa & (GG_TMP_SZ - 1));
+ }
+ 
+ /*
