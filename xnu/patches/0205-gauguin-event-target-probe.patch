@@ -1,0 +1,154 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index e37946c..e83a33e 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3905,6 +3905,76 @@ gg_san_map(uint64_t iova)
+ 	return base + (vm_offset_t)(iova & 0xfffu);
+ }
+ 
++/*
++ * 0205: v152's wedge is either a 3D job that never retires or a write the CP
++ * cannot complete. The two are told apart by whether the address the stream
++ * writes (the CACHE_FLUSH_TS target, in the GEM window) still has a valid
++ * context-bank 1 entry, and whether the page it names is still backed.
++ */
++static void
++gg_iova_probe(const char *tag, uint64_t iova)
++{
++	uint32_t l2i = (uint32_t)((iova >> 21) & 0x1ffu), tbl = 0;
++	uint64_t pte = 0, pa = 0;
++	unsigned pn = 0;
++	bool l2ok;
++
++	l2ok = gg_gem_l2(iova, &tbl);
++	if (l2ok) {
++		pte = *(volatile uint64_t *)(gem_l3 + 0x1000u * tbl +
++		    8u * ((iova >> 12) & 0x1ffu));
++		if ((pte & 3u) != 0u) {
++			pa = pte & 0x0000fffffffff000ULL;
++			pn = (unsigned)pmap_find_phys(kernel_pmap, (addr64_t)pa);
++		}
++	}
++	printf("GAUGUIN CP: 0205 %s iova=%#llx l2e=%#llx l2ok=%d tbl=%u"
++	    " pte=%#llx pa=%#llx pn=%u\n", tag, (unsigned long long)iova,
++	    (unsigned long long)gg_gem_entry(CPMEM_L2 + 8u * l2i), (int)l2ok,
++	    tbl, (unsigned long long)pte, (unsigned long long)pa, pn);
++}
++
++/* Probe every CACHE_FLUSH_TS target the wedged IB still contains. */
++static void
++gg_ib_evprobe(uint64_t iova, uint32_t dwords)
++{
++	uint32_t o = 0, n = 0;
++
++	while (o + 1u < dwords && n < 4u) {
++		vm_offset_t mp = gg_san_map(iova + 4u * o);
++		uint32_t h, plen;
++
++		if (mp == 0) {
++			break;
++		}
++		h = gg_rd(mp, 0);
++		if ((h >> 28) == 7u) {
++			plen = h & 0x3fffu;
++			if (((h >> 16) & 0x7fu) == CP_EVENT_WRITE && plen >= 3u) {
++				mp = gg_san_map(iova + 4u * (o + 1u));
++				h = mp != 0 ? gg_rd(mp, 0) : 0u;
++				if ((h & 0x3fu) == 0x1du ||
++				    (h & 0x3fu) == 0x1cu) {
++					uint32_t al, ah;
++
++					mp = gg_san_map(iova + 4u * (o + 2u));
++					al = mp != 0 ? gg_rd(mp, 0) : 0u;
++					mp = gg_san_map(iova + 4u * (o + 3u));
++					ah = mp != 0 ? gg_rd(mp, 0) : 0u;
++					gg_iova_probe("ev",
++					    ((uint64_t)ah << 32) | al);
++					n++;
++				}
++			}
++			o += 2u + plen;
++		} else if ((h >> 28) == 4u) {
++			o += 2u;
++		} else {
++			o++;
++		}
++	}
++}
++
+ static bool
+ gg_san_deny(uint32_t r)
+ {
+@@ -4016,6 +4086,12 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 		gg_pfd_opt = PE_parse_boot_argn("gauguinpfd", &pfd,
+ 		    sizeof(pfd)) ? pfd : 0;
+ 	}
++	if (gg_noev_opt < 0) {
++		int noev = 0;
++
++		gg_noev_opt = PE_parse_boot_argn("gauguinnoev", &noev,
++		    sizeof(noev)) ? noev : 0;
++	}
+ 	if (gg_san_opt == 0 || depth > 6) {
+ 		return;
+ 	}
+@@ -4169,6 +4245,29 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				    " ib=%#llx off=%u hdr=%#x\n",
+ 				    plen, (unsigned long long)iova, o, h);
+ 			}
++		} else if (gg_noev_opt && type == 7u && plen >= 1u &&
++		    ((h >> 16) & 0x7fu) == CP_EVENT_WRITE &&
++		    (((gg_san_rd2(iova, m, ismark, o + 1) & 0x3fu) == 0x1du) ||
++		     ((gg_san_rd2(iova, m, ismark, o + 1) & 0x3fu) == 0x1cu))) {
++			/*
++			 * 0205: the v152 wedge sits inside an IB that ends with
++			 * CACHE_FLUSH_TS (event 0x1d) to 0x50c20000 and the CP
++			 * never retires the fence, while every 3D block reads
++			 * idle in RBBM_STATUS. Removing the flush is the only
++			 * way to tell "the flush waits for a 3D job that never
++			 * completes" apart from "the flush's own write is what
++			 * stalls", without touching the rest of the stream.
++			 */
++			gg_san_wr2(iova, m, ismark, o, gg_pkt7(CP_NOP, plen));
++			for (k = 1; k < len; ++k) {
++				gg_san_wr2(iova, m, ismark, o + k, 0u);
++			}
++			fixed++;
++			if (depth == 0 && !gg_quiet) {
++				printf("GAUGUIN CP: 0205 nop ev plen=%u"
++				    " ib=%#llx off=%u hdr=%#x\n", plen,
++				    (unsigned long long)iova, o, h);
++			}
+ 		} else if (depth < 6 && plen >= 3u &&
+ 		    (type == 3u || type == 7u) &&
+ 		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
+@@ -5021,6 +5120,7 @@ static int gg_smmu_log;
+ static uint32_t gg_sub_n;
+ static uint32_t gg_stuck_n;
+ static int gg_wai_opt = -1;	/* 0204: gauguinwai=1 appends CP_WHERE_AM_I */
++static int gg_noev_opt = -1;	/* 0205: gauguinnoev=1 NOPs event 0x1c/0x1d */
+ 
+ uint32_t
+ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t count)
+@@ -5679,6 +5779,21 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		printf("GAUGUIN CP: pos ib1=%#x rem=%u at=%u orig=%u ib2=%#x"
+ 		    " rem=%u count=%u\n", stuck, rem, pos, orig, ib2, rem2,
+ 		    count);
++		for (k = 0; k < count; k++) {
++			gg_ib_evprobe(ai[k], wi[k]);
++		}
++		{
++			vm_offset_t s = gg_smmu_base();
++
++			if (s != 0) {
++				vm_offset_t cb = s + SMMU_CB(GG_CB1);
++
++				printf("GAUGUIN CP: 0205 cb1 fsr=%#x far=%#x"
++				    " fsynr0=%#x\n", gg_rd(cb, SMMU_CB_FSR),
++				    gg_rd(cb, SMMU_CB_FAR),
++				    gg_rd(cb, SMMU_CB_FSYNR0));
++			}
++		}
+ 		/*
+ 		 * 0191: CP_IB1_REM_SIZE names the next payload dword, not always a
+ 		 * packet header. Search backwards for a parity-valid type-4/type-7
