@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
-index e37946c..d7d76e1 100644
+index e37946c..75bf930 100644
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
 @@ -3840,6 +3840,7 @@ static int gg_clr_opt = -1;	/* 0158: -1 unparsed, 0 off, 1..4 below */
@@ -132,7 +132,22 @@ index e37946c..d7d76e1 100644
  		} else if (depth < 6 && plen >= 3u &&
  		    (type == 3u || type == 7u) &&
  		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
-@@ -5679,6 +5781,21 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+@@ -5506,6 +5608,14 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)));
+ 	gg_stuck_n++;
++	if (gg_quiet && gg_stuck_n == 1u) {
++		/*
++		 * 0205: v153 wedged at submission 874, long after the quiet gate
++		 * closed, so the one dump that names the packet was discarded.
++		 * The first wedge always gets the full dump.
++		 */
++		gg_quiet = 0;
++	}
+ 	if (gg_quiet) {
+ 		if ((gg_stuck_n & 0x3fu) == 1u) {
+ 			flush_dcache64((addr64_t)(cpmem + CPMEM_SCRATCH), 8u,
+@@ -5679,6 +5789,21 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
  		printf("GAUGUIN CP: pos ib1=%#x rem=%u at=%u orig=%u ib2=%#x"
  		    " rem=%u count=%u\n", stuck, rem, pos, orig, ib2, rem2,
  		    count);
@@ -154,3 +169,11 @@ index e37946c..d7d76e1 100644
  		/*
  		 * 0191: CP_IB1_REM_SIZE names the next payload dword, not always a
  		 * packet header. Search backwards for a parity-valid type-4/type-7
+@@ -5917,6 +6042,7 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	}
+ 	(void)sweet_log_flush_now();
+ recover:
++	gg_quiet = (gg_sub_n > 8u);
+ 	/*
+ 	 * 0171: the ME is wedged for good (v118: every later submit hits the
+ 	 * same STUCK and backboardd sees -60 forever). Reset the core with the
