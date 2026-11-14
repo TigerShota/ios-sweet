@@ -1,0 +1,55 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index f921149..b53c6c8 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3879,9 +3879,20 @@ static const uint32_t gg_san_debug[] = {
+ static vm_offset_t
+ gg_san_map(uint64_t iova)
+ {
+-	uint64_t pg = gg_gem_pa(iova) & ~0xfffull;
++	uint64_t pg;
+ 	vm_offset_t base;
+ 
++	/*
++	 * 0203: with gauguinmark=1 the CP executes the annotated copies at
++	 * CP_VA_MARK, which has no GEM entry, so every 0191 dump printed the
++	 * 0xdeadbeef placeholder and the stop site at mark offset 160 was never
++	 * seen. Translate the mark block through its kernel alias instead.
++	 */
++	if (mark_mem != 0 && iova >= CP_VA_MARK &&
++	    iova < CP_VA_MARK + CPMEM_MARK_SIZE) {
++		return mark_mem + (vm_offset_t)(iova - CP_VA_MARK);
++	}
++	pg = gg_gem_pa(iova) & ~0xfffull;
+ 	if (pg == 0u) {
+ 		return 0;
+ 	}
+@@ -5755,6 +5766,28 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			printf("GAUGUIN CP: ib %u addr=%#llx dwords=%u\n", k,
+ 			    (unsigned long long)addresses[k], words[k]);
+ 		}
++		/*
++		 * 0203: v149 read the whole ring (rptr==wptr==1834) while v150,
++		 * which fed the CP the raw GEM IBs instead of the mark copies,
++		 * left rptr frozen at 145 for 598 submits. Dump the dwords the
++		 * front end is parked in front of, so the v150 stall is named.
++		 */
++		{
++			static int rpdump;
++			uint32_t rp = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++
++			if (rpdump < 8 && rp < ring_dw) {
++				rpdump++;
++				printf("GAUGUIN CP: 0203 rptr=%u wptr=%u:",
++				    rp, wp);
++				for (k = 0; k < 8u; k++) {
++					printf(" %#x",
++					    gm_rd32_raw(CPMEM_RING +
++					    4u * ((rp + k) % ring_dw)));
++				}
++				printf("\n");
++			}
++		}
+ 	}
+ 	/*
+ 	 * 0146: RPTR has caught up with WPTR and the IB is fully consumed, so
