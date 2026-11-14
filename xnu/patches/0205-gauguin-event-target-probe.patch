@@ -1,8 +1,16 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
-index e37946c..e83a33e 100644
+index e37946c..d7d76e1 100644
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -3905,6 +3905,76 @@ gg_san_map(uint64_t iova)
+@@ -3840,6 +3840,7 @@ static int gg_clr_opt = -1;	/* 0158: -1 unparsed, 0 off, 1..4 below */
+  * gg_ib_map() leaks an ml_io_map per call and sanitize runs per submit.
+  */
+ static int gg_san_log;
++static int gg_noev_opt = -1;	/* 0205: gauguinnoev=1 NOPs event 0x1c/0x1d */
+ static int gg_quiet;	/* 0204: per-submit detail off past the logged window */
+ static int gg_san_opt = -1;	/* gauguinsan: -1 unparsed, 0 off, 1 on */
+ static int gg_amb_opt = -1;	/* gauguinamb: 1 sanitize, 2 nop the amble */
+@@ -3905,6 +3906,78 @@ gg_san_map(uint64_t iova)
  	return base + (vm_offset_t)(iova & 0xfffu);
  }
  
@@ -16,6 +24,8 @@ index e37946c..e83a33e 100644
 +gg_iova_probe(const char *tag, uint64_t iova)
 +{
 +	uint32_t l2i = (uint32_t)((iova >> 21) & 0x1ffu), tbl = 0;
++	uint64_t l2e = (uint64_t)gm_rd32_raw(CPMEM_L2 + 8u * l2i) |
++	    ((uint64_t)gm_rd32_raw(CPMEM_L2 + 8u * l2i + 4u) << 32);
 +	uint64_t pte = 0, pa = 0;
 +	unsigned pn = 0;
 +	bool l2ok;
@@ -31,7 +41,7 @@ index e37946c..e83a33e 100644
 +	}
 +	printf("GAUGUIN CP: 0205 %s iova=%#llx l2e=%#llx l2ok=%d tbl=%u"
 +	    " pte=%#llx pa=%#llx pn=%u\n", tag, (unsigned long long)iova,
-+	    (unsigned long long)gg_gem_entry(CPMEM_L2 + 8u * l2i), (int)l2ok,
++	    (unsigned long long)l2e, (int)l2ok,
 +	    tbl, (unsigned long long)pte, (unsigned long long)pa, pn);
 +}
 +
@@ -79,7 +89,7 @@ index e37946c..e83a33e 100644
  static bool
  gg_san_deny(uint32_t r)
  {
-@@ -4016,6 +4086,12 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+@@ -4016,6 +4089,12 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
  		gg_pfd_opt = PE_parse_boot_argn("gauguinpfd", &pfd,
  		    sizeof(pfd)) ? pfd : 0;
  	}
@@ -92,7 +102,7 @@ index e37946c..e83a33e 100644
  	if (gg_san_opt == 0 || depth > 6) {
  		return;
  	}
-@@ -4169,6 +4245,29 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+@@ -4169,6 +4248,29 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
  				    " ib=%#llx off=%u hdr=%#x\n",
  				    plen, (unsigned long long)iova, o, h);
  			}
@@ -122,15 +132,7 @@ index e37946c..e83a33e 100644
  		} else if (depth < 6 && plen >= 3u &&
  		    (type == 3u || type == 7u) &&
  		    (((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER ||
-@@ -5021,6 +5120,7 @@ static int gg_smmu_log;
- static uint32_t gg_sub_n;
- static uint32_t gg_stuck_n;
- static int gg_wai_opt = -1;	/* 0204: gauguinwai=1 appends CP_WHERE_AM_I */
-+static int gg_noev_opt = -1;	/* 0205: gauguinnoev=1 NOPs event 0x1c/0x1d */
- 
- uint32_t
- gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t count)
-@@ -5679,6 +5779,21 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+@@ -5679,6 +5781,21 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
  		printf("GAUGUIN CP: pos ib1=%#x rem=%u at=%u orig=%u ib2=%#x"
  		    " rem=%u count=%u\n", stuck, rem, pos, orig, ib2, rem2,
  		    count);
