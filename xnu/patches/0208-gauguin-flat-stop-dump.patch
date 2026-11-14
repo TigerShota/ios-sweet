@@ -1,0 +1,159 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 4972cdf..0ef1593 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3823,6 +3823,15 @@ gg_ib_walk(const char *tag, uint64_t iova, uint32_t dwords)
+ static int gg_flat_opt = -1;	/* gauguinflat: 0 off, 1 inline (default) */
+ static uint32_t gg_flat_nib;	/* indirects inlined in the current copy */
+ static uint32_t gg_flat_nop;	/* indirects replaced by a NOP */
++#define GG_FLAT_MAPS  8u	/* inlined children recorded per top-level IB */
++
++struct gg_flat_map {
++	uint32_t copy;		/* offset in the copy where the child starts */
++	uint32_t n;		/* child size in dwords */
++	uint64_t src;		/* child IOVA */
++};
++static struct gg_flat_map gg_flat_map[GG_MARK_IBS][GG_FLAT_MAPS];
++static uint32_t gg_flat_nmap[GG_MARK_IBS];
+ 
+ static int gg_mark_opt = -1;	/* -1 unparsed, 0 off, 1 annotate */
+ static int gg_clr_opt = -1;	/* 0158: -1 unparsed, 0 off, 1..4 below */
+@@ -4481,7 +4490,7 @@ static int
+ gg_flat_copy(uint32_t index, uint64_t iova, uint32_t dwords,
+     volatile uint32_t *out, uint32_t max, uint32_t *np, int depth)
+ {
+-	uint32_t o = 0, k;
++	uint32_t o = 0, k, at;
+ 
+ 	if (depth > GG_FLAT_DEPTH) {
+ 		return 0;
+@@ -4518,6 +4527,14 @@ gg_flat_copy(uint32_t index, uint64_t iova, uint32_t dwords,
+ 			if (depth < GG_FLAT_DEPTH && nst != 0u &&
+ 			    nst <= GG_FLAT_MAX && gg_gem_pa(niova) != 0u) {
+ 				gg_flat_nib++;
++				if (gg_flat_nmap[index] < GG_FLAT_MAPS) {
++					struct gg_flat_map *fm =
++					    &gg_flat_map[index][gg_flat_nmap[index]++];
++
++					fm->copy = *np;
++					fm->n = nst;
++					fm->src = niova;
++				}
+ 				if (gg_flat_copy(index, niova, nst, out, max,
+ 				    np, depth + 1)) {
+ 					o += len;
+@@ -4537,12 +4554,19 @@ gg_flat_copy(uint32_t index, uint64_t iova, uint32_t dwords,
+ 		if (isind) {
+ 			gg_flat_nop++;
+ 		}
++		at = *np;
+ 		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+ 		out[(*np)++] = 0x04u;
+ 		out[(*np)++] = CP_VA_MARK + GG_MARK_BASE + 4u * index;
+ 		out[(*np)++] = 0u;
++		/*
++		 * 0208: the marker is the offset in the copy just past the packet,
++		 * not the offset in the source buffer. A flattened copy mixes the
++		 * top-level IB with every inlined child, so only the copy offset
++		 * names a single position the ME can be stopped at.
++		 */
+ 		out[(*np)++] = 0x4d000000u | ((index & 0x3fu) << 16) |
+-		    ((o + len) & 0xffffu);
++		    (at & 0xffffu);
+ 		o += len;
+ 	}
+ 	return 1;
+@@ -4575,6 +4599,9 @@ gg_ib_annotate(uint32_t index, uint64_t iova, uint32_t dwords,
+ 		}
+ 		gg_flat_nib = 0;
+ 		gg_flat_nop = 0;
++		if (index < GG_MARK_IBS) {
++			gg_flat_nmap[index] = 0u;
++		}
+ 		if (!gg_flat_copy(index, iova, dwords, out, max, &n, 0) ||
+ 		    n == 0u) {
+ 			*why = 8;
+@@ -5816,6 +5843,83 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 				    pkt[2], pkt[3]);
+ 			}
+ 		}
++		/*
++		 * 0208: in flatten mode the stamp marker is the offset in the copy
++		 * just past the last packet the ME finished, so it names the packet
++		 * it is dying in. The copy interleaves the top-level IB with every
++		 * inlined child, so gg_flat_map[] is used to translate that copy
++		 * offset back to one source buffer and one offset inside it, and the
++		 * source window is dumped alongside the copy window.
++		 */
++		if (gg_flat_opt > 0) {
++			for (k = 0; k < count; k++) {
++				uint32_t v = rd[GG_MARK_BASE / 4u + k];
++				uint32_t pos = v & 0xffffu;
++				uint32_t from, to, idx, hh, j, base = 0u, no = 0u;
++				uint32_t nsrc;
++				uint64_t src;
++				volatile uint32_t *cp;
++
++				if (v == 0u || (mark_mask & (1ull << k)) == 0u ||
++				    wi[k] == 0u || pos >= wi[k]) {
++					continue;
++				}
++				cp = rd + gg_mark_off[k] / 4u;
++				from = pos > 8u ? pos - 8u : 0u;
++				to = from + 64u < wi[k] ? from + 64u : wi[k];
++				printf("GAUGUIN CP: 0208 flat ib=%u pos=%u of=%u"
++				    " va=%#llx\n", k, pos, wi[k],
++				    (unsigned long long)ai[k]);
++				for (idx = from; idx < to; idx += 8u) {
++					printf("GAUGUIN CP: 0208 %u:", idx);
++					for (hh = 0; hh < 8u && idx + hh < to; hh++) {
++						printf(" %#x", cp[idx + hh]);
++					}
++					printf("\n");
++				}
++				src = addresses[k];
++				nsrc = words[k];
++				for (j = 0; j < gg_flat_nmap[k]; j++) {
++					printf("GAUGUIN CP: 0208 m%u copy=%u n=%u"
++					    " src=%#llx\n", j, gg_flat_map[k][j].copy,
++					    gg_flat_map[k][j].n,
++					    (unsigned long long)gg_flat_map[k][j].src);
++					if (gg_flat_map[k][j].copy <= pos &&
++					    gg_flat_map[k][j].copy >= base) {
++						base = gg_flat_map[k][j].copy;
++						no = j + 1u;
++					}
++				}
++				if (no != 0u) {
++					src = gg_flat_map[k][no - 1u].src;
++					nsrc = gg_flat_map[k][no - 1u].n;
++				}
++				/*
++				 * The copy offset past the last finished packet is the
++				 * offset of the packet the ME is in, so this is what it
++				 * was asked to execute.
++				 */
++				idx = pos - base;
++				printf("GAUGUIN CP: 0208 src ib=%u off=%u of=%u"
++				    " iova=%#llx\n", k, idx, nsrc,
++				    (unsigned long long)src);
++				from = idx > 8u ? idx - 8u : 0u;
++				to = from + 48u < nsrc ? from + 48u : nsrc;
++				for (hh = from; hh < to; hh += 8u) {
++					uint32_t q;
++
++					printf("GAUGUIN CP: 0208 s%u:", hh);
++					for (q = 0; q < 8u && hh + q < to; q++) {
++						vm_offset_t mp = gg_san_map(src +
++						    4u * (hh + q));
++
++						printf(" %#x", mp != 0 ?
++						    gg_rd(mp, 0) : 0xdeadbeefu);
++					}
++					printf("\n");
++				}
++			}
++		}
+ 	}
+ 	/* 0147: RBBM_STATUS bit 0 is CP idle; anything else set means the
+ 	 * blocks are still busy, i.e. the previous submission never drained.
