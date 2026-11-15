@@ -1,0 +1,239 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3480,6 +3480,7 @@
+ static uint32_t gg_vfd_reg[GG_ST_MAX];
+ static uint32_t gg_vfd_val[GG_ST_MAX];
+ static uint32_t gg_vfd_off[GG_ST_MAX];
++static uint32_t gg_vfd_plen[GG_ST_MAX];	/* 0223: dwords the packet wrote */
+ static int gg_draw_saw;		/* a draw with a non-zero index count was seen */
+ 
+ static int
+@@ -3496,6 +3497,37 @@
+ 		    gg_idxlen_opt);
+ 	}
+ 	return gg_idxlen_opt;
++}
++
++/*
++ * 0223: v175 read 0xa006/0xa007/0xa00f and called them VFD_FETCH_INSTR_0/1 and
++ * VFD_INDEX_MAX, but an a6xx has no such registers: 0xa006/0xa007 are
++ * VFD_CONTROL_6/VFD_MODE_CNTL and 0xa00f is VFD_INSTANCE_START_OFFSET, so "the
++ * vertex fetch descriptors are all zero" was never actually measured. The real
++ * fetch state is VFD_FETCH[0..2] at 0xa010 (BASE lo/hi, SIZE, STRIDE) plus
++ * VFD_DECODE[0..2] at 0xa090 (INSTR, STEP_RATE), and VFD_CONTROL_0 = 0x303 says
++ * three of each are in use. VFD_DECODE[0].INSTR selects fetch buffer 1; if
++ * VFD_FETCH[1].BASE is 0 the VFD reads vertex data from GPU VA 0 and waits for
++ * a translation that never comes, which is exactly the "any non-zero index
++ * count wedges, zero retires" pattern. gauguinfetchbind=1 points every fetch
++ * buffer whose BASE reads 0 at the draw's own index buffer (a GEM VA the CP has
++ * already translated), so a wedge that disappears names the unbound fetch.
++ */
++static int gg_fetchbind_opt = -2;
++static int gg_fetchbind_log;
++
++static int
++gg_fetchbind(void)
++{
++	if (gg_fetchbind_opt == -2) {
++		int v = 0;
++		int got = PE_parse_boot_argn("gauguinfetchbind", &v, sizeof(v));
++
++		gg_fetchbind_opt = got ? v : 0;
++		printf("GAUGUIN CP: 0223 fetchbind parse got=%d val=%d\n", got,
++		    gg_fetchbind_opt);
++	}
++	return gg_fetchbind_opt;
+ }
+ 
+ static int
+@@ -4721,6 +4753,38 @@
+ 	return a != 0 ? *(volatile uint32_t *)a : 0u;
+ }
+ 
++/*
++ * 0223: insert `nw` one-register type-4 writes (w holds reg/value pairs) in
++ * front of the `len`-dword packet that was just copied to out[*np - len], by
++ * moving that packet up. Every other offset in the copy is unchanged, so the
++ * annotation stamps still name the same positions.
++ */
++#define GG_INS_MAX 8u
++
++static int
++gg_ins(volatile uint32_t *out, uint32_t *np, uint32_t len, const uint32_t *w,
++    uint32_t nw)
++{
++	uint32_t save[GG_INS_MAX], base, k;
++
++	if (len > GG_INS_MAX) {
++		return 0;
++	}
++	base = *np - len;
++	for (k = 0; k < len; ++k) {
++		save[k] = out[base + k];
++	}
++	*np = base;
++	for (k = 0; k < nw; ++k) {
++		out[(*np)++] = gg_pkt4(w[2u * k]);
++		out[(*np)++] = w[2u * k + 1u];
++	}
++	for (k = 0; k < len; ++k) {
++		out[(*np)++] = save[k];
++	}
++	return 1;
++}
++
+ static int
+ gg_flat_copy(uint32_t index, uint64_t iova, uint32_t dwords,
+     volatile uint32_t *out, uint32_t max, uint32_t *np, int depth)
+@@ -4829,7 +4893,10 @@
+ 			}
+ 		}
+ 		if (inl == 0) {
+-		if (*np + len + 5u > max) {
++		/* 0223: reserve room for the vertex-fetch writes inserted in
++		 * front of a draw (three slots, four writes each). */
++		if (*np + len + 5u + (type == 7u && op == 0x38u &&
++		    gg_fetchbind() > 0 ? 24u : 0u) > max) {
+ 			return 0;
+ 		}
+ 		for (k = 0; k < len; ++k) {
+@@ -4942,6 +5009,43 @@
+ 					    out[base + 7u]);
+ 				}
+ 			}
++			/*
++			 * 0223: see gg_fetchbind(). Only started draws with a
++			 * non-zero index count are touched (a zero count never
++			 * fetches a vertex, which is why it never wedges).
++			 */
++			if (gg_fetchbind() > 0 && plen == 7u && len <= GG_INS_MAX &&
++			    out[base + 7u] != 0u) {
++				uint32_t w[2u * 12u], nw = 0u, i, va, ins;
++
++				va = out[base + 5u];
++				for (i = 0; i < 3u; i++) {
++					uint32_t f = 0xa010u + 4u * i;
++					uint32_t fb = gg_rd(gg.gpu, GR(f));
++					uint32_t fs = gg_rd(gg.gpu, GR(f + 2u));
++
++					/* Bound and non-empty: leave it alone. */
++					if (fb != 0u && fs != 0u) {
++						continue;
++					}
++					w[nw++] = f;
++					w[nw++] = fb != 0u ? fb : va;
++					w[nw++] = f + 1u;
++					w[nw++] = 0u;
++					w[nw++] = f + 2u;
++					w[nw++] = 0x1000u;
++					w[nw++] = f + 3u;
++					w[nw++] = 0x10u;
++				}
++				ins = base + nw;
++				if (nw != 0u && gg_ins(out, np, len, w, nw / 2u) &&
++				    gg_fetchbind_log < 4) {
++					gg_fetchbind_log++;
++					printf("GAUGUIN CP: 0223 fetchbind"
++					    " at=%u n=%u va=%#x\n", ins,
++					    nw / 2u, va);
++				}
++			}
+ 		}
+ 		at = *np;
+ 		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+@@ -5434,6 +5538,7 @@
+ 					gg_vfd_reg[gg_vfd_n] = reg;
+ 					gg_vfd_val[gg_vfd_n] = cp[o + 1u];
+ 					gg_vfd_off[gg_vfd_n] = o;
++					gg_vfd_plen[gg_vfd_n] = plen;
+ 					gg_vfd_n++;
+ 				} else {
+ 					gg_vfd_drop++;
+@@ -5564,6 +5669,28 @@
+ 			printf("GAUGUIN CP: 0222 st %u: off=%u reg=%#x val=%#x\n",
+ 			    q, gg_vfd_off[q], gg_vfd_reg[q], gg_vfd_val[q]);
+ 		}
++	}
++	/*
++	 * 0223: the 400-line window above is the head of the frame and can miss
++	 * the VFD writes entirely, so that block gets its own budget. A packet
++	 * here names its base register and its first value only (that is what
++	 * the recorder keeps), so `n=` is the number of registers it wrote: a
++	 * 12-dword VFD_FETCH[0] packet shows as reg=0xa010 n=12 val=<base lo>.
++	 */
++	{
++		uint32_t q, hits = 0u;
++
++		for (q = 0; q < gg_vfd_n && hits < 256u; q++) {
++			if (gg_vfd_reg[q] >= 0xa010u && gg_vfd_reg[q] <= 0xa0dfu) {
++				hits++;
++				printf("GAUGUIN CP: 0223 vfdw %u: off=%u"
++				    " reg=%#x n=%u val=%#x\n", q,
++				    gg_vfd_off[q], gg_vfd_reg[q],
++				    gg_vfd_plen[q], gg_vfd_val[q]);
++			}
++		}
++		printf("GAUGUIN CP: 0223 vfdw done hits=%u n=%u\n", hits,
++		    gg_vfd_n);
+ 	}
+ 	printf("GAUGUIN CP: 0215 mem fence=%#x ring=%u..%u size=%u\n", fence,
+ 	    start, wp, ring_dw);
+@@ -5685,27 +5812,48 @@
+ 	} regs[] = {
+ 		{ 0x8801u, "RB_RENDER_CNTL" },
+ 		{ 0x8820u, "RB_MRT0_CONTROL" },
+-		{ 0x8822u, "RB_MRT0_INFO" },
++		{ 0x8822u, "RB_MRT0_BUF_INFO" },
+ 		{ 0x8823u, "RB_MRT0_PITCH" },
+ 		{ 0x8825u, "RB_MRT0_BASE_LO" },
+ 		{ 0x8826u, "RB_MRT0_BASE_HI" },
+ 		{ 0x8871u, "RB_DEPTH_CNTL" },
+ 		{ 0x8875u, "RB_DEPTH_BASE_LO" },
+-		{ 0xa000u, "VFD_0000" },
+-		{ 0xa006u, "VFD_FETCH_INSTR_0" },
+-		{ 0xa007u, "VFD_FETCH_INSTR_1" },
++		{ 0xa000u, "VFD_CONTROL_0" },
++		{ 0xa009u, "VFD_ADD_OFFSET" },
+ 		{ 0xa00eu, "VFD_INDEX_OFFSET" },
+-		{ 0xa00fu, "VFD_INDEX_MAX" },
+-		{ 0xa090u, "VFD_0090" },
++		{ 0xa00fu, "VFD_INSTANCE_START" },
++		{ 0xa010u, "VFD_FETCH0_BASE_LO" },
++		{ 0xa011u, "VFD_FETCH0_BASE_HI" },
++		{ 0xa012u, "VFD_FETCH0_SIZE" },
++		{ 0xa013u, "VFD_FETCH0_STRIDE" },
++		{ 0xa014u, "VFD_FETCH1_BASE_LO" },
++		{ 0xa015u, "VFD_FETCH1_BASE_HI" },
++		{ 0xa016u, "VFD_FETCH1_SIZE" },
++		{ 0xa017u, "VFD_FETCH1_STRIDE" },
++		{ 0xa018u, "VFD_FETCH2_BASE_LO" },
++		{ 0xa019u, "VFD_FETCH2_BASE_HI" },
++		{ 0xa01au, "VFD_FETCH2_SIZE" },
++		{ 0xa01bu, "VFD_FETCH2_STRIDE" },
++		{ 0xa090u, "VFD_DECODE0_INSTR" },
++		{ 0xa091u, "VFD_DECODE0_STEP" },
++		{ 0xa092u, "VFD_DECODE1_INSTR" },
++		{ 0xa093u, "VFD_DECODE1_STEP" },
++		{ 0xa094u, "VFD_DECODE2_INSTR" },
++		{ 0xa095u, "VFD_DECODE2_STEP" },
++		{ 0xa0d0u, "VFD_DEST0" },
++		{ 0xa0d1u, "VFD_DEST1" },
++		{ 0xa0d2u, "VFD_DEST2" },
+ 		{ 0xa800u, "SP_VS_CTRL_REG0" },
+-		{ 0xa824u, "SP_VS_CTRL_REG1" },
++		{ 0xa81cu, "SP_VS_OBJ_START_LO" },
++		{ 0xa81du, "SP_VS_OBJ_START_HI" },
++		{ 0xa824u, "SP_VS_INSTRLEN" },
+ 		{ 0xa980u, "SP_FS_CTRL_REG0" },
+ 	};
+ 	uint32_t i;
+ 
+-	printf("GAUGUIN CP: 0222 regs fence=%#x\n", fence);
++	printf("GAUGUIN CP: 0223 regs fence=%#x\n", fence);
+ 	for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
+-		printf("GAUGUIN CP: 0222 reg %s=%#x\n", regs[i].name,
++		printf("GAUGUIN CP: 0223 reg %s=%#x\n", regs[i].name,
+ 		    gg_rd(gg.gpu, GR(regs[i].off)));
+ 	}
+ 	(void)sweet_log_flush_now();
