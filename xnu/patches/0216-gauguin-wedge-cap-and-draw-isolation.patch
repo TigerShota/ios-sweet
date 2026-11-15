@@ -1,0 +1,172 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3437,6 +3437,32 @@
+ /* 0215: gauguinregs, default 0 - at a wedge the register block may be gone. */
+ static int gg_regs_opt = -1;
+ 
++/*
++ * 0216: two directed switches for the deterministic stop at IB 0x40107d3c + 2801
++ * (fence 0x6000236, every boot): gauguinnullidx=1 zeroes the index count of
++ * every CP_DRAW_INDX_OFFSET in the copy (payload 3 of the 7-dword form, payload
++ * 0 of the 3-dword form), gauguinnulldraw=1 NOPs the whole packet. If the
++ * `rem` starts moving with the count zeroed, the index fetch is what blocks the
++ * ME; if only NOPing the draw moves it, the draw itself is the blocker.
++ */
++static int gg_nidx_opt = -1;
++static int gg_ndraw_opt = -1;
++static int gg_ndraw_log;
++
++static int
++gg_boot_int(const char *name, int def, int *slot)
++{
++	if (*slot == -1) {
++		int v = def;
++
++		*slot = PE_parse_boot_argn(name, &v, sizeof(v)) ? v : def;
++	}
++	return *slot;
++}
++
++/* 0216: memory post-mortems are only useful for the first wedges. */
++static uint32_t gg_mem_n;
++
+ static int
+ gg_regs_enabled(void)
+ {
+@@ -4789,6 +4815,42 @@
+ 			}
+ 		}
+ 		}
++		/*
++		 * 0216: the stop is deterministic (IB 0x40107d3c + 2801, the same
++		 * 4096-dword-aligned read for 345 consecutive fences), so instead of
++		 * more post-mortems, offer two length-preserving edits that isolate
++		 * the index fetch from the draw: zero the index count of every
++		 * CP_DRAW_INDX_OFFSET (payload 3 of the 7-dword form - the field that
++		 * carries 0x150/0x390/0x8d0 in v166 - and payload 0 of the 3-dword
++		 * form, which carries 0x186), or NOP the packet outright.
++		 */
++		if (type == 7u && op == 0x38u) {
++			uint32_t base = *np - len;
++
++			if (gg_boot_int("gauguinnulldraw", 0, &gg_ndraw_opt) != 0) {
++				out[base] = gg_pkt7(CP_NOP, plen);
++				for (k = 1; k < len; ++k) {
++					out[base + k] = 0u;
++				}
++				if (gg_ndraw_log < 4) {
++					gg_ndraw_log++;
++					printf("GAUGUIN CP: 0216 draw nop at=%u"
++					    " plen=%u\n", base, plen);
++				}
++			} else if (gg_boot_int("gauguinnullidx", 0,
++			    &gg_nidx_opt) != 0) {
++				if (plen == 7u) {
++					out[base + 4u] = 0u;
++				} else if (plen == 3u) {
++					out[base + 1u] = 0u;
++				}
++				if (gg_ndraw_log < 4) {
++					gg_ndraw_log++;
++					printf("GAUGUIN CP: 0216 idx0 at=%u"
++					    " plen=%u\n", base, plen);
++				}
++			}
++		}
+ 		at = *np;
+ 		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+ 		out[(*np)++] = 0x04u;
+@@ -5270,7 +5332,8 @@
+ {
+ 	volatile uint32_t *rd = mark_rd ? (volatile uint32_t *)mark_rd :
+ 	    (volatile uint32_t *)mark_mem;
+-	uint32_t k, o, n, va_seen = 0u, pkt_seen = 0u;
++	uint32_t k, o, n, pkt_seen = 0u;
++	uint32_t cp_n = 0u, gem_n = 0u, nopte_n = 0u, oth_n = 0u;
+ 
+ 	printf("GAUGUIN CP: 0215 mem fence=%#x ring=%u..%u size=%u\n", fence,
+ 	    start, wp, ring_dw);
+@@ -5325,19 +5388,52 @@
+ 			}
+ 			for (j = 0; j < 1u + plen; j++) {
+ 				uint32_t v = cp[o + j];
++				uint32_t g;
+ 
+-				if (v >= 0x40000000u && v < 0x80000000u &&
+-				    va_seen < GG_MEM_VA_MAX) {
+-					va_seen++;
+-					printf("GAUGUIN CP: 0215 va ib=%u off=%u"
+-					    " v=%#x gem=%d\n", k, o + j, v,
+-					    gg_gem_pa(v) != 0u ? 1 : 0);
++				/*
++				 * 0216: PM4 headers and the stamp markers are also
++				 * >= 0x40000000, so v165's scan was pure noise. Only a
++				 * 1 KiB-aligned word can be a buffer base, and the two
++				 * windows mean different things: 0x40000000..0x4fffffff
++				 * is the CP's own ring/IB/mark window (kernel mapped, no
++				 * GEM entry - gem=- means "not applicable", not "missing"),
++				 * 0x50000000..0x6fffffff is the GEM window this driver
++				 * pages in itself.
++				 */
++				if (v < 0x40000000u || v >= 0x80000000u ||
++				    (v & 0x3ffu) != 0u) {
++					continue;
++				}
++				if (v < 0x50000000u) {
++					cp_n++;
++					if (cp_n <= 8u) {
++						printf("GAUGUIN CP: 0216 va area=cp"
++						    " ib=%u off=%u v=%#x gem=-\n",
++						    k, o + j, v);
++					}
++					continue;
++				}
++				if (v >= 0x70000000u) {
++					oth_n++;
++					continue;
++				}
++				g = gg_gem_pa(v) != 0u ? 1u : 0u;
++				gem_n++;
++				if (g == 0u) {
++					nopte_n++;
++				}
++				if (gem_n <= 32u || g == 0u) {
++					printf("GAUGUIN CP: 0216 va area=gem"
++					    " ib=%u off=%u v=%#x gem=%u%s\n",
++					    k, o + j, v, g,
++					    g == 0u ? " NOPTE" : "");
+ 				}
+ 			}
+ 			o += 1u + plen;
+ 		}
+ 	}
+-	printf("GAUGUIN CP: 0215 mem done va=%u pkt=%u\n", va_seen, pkt_seen);
++	printf("GAUGUIN CP: 0215 mem done cp=%u gem=%u nopte=%u other=%u pkt=%u\n",
++	    cp_n, gem_n, nopte_n, oth_n, pkt_seen);
+ 	(void)sweet_log_flush_now();
+ }
+ 
+@@ -6342,8 +6438,20 @@
+ 	 * and return without touching the GPU or trying to recover it.
+ 	 */
+ 	if (gg_regs_enabled() == 0) {
+-		gg_hung_mem(fence, ai, wi, count, ring, ring_dw, start, wp,
+-		    mark_mask);
++		if (gg_mem_n < 2u) {
++			gg_mem_n++;
++			gg_hung_mem(fence, ai, wi, count, ring, ring_dw, start,
++			    wp, mark_mask);
++		} else {
++			gg_mem_n++;
++			/*
++			 * 0216: v166 wrote 8 MB into a 4 MB ring, so the first
++			 * wedge - the only one worth reading - was overwritten by
++			 * the 345 timeouts that followed it.
++			 */
++			printf("GAUGUIN CP: 0216 wedge suppressed n=%u fence=%#x\n",
++			    gg_mem_n, fence);
++		}
+ 		printf("GAUGUIN CP: 0215 register dump and recovery skipped"
+ 		    " (gauguinregs=1 to retry them)\n");
+ 		(void)sweet_log_flush_now();
