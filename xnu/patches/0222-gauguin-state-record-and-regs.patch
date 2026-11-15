@@ -1,0 +1,156 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3473,11 +3473,14 @@
+  * when a submit wedges. v173's 200-line print budget was consumed by the first
+  * eight submissions, so the frame that actually died was never shown.
+  */
+-#define GG_VFD_MAX 32u
++#define GG_ST_MAX 1024u
+ static uint32_t gg_vfd_fence;
+ static uint32_t gg_vfd_n;
+-static uint32_t gg_vfd_reg[GG_VFD_MAX];
+-static uint32_t gg_vfd_val[GG_VFD_MAX];
++static uint32_t gg_vfd_drop;
++static uint32_t gg_vfd_reg[GG_ST_MAX];
++static uint32_t gg_vfd_val[GG_ST_MAX];
++static uint32_t gg_vfd_off[GG_ST_MAX];
++static int gg_draw_saw;		/* a draw with a non-zero index count was seen */
+ 
+ static int
+ gg_idxlen(void)
+@@ -5385,6 +5388,8 @@
+ 	static uint32_t nseen;
+ 	uint32_t o = 0u;
+ 
++	gg_draw_saw = 0;
++
+ 	while (o < n) {
+ 		uint32_t h = cp[o];
+ 		uint32_t type = h >> 28u;
+@@ -5419,21 +5424,32 @@
+ 			 * 0221: record, do not print. The buffer is reset on a fence
+ 			 * change, so at a wedge it holds exactly the frame that died.
+ 			 */
+-			if (reg >= 0xa000u && reg <= 0xa1ffu) {
++			if (reg >= 0x8000u && reg <= 0xbfffu) {
+ 				if (gg_vfd_fence != fence) {
+ 					gg_vfd_fence = fence;
+ 					gg_vfd_n = 0u;
++					gg_vfd_drop = 0u;
+ 				}
+-				if (gg_vfd_n < GG_VFD_MAX) {
++				if (gg_vfd_n < GG_ST_MAX) {
+ 					gg_vfd_reg[gg_vfd_n] = reg;
+ 					gg_vfd_val[gg_vfd_n] = cp[o + 1u];
++					gg_vfd_off[gg_vfd_n] = o;
+ 					gg_vfd_n++;
++				} else {
++					gg_vfd_drop++;
+ 				}
+ 			}
+ 		}
++		if (type == 7u && op == 0x38u && plen == 3u && cp[o + 1u] != 0u) {
++			gg_draw_saw = 1;
++		}
+ 		if (type == 7u && op == 0x38u && plen == 7u) {
+ 			uint32_t base = cp[o + 5u];
+ 			uint32_t cnt = cp[o + 7u];
++
++			if (cnt != 0u) {
++				gg_draw_saw = 1;
++			}
+ 			uint32_t lo, hi, k, dup = 0u;
+ 
+ 			for (k = 0; k < nseen; k++) {
+@@ -5539,14 +5555,14 @@
+ 	uint32_t k, o, n, pkt_seen = 0u;
+ 	uint32_t cp_n = 0u, gem_n = 0u, nopte_n = 0u, oth_n = 0u;
+ 
+-	printf("GAUGUIN CP: 0221 vfd fence=%#x n=%u\n", gg_vfd_fence,
+-	    gg_vfd_n);
++	printf("GAUGUIN CP: 0222 st fence=%#x n=%u dropped=%u\n",
++	    gg_vfd_fence, gg_vfd_n, gg_vfd_drop);
+ 	{
+ 		uint32_t q;
+ 
+-		for (q = 0; q < gg_vfd_n; q++) {
+-			printf("GAUGUIN CP: 0221 vfd %u: reg=%#x val=%#x\n", q,
+-			    gg_vfd_reg[q], gg_vfd_val[q]);
++		for (q = 0; q < gg_vfd_n && q < 400u; q++) {
++			printf("GAUGUIN CP: 0222 st %u: off=%u reg=%#x val=%#x\n",
++			    q, gg_vfd_off[q], gg_vfd_reg[q], gg_vfd_val[q]);
+ 		}
+ 	}
+ 	printf("GAUGUIN CP: 0215 mem fence=%#x ring=%u..%u size=%u\n", fence,
+@@ -5590,7 +5606,8 @@
+ 				break;
+ 			}
+ 			if (type == 7u && (op == 0x38u || op == 0x45u ||
+-			    op == 0x43u || op == 0x3fu) &&
++			    op == 0x43u || op == 0x3fu ||
++			    (op >= 0x30u && op <= 0x33u)) &&
+ 			    pkt_seen < GG_MEM_PKT_MAX) {
+ 				pkt_seen++;
+ 				printf("GAUGUIN CP: 0215 pkt ib=%u off=%u op=%#x"
+@@ -5651,6 +5668,49 @@
+ 	(void)sweet_log_flush_now();
+ }
+ 
++/*
++ * 0222: the draw's hardware inputs, read while the CP is still healthy (the
++ * first ~280 submits retire). 0213's version sat on the hang path, which 0216
++ * made memory-only, so RB_MRT/DB and the SP/VFD words have never been observed.
++ * One register per line after a label, so a read that hangs still names itself.
++ */
++static int gg_reg_dumps;
++
++static void
++gg_draw_regs(uint32_t fence)
++{
++	static const struct {
++		uint32_t off;
++		const char *name;
++	} regs[] = {
++		{ 0x8801u, "RB_RENDER_CNTL" },
++		{ 0x8820u, "RB_MRT0_CONTROL" },
++		{ 0x8822u, "RB_MRT0_INFO" },
++		{ 0x8823u, "RB_MRT0_PITCH" },
++		{ 0x8825u, "RB_MRT0_BASE_LO" },
++		{ 0x8826u, "RB_MRT0_BASE_HI" },
++		{ 0x8871u, "RB_DEPTH_CNTL" },
++		{ 0x8875u, "RB_DEPTH_BASE_LO" },
++		{ 0xa000u, "VFD_0000" },
++		{ 0xa006u, "VFD_FETCH_INSTR_0" },
++		{ 0xa007u, "VFD_FETCH_INSTR_1" },
++		{ 0xa00eu, "VFD_INDEX_OFFSET" },
++		{ 0xa00fu, "VFD_INDEX_MAX" },
++		{ 0xa090u, "VFD_0090" },
++		{ 0xa800u, "SP_VS_CTRL_REG0" },
++		{ 0xa824u, "SP_VS_CTRL_REG1" },
++		{ 0xa980u, "SP_FS_CTRL_REG0" },
++	};
++	uint32_t i;
++
++	printf("GAUGUIN CP: 0222 regs fence=%#x\n", fence);
++	for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
++		printf("GAUGUIN CP: 0222 reg %s=%#x\n", regs[i].name,
++		    gg_rd(gg.gpu, GR(regs[i].off)));
++	}
++	(void)sweet_log_flush_now();
++}
++
+ static int gg_rec_left = -1;	/* -1 unparsed; boot-arg gauguinrec */
+ static int gg_rec_busy;		/* one recovery at a time */
+ static int gg_rec_zaps;		/* 0182: PAS 13 must be shut down before re-INIT */
+@@ -6571,6 +6631,10 @@
+ 			gg_idx_report(fence, cp, wi[i]);
+ 		}
+ 	}
++	if (gg_draw_saw && gg_reg_dumps < 40) {
++		gg_reg_dumps++;
++		gg_draw_regs(fence);
++	}
+ 	for (i = 0; i < count; i++) {
+ 		/*
+ 		 * a6xx (non-legacy PM4) cp_gpuaddr writes a 64-bit address, so
