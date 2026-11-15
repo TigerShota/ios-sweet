@@ -1,0 +1,252 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -27,6 +27,8 @@
+ extern void sweet_log_flush_now(void);
+ extern void sweet_log_freeze(void);
+ extern void gauguin_inject_install(void);
++/* 0215: SMMU FSR probe, called from bring-up stages that run earlier. */
++static void gg_smmu_probe(const char *tag);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
+ extern kern_return_t pmap_enter(pmap_t, vm_map_offset_t, ppnum_t, vm_prot_t,
+@@ -612,6 +614,7 @@
+ 	printf("GAUGUIN SMMU: verified (CB0 LPAE ttbr0=%#llx SMR0=sid%u SMR1=sid%u)\n",
+ 	    ttbr_got, GG_SID_KERNEL, GG_SID_USER);
+ 	(void)sweet_log_flush_now();
++	gg_smmu_probe("init");
+ 	return true;
+ }
+ 
+@@ -3068,6 +3071,7 @@
+ 			    " other=%u firstother=row%u:%#x\n",
+ 			    cnt_o, cnt_b, cnt_x, xrow, xpx);
+ 			(void)sweet_log_flush_now();
++			gg_smmu_probe("panel");
+ 			printf("GAUGUIN CP: panel protect=%#x fault=%#x int=%#x\n",
+ 			    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
+ 			    gg_rd(gg.gpu, GR(CP_HW_FAULT_DW)),
+@@ -3366,7 +3370,7 @@
+  * apart from a lost completion write.
+  */
+ static void
+-gg_cp_state(const char *tag, uint32_t fence)
++gg_cp_state(int regs, const char *tag, uint32_t fence)
+ {
+ 	/*
+ 	 * 0214: v164 never printed the HUNG line at all. printf evaluates every
+@@ -3375,9 +3379,17 @@
+ 	 * went into this function and the CPU never came back, leaving the log at
+ 	 * "trace submit bos". Print the label and flush before the first read, then
+ 	 * one register per line, so a read that never returns names itself.
++	 *
++	 * 0215: at a wedge the whole register block can be unreachable - v165 died
++	 * on the very first read, RBBM_STATUS - so the HUNG path passes regs=0 and
++	 * this prints nothing after the label; the memory-only post-mortem runs
++	 * from the caller.
+ 	 */
+ 	printf("GAUGUIN CP: submit state %s fence=%#x\n", tag, fence);
+ 	(void)sweet_log_flush_now();
++	if (regs == 0) {
++		return;
++	}
+ 	printf("GAUGUIN CP: 0214 st rbbm=%#x\n",
+ 	    gg_rd(gg.gpu, GR(A6XX_RBBM_STATUS_DW)));
+ 	printf("GAUGUIN CP: 0214 st status1=%#x\n",
+@@ -3395,6 +3407,49 @@
+ }
+ 
+ /*
++ * 0215: the sticky SMMU fault has been latched since before the first submit
++ * (`0214 smmu clear FAILED fsr=0x400 ack=0` at fence 0x6000002), and far=0 with
++ * it. Nothing so far says *when* it was recorded, so each bring-up stage that
++ * touches the GPU through the SMMU prints the record once: if fsr is already
++ * 0x400 at the first probe, the trigger is in GPU init and no later submit can
++ * be blamed.
++ */
++static void
++gg_smmu_probe(const char *tag)
++{
++	vm_offset_t s = gg_smmu_base();
++
++	if (s == 0) {
++		printf("GAUGUIN CP: 0215 smmu %s no base\n", tag);
++		return;
++	}
++	{
++		vm_offset_t cb = s + SMMU_CB(GG_CB1);
++
++		printf("GAUGUIN CP: 0215 smmu %s cb1 fsr=%#x far=%#x fsynr0=%#x"
++		    " gfsr=%#x sctlr=%#x\n", tag, gg_rd(cb, SMMU_CB_FSR),
++		    gg_rd(cb, SMMU_CB_FAR), gg_rd(cb, SMMU_CB_FSYNR0),
++		    gg_rd(s, SMMU_GFSR), gg_rd(cb, SMMU_CB_SCTLR));
++	}
++	(void)sweet_log_flush_now();
++}
++
++/* 0215: gauguinregs, default 0 - at a wedge the register block may be gone. */
++static int gg_regs_opt = -1;
++
++static int
++gg_regs_enabled(void)
++{
++	if (gg_regs_opt < 0) {
++		int v = 0;
++
++		gg_regs_opt = PE_parse_boot_argn("gauguinregs", &v, sizeof(v)) ?
++		    v : 0;
++	}
++	return gg_regs_opt;
++}
++
++/*
+  * 0156: CP_WAIT_FOR_IDLE only returns once every block reports idle, and v111
+  * hangs inside exactly that packet. Print which RBBM_STATUS bits are still set
+  * (bit names from a6xx.xml) instead of a bare hex word.
+@@ -5196,6 +5251,96 @@
+ 	}
+ }
+ 
++/*
++ * 0215: memory-only post-mortem. v165's wedge took out the whole register
++ * block (the first read, RBBM_STATUS, never returned and the watchdog reset the
++ * device), so nothing that follows a HUNG may touch MMIO. The ring window, the
++ * flattened copies and the GEM page tables are all in DRAM and still readable:
++ * print the submission's ring dwords, then for every annotated IB the packet
++ * the ME died in, the address fields it carried and a bounded scan of every
++ * dword that falls in the GPU VA range with its GEM translation.
++ */
++#define GG_MEM_VA_MAX 160u
++#define GG_MEM_PKT_MAX 48u
++
++static void
++gg_hung_mem(uint32_t fence, const uint64_t *ai, const uint32_t *wi,
++    uint32_t count, volatile uint32_t *ring, uint32_t ring_dw,
++    uint32_t start, uint32_t wp, uint64_t mark_mask)
++{
++	volatile uint32_t *rd = mark_rd ? (volatile uint32_t *)mark_rd :
++	    (volatile uint32_t *)mark_mem;
++	uint32_t k, o, n, va_seen = 0u, pkt_seen = 0u;
++
++	printf("GAUGUIN CP: 0215 mem fence=%#x ring=%u..%u size=%u\n", fence,
++	    start, wp, ring_dw);
++	for (o = start; o < wp && o < start + 48u; o++) {
++		printf("GAUGUIN CP: 0215 rr %u: %#x\n", o, ring[o % ring_dw]);
++	}
++	for (k = 0; k < count && k < GG_MARK_IBS; k++) {
++		volatile uint32_t *cp;
++		uint32_t stamp, pos;
++
++		if (rd == 0 || (mark_mask & (1ull << k)) == 0u || wi[k] == 0u) {
++			continue;
++		}
++		cp = rd + gg_mark_off[k] / 4u;
++		n = wi[k];
++		stamp = rd[GG_MARK_BASE / 4u + k];
++		pos = stamp & 0xffffu;
++		printf("GAUGUIN CP: 0215 ib=%u va=%#llx n=%u stamp=%#x exec=%u\n",
++		    k, (unsigned long long)ai[k], n, stamp, pos);
++		if (pos != 0u && pos < n) {
++			gg_pkt_decode("exec", cp, pos, n);
++		}
++		o = 0u;
++		while (o < n) {
++			uint32_t h = cp[o];
++			uint32_t type = h >> 28u;
++			uint32_t op = (h >> 16) & 0x7fu;
++			uint32_t plen, j;
++
++			if (type == 7u) {
++				plen = h & 0x3fffu;
++			} else if (type == 4u) {
++				plen = h & 0x7fu;
++			} else if (type == 0u) {
++				plen = ((h >> 16) & 0x3fffu) + 1u;
++			} else {
++				break;
++			}
++			if (o + 1u + plen > n) {
++				break;
++			}
++			if (type == 7u && (op == 0x38u || op == 0x45u ||
++			    op == 0x43u || op == 0x3fu) &&
++			    pkt_seen < GG_MEM_PKT_MAX) {
++				pkt_seen++;
++				printf("GAUGUIN CP: 0215 pkt ib=%u off=%u op=%#x"
++				    " n=%u", k, o, op, plen);
++				for (j = 0; j < plen && j < 10u; j++) {
++					printf(" %#x", cp[o + 1u + j]);
++				}
++				printf("\n");
++			}
++			for (j = 0; j < 1u + plen; j++) {
++				uint32_t v = cp[o + j];
++
++				if (v >= 0x40000000u && v < 0x80000000u &&
++				    va_seen < GG_MEM_VA_MAX) {
++					va_seen++;
++					printf("GAUGUIN CP: 0215 va ib=%u off=%u"
++					    " v=%#x gem=%d\n", k, o + j, v,
++					    gg_gem_pa(v) != 0u ? 1 : 0);
++				}
++			}
++			o += 1u + plen;
++		}
++	}
++	printf("GAUGUIN CP: 0215 mem done va=%u pkt=%u\n", va_seen, pkt_seen);
++	(void)sweet_log_flush_now();
++}
++
+ static int gg_rec_left = -1;	/* -1 unparsed; boot-arg gauguinrec */
+ static int gg_rec_busy;		/* one recovery at a time */
+ static int gg_rec_zaps;		/* 0182: PAS 13 must be shut down before re-INIT */
+@@ -6102,6 +6247,9 @@
+ 	    gg_rd(gg.gpu, GR(CP_IB1_BASE_DW + 1u)),
+ 	    gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++	if (gg_sub_n == 1u) {
++		gg_smmu_probe("first-submit");
++	}
+ 	for (i = 0; i < count; i++) {
+ 		if (mark_mem != 0 && ai[i] >= CP_VA_MARK &&
+ 		    ai[i] < CP_VA_MARK + CPMEM_MARK_SIZE) {
+@@ -6177,7 +6325,7 @@
+ 			if (gg_state_log < 2 ||
+ 			    (fence >= 0x060000d0u && fence <= 0x06000110u)) {
+ 				gg_state_log++;
+-				gg_cp_state("OK", fence);
++				gg_cp_state(1, "OK", fence);
+ 			}
+ 			return fence;
+ 		}
+@@ -6185,7 +6333,21 @@
+ 	}
+ 	if (gg_hung_log < 3) {
+ 		gg_hung_log++;
+-		gg_cp_state("HUNG", fence);
++		gg_cp_state(gg_regs_enabled(), "HUNG", fence);
++	}
++	/*
++	 * 0215: v165 died on the first register read of the HUNG report - the whole
++	 * register block can be unreachable at a wedge - so unless the caller asked
++	 * for the register post-mortem with gauguinregs=1, take the dump from DRAM
++	 * and return without touching the GPU or trying to recover it.
++	 */
++	if (gg_regs_enabled() == 0) {
++		gg_hung_mem(fence, ai, wi, count, ring, ring_dw, start, wp,
++		    mark_mask);
++		printf("GAUGUIN CP: 0215 register dump and recovery skipped"
++		    " (gauguinregs=1 to retry them)\n");
++		(void)sweet_log_flush_now();
++		return 0;
+ 	}
+ 	printf("GAUGUIN CP: submit fence=%#x STUCK (rptr=%u wptr=%u)"
+ 	    " ib1=%#x/%#x ib2=%#x/%#x protect=%#x fault=%#x int=%#x\n",
+@@ -7144,6 +7306,7 @@
+ 	    (fence != 0 && mw == 0x600dbeefu && ev == 0x600df00du) ?
+ 	    "PASS" : "FAIL");
+ 	(void)sweet_log_flush_now();
++	gg_smmu_probe("selftest");
+ }
+ 
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
