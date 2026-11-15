@@ -1266,23 +1266,40 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 
 ## Device cycle tooling (2026-11-15)
 
-Two scripts cover one full iteration; both take everything machine-specific from
-the environment, so a fresh checkout works without edits.
+The loop we actually run, one boot per patch. Everything machine-specific comes
+from the environment, so a fresh checkout works without edits.
 
 ```
-# 1. dispatch the shim build (prints the queued run id, does not wait)
 export GH_TOKEN=...                 # actions:write on TigerShota/ios-sweet
-python tools/shim-run.py dispatch <xnu_run_id> [extra boot args...]
+export SWEETLOG_OUT=<repo>/../out
 
-# 2. wait for it and download the artifacts into out/<tag>/shim/out/shim-boot.img
+# 0. the cloud side pushes the patch; xnu.yml finishes green -> take its run id
+
+# 1. dispatch the shim build (prints the queued run id, does not wait)
+python tools/shim-run.py dispatch <xnu_run_id> gauguinflat=1 gauguinmark=1 \
+    gauguinclr=4 [extra boot args...]
+python tools/shim-run.py ls         # if the run was not visible yet
+
+# 2. wait for it and download into out/<tag>/shim/out/shim-boot.img
 python tools/shim-run.py get <shim_run_id> <tag>
-python tools/shim-run.py ls
+
+# 2b. ALWAYS grep the image for the new marker before booting: a switch that
+#     never got compiled in looks exactly like a switch that did not work
+python -c "d=open('out/<tag>/shim/out/shim-boot.img','rb').read(); \
+print('0NNN', d.count(b'0NNN'), 'arg', d.count(b'gauguinxxx=64'))"
 
 # 3. clear the SWEETLOG tail, fastboot boot the image, wait, power-cycle
 python tools/gpu-boot-cycle.py phase1 out/<tag>/shim/out/shim-boot.img <tag>
 
 # 4. after the phone is back in recovery: pull, decode, print the verdict
 python tools/gpu-boot-cycle.py phase2 <tag>
+
+# 5. keep the log next to the patch it belongs to ("main" is checked out in
+#    another worktree, so this tree is detached and pushes HEAD:main)
+cp out/sweetlog-<tag>/<tag>.txt logs/<tag>.txt
+git add logs/<tag>.txt
+git commit -m "logs: <tag> (<one line: what changed in this boot>)"
+git fetch origin && git rebase origin/main && git push origin HEAD:main
 ```
 
 `dispatch` appends the extra args to the workflow's own `cmdline` default, so
@@ -1290,7 +1307,8 @@ python tools/gpu-boot-cycle.py phase2 <tag>
 default changes. Boot args are parsed as **decimal** by `PE_parse_boot_argn`:
 `gauguinidxlen=0x40` silently fails, `gauguinidxlen=64` works.
 
-Environment knobs for `gpu-boot-cycle.py`: `ADB`, `FB`, `SWEETLOG_OUT`,
+Environment knobs for `gpu-boot-cycle.py`: `ADB`, `FB` (falling back to
+`$ANDROID_HOME/platform-tools` then `PATH`), `SWEETLOG_OUT`,
 `SWEETLOG_DEV` (default `/dev/block/sda35`), `BOOT_WAIT` (300),
 `LOG_GREP` (`|`-separated substrings to echo, default `GAUGUIN CP:`),
 `LOG_TAIL` (20). The verdict prints a `0NNN` marker histogram, the submit
