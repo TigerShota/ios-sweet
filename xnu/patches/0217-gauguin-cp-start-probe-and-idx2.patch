@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3120,6 +3120,13 @@
+ 	}
+ 	printf("GAUGUIN CP: started - the CP executes our packets\n");
+ 	(void)sweet_log_flush_now();
++	/*
++	 * 0217: v168 dates the sticky CB1 fault between "init" (fsr=0) and the
++	 * panel blit (fsr=0x400), so split that interval: this is the point where
++	 * the SQE has just been released and ME_INIT/SET_SECURE_MODE/the memwrite
++	 * probe have run, before step22 or the panel blit.
++	 */
++	gg_smmu_probe("cp-started");
+ }
+ 
+ static void
+@@ -4839,15 +4846,28 @@
+ 				}
+ 			} else if (gg_boot_int("gauguinnullidx", 0,
+ 			    &gg_nidx_opt) != 0) {
++				int ni = gg_boot_int("gauguinnullidx", 0,
++				    &gg_nidx_opt);
++
+ 				if (plen == 7u) {
+ 					out[base + 4u] = 0u;
++					/*
++					 * 0217: v168's 7-dword draws already had
++					 * payload[3]=0 while payload[6]=0x12, so =1 may
++					 * have rewritten a field that was zero anyway.
++					 * =2 zeroes both candidate count fields.
++					 */
++					if (ni >= 2) {
++						out[base + 7u] = 0u;
++					}
+ 				} else if (plen == 3u) {
+ 					out[base + 1u] = 0u;
+ 				}
+ 				if (gg_ndraw_log < 4) {
+ 					gg_ndraw_log++;
+ 					printf("GAUGUIN CP: 0216 idx0 at=%u"
+-					    " plen=%u\n", base, plen);
++					    " plen=%u mode=%d\n", base, plen,
++					    gg_nidx_opt);
+ 				}
+ 			}
+ 		}
