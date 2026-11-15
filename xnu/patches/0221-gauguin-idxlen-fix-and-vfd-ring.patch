@@ -1,0 +1,189 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3468,14 +3468,29 @@
+  */
+ static int gg_idxlen_opt = -2;
+ 
++/*
++ * 0221: the last fence's VFD-block writes, recorded from the stream and dumped
++ * when a submit wedges. v173's 200-line print budget was consumed by the first
++ * eight submissions, so the frame that actually died was never shown.
++ */
++#define GG_VFD_MAX 32u
++static uint32_t gg_vfd_fence;
++static uint32_t gg_vfd_n;
++static uint32_t gg_vfd_reg[GG_VFD_MAX];
++static uint32_t gg_vfd_val[GG_VFD_MAX];
++
+ static int
+ gg_idxlen(void)
+ {
+ 	if (gg_idxlen_opt == -2) {
+ 		int v = -1;
+ 
+-		gg_idxlen_opt = PE_parse_boot_argn("gauguinidxlen", &v,
+-		    sizeof(v)) ? v : -1;
++		int got = PE_parse_boot_argn("gauguinidxlen", &v,
++		    sizeof(v));
++
++		gg_idxlen_opt = got ? v : -1;
++		printf("GAUGUIN CP: 0221 idxlen parse got=%d val=%d\n", got,
++		    gg_idxlen_opt);
+ 	}
+ 	return gg_idxlen_opt;
+ }
+@@ -4875,12 +4890,6 @@
+ 
+ 				if (plen == 7u) {
+ 					out[base + 4u] = 0u;
+-					/*
+-					 * 0217: v168's 7-dword draws already had
+-					 * payload[3]=0 while payload[6]=0x12, so =1 may
+-					 * have rewritten a field that was zero anyway.
+-					 * =2 zeroes both candidate count fields.
+-					 */
+ 					if (ni >= 2) {
+ 						out[base + 7u] = 0u;
+ 					}
+@@ -4895,14 +4904,6 @@
+ 				}
+ 			} else if (gg_boot_int("gauguinidxalign", 0,
+ 			    &gg_idxalign_opt) != 0 && plen == 7u) {
+-				/*
+-				 * 0218: v170's working draw used index base
+-				 * 0x54107f40, 0xC0 below the page-aligned
+-				 * 0x54108000 the VA scan called mapped. Round the
+-				 * base up to the page so the fetch starts inside the
+-				 * allocation: if the wedge disappears the fetch was
+-				 * the problem, if it stays the indices themselves are.
+-				 */
+ 				uint32_t b = out[base + 5u];
+ 
+ 				if (b >= 0x50000000u && b < 0x70000000u &&
+@@ -4911,33 +4912,32 @@
+ 					if (gg_ndraw_log < 4) {
+ 						gg_ndraw_log++;
+ 						printf("GAUGUIN CP: 0218 idx align"
+-						    " at=%u %#x -> %#x\n", base,
+-						    b, out[base + 5u]);
+-					}
+-				} else if (gg_idxlen() >= 0 && plen == 7u) {
+-					/* 0219: small non-zero length, payload[3] intact. */
+-					static int idxlen_log;
+-					uint32_t was = out[base + 7u];
+-
+-					/*
+-					 * 0220: v172's gauguinidxlen=0x40 parsed to
+-					 * nothing at all (PE_parse_boot_argn takes a
+-					 * decimal int and returned false), so say what
+-					 * value was actually accepted.
+-					 */
+-					if (idxlen_log == 0) {
+-						idxlen_log = 1;
+-						printf("GAUGUIN CP: 0220 idxlen arg=%d\n",
+-						    gg_idxlen());
+-					}
+-					out[base + 7u] = (uint32_t)gg_idxlen();
+-					if (gg_ndraw_log < 8) {
+-						gg_ndraw_log++;
+-						printf("GAUGUIN CP: 0219 idxlen"
+-						    " at=%u %#x -> %#x\n", base,
+-						    was, out[base + 7u]);
++						    " at=%u %#x -> %#x\n", base, b,
++						    out[base + 5u]);
+ 					}
+ 				}
++			} else if (gg_idxlen() >= 0 && plen == 7u) {
++				/*
++				 * 0221: v172/v173 showed this branch never ran - it
++				 * was nested inside the idxalign block's inner if.
++				 * It hangs off the chain now, so a decimal
++				 * gauguinidxlen=64 reaches it.
++				 */
++				static int idxlen_log;
++				uint32_t was = out[base + 7u];
++
++				if (idxlen_log == 0) {
++					idxlen_log = 1;
++					printf("GAUGUIN CP: 0221 idxlen arg=%d\n",
++					    gg_idxlen());
++				}
++				out[base + 7u] = (uint32_t)gg_idxlen();
++				if (gg_ndraw_log < 8) {
++					gg_ndraw_log++;
++					printf("GAUGUIN CP: 0221 idxlen"
++					    " at=%u %#x -> %#x\n", base, was,
++					    out[base + 7u]);
++				}
+ 			}
+ 		}
+ 		at = *np;
+@@ -5413,29 +5413,21 @@
+ 		 * whole 0xa000..0xa1ff range and stop at 200 lines overall.
+ 		 */
+ 		if (type == 4u) {
+-			static uint32_t vfd_seen[24];
+-			static uint32_t vfd_n;
+-			static uint32_t vfd_fence;
+-			static uint32_t vfd_lines;
+ 			uint32_t reg = (h >> 8) & 0x7ffffu;
+-			uint32_t q, dup = 0u;
+ 
+-			if (vfd_fence != fence) {
+-				vfd_fence = fence;
+-				vfd_n = 0u;
+-			}
+-			if (reg >= 0xa000u && reg <= 0xa1ffu && vfd_lines < 200u) {
+-				for (q = 0; q < vfd_n; q++) {
+-					if (vfd_seen[q] == reg) {
+-						dup = 1u;
+-					}
+-				}
+-				if (dup == 0u && vfd_n < 24u) {
+-					vfd_seen[vfd_n++] = reg;
+-					vfd_lines++;
+-					printf("GAUGUIN CP: 0220 vfd fence=%#x"
+-					    " off=%u reg=%#x val=%#x\n", fence, o,
+-					    reg, cp[o + 1u]);
++			/*
++			 * 0221: record, do not print. The buffer is reset on a fence
++			 * change, so at a wedge it holds exactly the frame that died.
++			 */
++			if (reg >= 0xa000u && reg <= 0xa1ffu) {
++				if (gg_vfd_fence != fence) {
++					gg_vfd_fence = fence;
++					gg_vfd_n = 0u;
++				}
++				if (gg_vfd_n < GG_VFD_MAX) {
++					gg_vfd_reg[gg_vfd_n] = reg;
++					gg_vfd_val[gg_vfd_n] = cp[o + 1u];
++					gg_vfd_n++;
+ 				}
+ 			}
+ 		}
+@@ -5547,6 +5539,16 @@
+ 	uint32_t k, o, n, pkt_seen = 0u;
+ 	uint32_t cp_n = 0u, gem_n = 0u, nopte_n = 0u, oth_n = 0u;
+ 
++	printf("GAUGUIN CP: 0221 vfd fence=%#x n=%u\n", gg_vfd_fence,
++	    gg_vfd_n);
++	{
++		uint32_t q;
++
++		for (q = 0; q < gg_vfd_n; q++) {
++			printf("GAUGUIN CP: 0221 vfd %u: reg=%#x val=%#x\n", q,
++			    gg_vfd_reg[q], gg_vfd_val[q]);
++		}
++	}
+ 	printf("GAUGUIN CP: 0215 mem fence=%#x ring=%u..%u size=%u\n", fence,
+ 	    start, wp, ring_dw);
+ 	for (o = start; o < wp && o < start + 48u; o++) {
+@@ -6557,6 +6559,7 @@
+ 	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
+ 	if (gg_sub_n == 1u) {
+ 		gg_smmu_probe("first-submit");
++		(void)gg_idxlen();	/* 0221: parse once, print the value */
+ 	}
+ 	for (i = 0; i < count; i++) {
+ 		if (mark_mem != 0 && ai[i] >= CP_VA_MARK &&
