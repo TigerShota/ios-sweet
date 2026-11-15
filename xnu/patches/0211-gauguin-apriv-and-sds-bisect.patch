@@ -1,0 +1,88 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -2324,12 +2324,25 @@
+ 	CP_WRV(UCHE_FILTER_CNTL_DW, 0x804);
+ 	CP_WRV(UCHE_CACHE_WAYS_DW, 0x4);
+ 	/*
+-	 * 0148: three of the 0147 writes are dead here: CP_APRIV_CNTL (0x844
+-	 * reads 0xffffffff) and CP_LPAC_PROG_FIFO_SIZE (0xb34 reads 0xffffffff)
+-	 * are a660-family features, and RBBM_NC_MODE_CNTL (0x534 reads
+-	 * 0xdeafbead) does not exist on this chip. ROQ_THRESHOLDS_2 is *not* in
+-	 * that class -- see 0209 below.
++	 * 0148 dropped three writes here because each one read back a value that
++	 * looked like "does not exist": CP_APRIV_CNTL (0x844 reads 0xffffffff),
++	 * CP_LPAC_PROG_FIFO_SIZE (0xb34 reads 0xffffffff) and RBBM_NC_MODE_CNTL
++	 * (0x534 reads 0xdeafbead). 0211: both working ports write all three for
++	 * the non-a640 parts (raphael: CP_APRIV_CNTL 0x6e, LPAC FIFO 0x20,
++	 * RBBM_NC_MODE_CNTL 1; vendor kgsl: RBBM_NC_MODE_CNTL 1), so they are
++	 * write-only or read-as-ones here, not absent - the same mistake 0148
++	 * made with ROQ_THRESHOLDS_2. CP_APRIV_CNTL is the one that matters:
++	 * it grants the command processor the privilege to touch the 3D register
++	 * range, and v159 dies with an AHB access to CX that never completes
++	 * while the ME is at the first dword of a draw-state object.
+ 	 */
++	gg_wr(gg.gpu, GR(CP_APRIV_CNTL_DW), 0x6eu);
++	gg_wr(gg.gpu, GR(CP_LPAC_PROG_FIFO_SIZE_DW), 0x20u);
++	gg_wr(gg.gpu, GR(RBBM_NC_MODE_CNTL_DW), 0x1u);
++	printf("GAUGUIN CP: 0211 apriv=%#x lpacfifo=%#x rbbmnc=%#x (write-only)\n",
++	    gg_rd(gg.gpu, GR(CP_APRIV_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(CP_LPAC_PROG_FIFO_SIZE_DW)),
++	    gg_rd(gg.gpu, GR(RBBM_NC_MODE_CNTL_DW)));
+ 	CP_WRV(CP_ROQ_THRESHOLDS_1_DW, 0x8040362c);
+ 	CP_WRV(CP_MEM_POOL_SIZE_DW, 128);
+ 	/*
+@@ -3858,8 +3871,23 @@
+ #define GG_FLAT_DEPTH 6
+ 
+ static int gg_flat_opt = -1;	/* gauguinflat: 0 off, 1 inline (default) */
++static int gg_sds_drop = -2;	/* 0211: gauguinsds, -2 unparsed, -1 off */
++static int gg_sds_drop_log;	/* 0211: lines already printed */
+ static uint32_t gg_flat_nib;	/* indirects inlined in the current copy */
+ static uint32_t gg_flat_nop;	/* indirects replaced by a NOP */
++
++/* 0211: lazily parse gauguinsds=N (see the comment in gg_flat_copy). */
++static int
++gg_sds_drop_group(void)
++{
++	if (gg_sds_drop == -2) {
++		int v = -1;
++
++		gg_sds_drop = PE_parse_boot_argn("gauguinsds", &v, sizeof(v)) ?
++		    v : -1;
++	}
++	return gg_sds_drop;
++}
+ #define GG_FLAT_MAPS  8u	/* inlined children recorded per top-level IB */
+ 
+ struct gg_flat_map {
+@@ -4591,6 +4619,29 @@
+ 		if (isind) {
+ 			gg_flat_nop++;
+ 		}
++		/*
++		 * 0211: gauguinsds=N blanks group N of every CP_SET_DRAW_STATE in
++		 * the copy (a zero descriptor length is a skipped group). v159
++		 * parks with CP_SDS_BASE/REM_SIZE on the first group of the last
++		 * 27-group packet and REM never moves, which is either "the state
++		 * object cannot be loaded at all" or "its first dword wedges the
++		 * AHB". Blanking one group separates the two: if the pending
++		 * pointer moves on to N+1 the load path works and the object
++		 * content is what stalls; if it stays put, the load path is the
++		 * problem and no group will ever run.
++		 */
++		if (type == 7u && op == 0x43u && plen >= 3u) {
++			int gi = gg_sds_drop_group();
++
++			if (gi >= 0 && (uint32_t)gi < plen / 3u) {
++				out[*np - len + 1u + 3u * (uint32_t)gi] = 0u;
++				if (gg_sds_drop_log < 4) {
++					gg_sds_drop_log++;
++					printf("GAUGUIN CP: 0211 sds drop g=%d"
++					    " at=%u\n", gi, *np - len);
++				}
++			}
++		}
+ 		at = *np;
+ 		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+ 		out[(*np)++] = 0x04u;
