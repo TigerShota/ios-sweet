@@ -1,0 +1,83 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3457,6 +3457,29 @@
+ static int gg_idxalign_opt = -1;
+ static int gg_ndraw_log;
+ 
++/*
++ * 0219: v171 killed the address theory (five index bases, all inside their own
++ * allocation, `OUTSIDE` 0) and left one question: is payload[6] a count or a
++ * byte length? `nullidx=2` zeroed it and the wedge vanished, but "0 indices" and
++ * "0 bytes fetched" both explain that. gauguinidxlen=N rewrites payload[6] to a
++ * small non-zero value while leaving payload[3] alone, which separates the two:
++ * a 64-index/128-byte fetch either retires (the size was the problem) or hangs
++ * (any non-zero fetch is the problem).
++ */
++static int gg_idxlen_opt = -2;
++
++static int
++gg_idxlen(void)
++{
++	if (gg_idxlen_opt == -2) {
++		int v = -1;
++
++		gg_idxlen_opt = PE_parse_boot_argn("gauguinidxlen", &v,
++		    sizeof(v)) ? v : -1;
++	}
++	return gg_idxlen_opt;
++}
++
+ static int
+ gg_boot_int(const char *name, int def, int *slot)
+ {
+@@ -4891,6 +4914,17 @@
+ 						    " at=%u %#x -> %#x\n", base,
+ 						    b, out[base + 5u]);
+ 					}
++				} else if (gg_idxlen() >= 0 && plen == 7u) {
++					/* 0219: small non-zero length, payload[3] intact. */
++					uint32_t was = out[base + 7u];
++
++					out[base + 7u] = (uint32_t)gg_idxlen();
++					if (gg_ndraw_log < 8) {
++						gg_ndraw_log++;
++						printf("GAUGUIN CP: 0219 idxlen"
++						    " at=%u %#x -> %#x\n", base,
++						    was, out[base + 7u]);
++					}
+ 				}
+ 			}
+ 		}
+@@ -5357,6 +5391,31 @@
+ 		if (o + 1u + plen > n) {
+ 			return;
+ 		}
++		/*
++		 * 0219: the VFD side, read from the stream rather than the block -
++		 * at a wedge the register file can be unreachable, and these writes
++		 * are already in the copy the CP executes.
++		 */
++		if (type == 4u) {
++			static uint32_t vfd_seen[16];
++			static uint32_t vfd_n;
++			uint32_t reg = (h >> 8) & 0x7ffffu;
++			uint32_t q, dup = 0u;
++
++			if (reg >= 0xa000u && reg <= 0xa0ffu) {
++				for (q = 0; q < vfd_n; q++) {
++					if (vfd_seen[q] == reg) {
++						dup = 1u;
++					}
++				}
++				if (dup == 0u && vfd_n < 16u) {
++					vfd_seen[vfd_n++] = reg;
++					printf("GAUGUIN CP: 0219 vfd fence=%#x"
++					    " off=%u reg=%#x val=%#x\n", fence, o,
++					    reg, cp[o + 1u]);
++				}
++			}
++		}
+ 		if (type == 7u && op == 0x38u && plen == 7u) {
+ 			uint32_t base = cp[o + 5u];
+ 			uint32_t cnt = cp[o + 7u];
