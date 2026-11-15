@@ -1,0 +1,123 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5039,6 +5039,76 @@
+  * tables are DRAM state and survive the core reset) nor step22/panel/GEM
+  * selftest. gauguinrec caps the attempts (default 2, 0 = off).
+  */
++
++/*
++ * 0213: name the packet the ME actually died in. 0191/0191's "at" comes from
++ * CP_IB1_REM_SIZE, which is the ROQ *prefetch* pointer - in v162 it pointed at
++ * copy 2801 (a CP_COND_WRITE that had never been dispatched) while the last
++ * annotation stamp put the execution point at 2505 and the next packet, a
++ * CP_DRAW_INDX_OFFSET at 2510, is what never retired. Decode from the stamp,
++ * label the payload fields that are known for this opcode, and look every
++ * payload dword that falls in the GPU VA range up in the GEM table, so a zero
++ * or unbound base names itself instead of showing up as far=0 later.
++ */
++static void
++gg_pkt_decode(const char *tag, volatile uint32_t *cp, uint32_t at, uint32_t n)
++{
++	uint32_t h, type, op, plen, len, i;
++
++	if (at + 1u >= n) {
++		printf("GAUGUIN CP: 0213 %s none at=%u of=%u\n", tag, at, n);
++		return;
++	}
++	h = cp[at];
++	type = h >> 28u;
++	if (type == 7u) {
++		plen = h & 0x3fffu;
++	} else if (type == 4u) {
++		plen = h & 0x7fu;
++	} else if (type == 0u) {
++		plen = ((h >> 16) & 0x3fffu) + 1u;
++	} else {
++		printf("GAUGUIN CP: 0213 %s at=%u type=%u hdr=%#x\n", tag, at, type,
++		    h);
++		return;
++	}
++	op = (h >> 16) & 0x7fu;
++	len = 1u + plen;
++	if (at + len > n) {
++		len = n - at;
++	}
++	printf("GAUGUIN CP: 0213 %s at=%u of=%u type=%u op=%#x count=%u hdr=%#x\n",
++	    tag, at, n, type, op, plen, h);
++	for (i = 1u; i < len && i <= 12u; i++) {
++		uint32_t v = cp[at + i];
++		const char *lbl = "";
++		uint32_t map = 0u, first = 0u;
++
++		if (type == 7u && op == 0x38u) {
++			lbl = i == 1u ? "index_count/initiator" :
++			    (i == 2u ? "index_offset" :
++			    (i == 3u ? "instance/bias" : ""));
++		} else if (type == 7u && op == 0x45u) {
++			lbl = i == 1u ? "poll_lo" : (i == 2u ? "poll_hi" :
++			    (i == 3u ? "ref" : (i == 4u ? "mask" :
++			    (i == 6u ? "write_lo" : (i == 7u ? "write_hi" :
++			    (i == 8u ? "write_data" : ""))))));
++		}
++		if (v >= 0x40000000u && v < 0x80000000u) {
++			map = gg_gem_pa(v) != 0u || gg_san_map(v) != 0u;
++			first = gg_san_rd2(v, 0, 0, 0u);
++		}
++		printf("GAUGUIN CP: 0213 %s p%u=%#x%s%s%s%s\n", tag, i - 1u, v,
++		    lbl[0] != '\0' ? " " : "", lbl,
++		    v == 0xffffffffu ? " <uninit>" : "",
++		    map != 0u ? " in-gem" : "");
++		if (map != 0u) {
++			printf("GAUGUIN CP: 0213 %s p%u bo[0]=%#x\n", tag, i - 1u,
++			    first);
++		}
++	}
++}
++
+ static int gg_rec_left = -1;	/* -1 unparsed; boot-arg gauguinrec */
+ static int gg_rec_busy;		/* one recovery at a time */
+ static int gg_rec_zaps;		/* 0182: PAS 13 must be shut down before re-INIT */
+@@ -6160,6 +6230,11 @@
+ 					}
+ 					printf("\n");
+ 				}
++				/*
++				 * 0213: the packet the ME died in is the one at the
++				 * stamp, not the one CP_IB1_REM_SIZE points at.
++				 */
++				gg_pkt_decode("exec", cp, pos, wi[k]);
+ 			}
+ 		}
+ 	}
+@@ -6227,6 +6302,30 @@
+ 	    gg_rd(gg.gpu, GR(CP_CRASH_DUMP_STATUS_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)));
+ 	/*
++	 * 0213: the render target and pipeline inputs the aging draw was reading.
++	 * v162's RBBM_STATUS has TSE/RAS/RB/VSC/SP/VPC set, so the draw really is
++	 * in flight and never drains; if a CB/DB base, pitch or the VS/FS control
++	 * word is zero the draw is waiting on unbound state, which is what
++	 * CB1 FSR=0x400/FAR=0 has been saying all along. a6xx offsets from
++	 * a6xx.xml: RB_RENDER_CNTL 0x8801, RB_MRT[0] {CONTROL 0x8820,
++	 * BUF_INFO 0x8822, PITCH 0x8823, BASE 0x8825/0x8826}, RB_BLEND_CNTL
++	 * 0x8865, RB_DEPTH_CNTL 0x8871, RB_DEPTH_BUFFER_INFO 0x8872,
++	 * RB_DEPTH_BUFFER_PITCH 0x8873, RB_DEPTH_BUFFER_BASE 0x8875/0x8876,
++	 * SP_VS_CTRL_REG0 0xa800, SP_FS_CTRL_REG0 0xa980, VFD_INDEX_OFFSET 0xa00e.
++	 */
++	printf("GAUGUIN CP: 0213 rb render=%#x mrt0=%#x info=%#x pitch=%#x"
++	    " base=%#x:%#x blend=%#x\n",
++	    gg_rd(gg.gpu, GR(0x8801u)), gg_rd(gg.gpu, GR(0x8820u)),
++	    gg_rd(gg.gpu, GR(0x8822u)), gg_rd(gg.gpu, GR(0x8823u)),
++	    gg_rd(gg.gpu, GR(0x8825u)), gg_rd(gg.gpu, GR(0x8826u)),
++	    gg_rd(gg.gpu, GR(0x8865u)));
++	printf("GAUGUIN CP: 0213 rb db=%#x info=%#x pitch=%#x base=%#x:%#x"
++	    " spvs=%#x spfs=%#x iboff=%#x\n",
++	    gg_rd(gg.gpu, GR(0x8871u)), gg_rd(gg.gpu, GR(0x8872u)),
++	    gg_rd(gg.gpu, GR(0x8873u)), gg_rd(gg.gpu, GR(0x8875u)),
++	    gg_rd(gg.gpu, GR(0x8876u)), gg_rd(gg.gpu, GR(0xa800u)),
++	    gg_rd(gg.gpu, GR(0xa980u)), gg_rd(gg.gpu, GR(0xa00eu)));
++	/*
+ 	 * 0156: one snapshot of the front-end position (CP_IB1_BASE is 64-bit and
+ 	 * the lines above read it at different moments), the block-busy state
+ 	 * CP_WAIT_FOR_IDLE is waiting on, and the SQE's own status/PC so the
