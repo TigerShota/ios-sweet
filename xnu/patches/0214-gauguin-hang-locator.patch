@@ -1,0 +1,178 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3368,14 +3368,29 @@
+ static void
+ gg_cp_state(const char *tag, uint32_t fence)
+ {
+-	printf("GAUGUIN CP: submit state %s fence=%#x rbbm=%#x status1=%#x sqe=%#x"
+-	    " roq=%#x avail=%#x crash=%#x int0=%#x\n", tag, fence,
+-	    gg_rd(gg.gpu, GR(A6XX_RBBM_STATUS_DW)),
+-	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
+-	    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)),
+-	    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
+-	    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
+-	    gg_rd(gg.gpu, GR(CP_CRASH_DUMP_STATUS_DW)),
++	/*
++	 * 0214: v164 never printed the HUNG line at all. printf evaluates every
++	 * argument before it emits anything, so seven MMIO reads sat between the
++	 * decision to report and the report itself; the 106th submit's timeout
++	 * went into this function and the CPU never came back, leaving the log at
++	 * "trace submit bos". Print the label and flush before the first read, then
++	 * one register per line, so a read that never returns names itself.
++	 */
++	printf("GAUGUIN CP: submit state %s fence=%#x\n", tag, fence);
++	(void)sweet_log_flush_now();
++	printf("GAUGUIN CP: 0214 st rbbm=%#x\n",
++	    gg_rd(gg.gpu, GR(A6XX_RBBM_STATUS_DW)));
++	printf("GAUGUIN CP: 0214 st status1=%#x\n",
++	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)));
++	printf("GAUGUIN CP: 0214 st sqe=%#x\n",
++	    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)));
++	printf("GAUGUIN CP: 0214 st roq=%#x\n",
++	    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)));
++	printf("GAUGUIN CP: 0214 st avail=%#x\n",
++	    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)));
++	printf("GAUGUIN CP: 0214 st crash=%#x\n",
++	    gg_rd(gg.gpu, GR(CP_CRASH_DUMP_STATUS_DW)));
++	printf("GAUGUIN CP: 0214 st int0=%#x\n",
+ 	    gg_rd(gg.gpu, GR(RBBM_INT_0_STATUS_DW)));
+ }
+ 
+@@ -5109,6 +5124,76 @@
+ 	}
+ }
+ 
++/*
++ * 0214: v164's SMMU record has been stuck at fsr=0x400 / far=0 since boot and the
++ * 106th submit died with the CPU inside a status read, so the question is which
++ * address the stream asked the GPU to touch that is not there. Walk the buffer
++ * the CP will actually execute (the annotated/flattened copy when mark=1) and
++ * check only the fields that are addresses by construction - indirect-buffer
++ * base, CACHE_FLUSH_TS target, CP_SET_DRAW_STATE descriptors. A zero or an
++ * unmapped GEM-window address is printed with its submit fence and offset.
++ * Report-only on purpose: a blanket "any dword that looks like a VA" scan would
++ * flag colours and constants, and refusing the submit would stop the very
++ * rendering that is making progress.
++ */
++static void
++gg_chk_addr(uint32_t fence, uint32_t off, uint32_t lo, uint32_t hi,
++    const char *what)
++{
++	uint64_t a = ((uint64_t)hi << 32) | (uint64_t)lo;
++
++	if (gg_iov_hits >= 8u) {
++		return;
++	}
++	if (a == 0u || (a >= 0x50000000u && a < 0x70000000u &&
++	    gg_gem_pa(a) == 0u)) {
++		gg_iov_hits++;
++		printf("GAUGUIN CP: 0214 iov fence=%#x off=%u %s addr=%#llx %s\n",
++		    fence, off, what, (unsigned long long)a,
++		    a == 0u ? "zero" : "unmapped");
++	}
++}
++
++static void
++gg_cmd_addr_check(uint32_t fence, volatile uint32_t *cp, uint32_t n)
++{
++	uint32_t o = 0u;
++
++	while (o < n) {
++		uint32_t h = cp[o];
++		uint32_t type = h >> 28u;
++		uint32_t op = (h >> 16) & 0x7fu;
++		uint32_t plen;
++
++		if (type == 7u) {
++			plen = h & 0x3fffu;
++		} else if (type == 4u) {
++			plen = h & 0x7fu;
++		} else if (type == 0u) {
++			plen = ((h >> 16) & 0x3fffu) + 1u;
++		} else {
++			return;
++		}
++		if (o + 1u + plen > n) {
++			return;
++		}
++		if (type == 7u && (op == 0x3fu || op == 0x37u || op == 0x63u) &&
++		    plen >= 3u) {
++			gg_chk_addr(fence, o, cp[o + 1u], cp[o + 2u], "ib");
++		} else if (type == 7u && op == CP_EVENT_WRITE && plen >= 3u) {
++			gg_chk_addr(fence, o, cp[o + 2u], cp[o + 3u], "ev");
++		} else if (type == 7u && op == 0x43u && plen >= 3u) {
++			uint32_t g, groups = plen / 3u;
++
++			for (g = 0; g < groups; g++) {
++				gg_chk_addr(fence, o, cp[o + 2u + 3u * g],
++				    cp[o + 3u + 3u * g], "sds");
++			}
++		}
++		o += 1u + plen;
++	}
++}
++
+ static int gg_rec_left = -1;	/* -1 unparsed; boot-arg gauguinrec */
+ static int gg_rec_busy;		/* one recovery at a time */
+ static int gg_rec_zaps;		/* 0182: PAS 13 must be shut down before re-INIT */
+@@ -5576,6 +5661,8 @@
+  * step22 path that is proven on this device.
+  */
+ static int gg_smmu_log;
++static int gg_smmu_fail_log;	/* 0214: "clear did not take" lines printed */
++static uint32_t gg_iov_hits;	/* 0214: suspicious address fields printed */
+ /*
+  * 0204: v151 logged 1001 wedged submits at ~29 lines each and the 4 MiB log
+  * ring wrapped, discarding the only submits that still had a live CP. Keep
+@@ -5859,6 +5946,25 @@
+ 				}
+ 				delay(1);
+ 			}
++			/*
++			 * 0214: the W1C only commits once sCR0.ACK drains, so a write
++			 * that never landed looks exactly like a value that did not
++			 * change. Read all three back and say which case it is: a CB1
++			 * bank left faulted blocks every later access on that path,
++			 * which is the shape of v164 losing the CPU inside the status
++			 * read of the 106th submit.
++			 */
++			{
++				uint32_t f1 = gg_rd(cb, SMMU_CB_FSR);
++				uint32_t g1 = gg_rd(s, SMMU_GFSR);
++
++				if ((f1 != 0u || g1 != 0u) && gg_smmu_fail_log < 8) {
++					gg_smmu_fail_log++;
++					printf("GAUGUIN CP: 0214 smmu clear FAILED"
++					    " fsr=%#x gfsr=%#x ack=%u\n", f1, g1, n);
++					(void)sweet_log_flush_now();
++				}
++			}
+ 			if (gg_smmu_log < 4) {
+ 				gg_smmu_log++;
+ 				printf("GAUGUIN CP: 0202 smmu fsr=%#x->%#x"
+@@ -5985,6 +6091,24 @@
+ 	for (i = 0; i < count; i++) {
+ 		gg_ib_sanitize(ai[i], wi[i], 0);
+ 	}
++	/*
++	 * 0214: what the previous submit left in the front end, and a scan of the
++	 * address fields this one is about to hand the CP. One register read plus a
++	 * walk over the copy already in cache, both cheap enough for every submit.
++	 */
++	printf("GAUGUIN CP: 0214 pre fence=%#x ib1=%#x:%#x rem=%u wptr=%u\n",
++	    fence, gg_rd(gg.gpu, GR(CP_IB1_BASE_DW)),
++	    gg_rd(gg.gpu, GR(CP_IB1_BASE_DW + 1u)),
++	    gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW)),
++	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++	for (i = 0; i < count; i++) {
++		if (mark_mem != 0 && ai[i] >= CP_VA_MARK &&
++		    ai[i] < CP_VA_MARK + CPMEM_MARK_SIZE) {
++			gg_cmd_addr_check(fence,
++			    (volatile uint32_t *)(mark_mem +
++			    (vm_offset_t)(ai[i] - CP_VA_MARK)), wi[i]);
++		}
++	}
+ 	for (i = 0; i < count; i++) {
+ 		/*
+ 		 * a6xx (non-legacy PM4) cp_gpuaddr writes a 64-bit address, so
