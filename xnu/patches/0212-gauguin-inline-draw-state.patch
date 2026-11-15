@@ -1,0 +1,110 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3888,6 +3888,31 @@
+ 	}
+ 	return gg_sds_drop;
+ }
++
++/*
++ * 0212: gauguininl, default 1. Inline the CP_SET_DRAW_STATE objects into the
++ * flattened copy instead of letting the ME load them through the SDS engine.
++ * v159 and v161 both park on such an object with CP_SDS_REM_SIZE equal to its
++ * full size (zero dwords consumed) while every other CP engine reads idle and
++ * the SMMU records no fault, and blanking group 0 only moves the pending
++ * pointer to group 1 - the descriptor walk advances, the load never does.
++ * The ring/IB path is the one path this SoC has proven (selftest, panel blit,
++ * annotation stamps), so the state is emitted as ordinary packets.
++ */
++static int gg_sds_inline = -1;
++static int gg_sds_inl_log;
++
++static int
++gg_sds_inline_opt(void)
++{
++	if (gg_sds_inline == -1) {
++		int v = 1;
++
++		gg_sds_inline = PE_parse_boot_argn("gauguininl", &v, sizeof(v)) ?
++		    v : 1;
++	}
++	return gg_sds_inline;
++}
+ #define GG_FLAT_MAPS  8u	/* inlined children recorded per top-level IB */
+ 
+ struct gg_flat_map {
+@@ -4565,7 +4590,7 @@
+ 		uint32_t type = h >> 28;
+ 		uint32_t op = (h >> 16) & 0x7fu;
+ 		uint32_t plen, len;
+-		int isind, ind;
++		int isind, ind, inl;
+ 
+ 		if (type == 7u) {
+ 			plen = h & 0x3fffu;
+@@ -4608,6 +4633,57 @@
+ 				*np = before;
+ 			}
+ 		}
++		/*
++		 * 0212: expand the draw-state packet in place. The descriptor
++		 * packet becomes a same-length CP_NOP and every group's object is
++		 * copied at the same position as ordinary PM4, so the draw that
++		 * follows sees the state without the SDS engine ever running. Any
++		 * object that cannot be read or parsed aborts the expansion and the
++		 * descriptor packet is copied untouched, so a failure here is never
++		 * worse than v161.
++		 */
++		inl = 0;
++		if (!isind && type == 7u && op == 0x43u && plen >= 3u &&
++		    gg_sds_inline_opt() > 0) {
++			uint32_t g, groups = plen / 3u, save = *np;
++			int allok = 1;
++
++			if (*np + len + 5u > max) {
++				return 0;
++			}
++			out[(*np)++] = gg_pkt7(CP_NOP, plen);
++			for (k = 1; k < len; ++k) {
++				out[(*np)++] = 0u;
++			}
++			for (g = 0; g < groups && allok; g++) {
++				uint32_t d0 = gg_flat_rd(iova, o + 1u + 3u * g);
++				uint64_t niova =
++				    ((uint64_t)gg_flat_rd(iova, o + 3u + 3u * g) << 32) |
++				    gg_flat_rd(iova, o + 2u + 3u * g);
++				uint32_t n = d0 & 0xffffu;
++
++				if (n == 0u) {
++					continue;
++				}
++				if (n > GG_FLAT_MAX || gg_gem_pa(niova) == 0u ||
++				    !gg_flat_copy(index, niova, n, out, max, np,
++				    depth + 1)) {
++					allok = 0;
++				}
++			}
++			if (allok) {
++				inl = 1;
++				if (gg_sds_inl_log < 8) {
++					gg_sds_inl_log++;
++					printf("GAUGUIN CP: 0212 sds inline"
++					    " groups=%u at=%u -> %u\n", groups,
++					    save, *np);
++				}
++			} else {
++				*np = save;
++			}
++		}
++		if (inl == 0) {
+ 		if (*np + len + 5u > max) {
+ 			return 0;
+ 		}
+@@ -4642,6 +4718,7 @@
+ 				}
+ 			}
+ 		}
++		}
+ 		at = *np;
+ 		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+ 		out[(*np)++] = 0x04u;
