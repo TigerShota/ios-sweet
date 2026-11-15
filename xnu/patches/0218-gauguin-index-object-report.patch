@@ -1,0 +1,149 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3454,6 +3454,7 @@
+  */
+ static int gg_nidx_opt = -1;
+ static int gg_ndraw_opt = -1;
++static int gg_idxalign_opt = -1;
+ static int gg_ndraw_log;
+ 
+ static int
+@@ -4869,6 +4870,28 @@
+ 					    " plen=%u mode=%d\n", base, plen,
+ 					    gg_nidx_opt);
+ 				}
++			} else if (gg_boot_int("gauguinidxalign", 0,
++			    &gg_idxalign_opt) != 0 && plen == 7u) {
++				/*
++				 * 0218: v170's working draw used index base
++				 * 0x54107f40, 0xC0 below the page-aligned
++				 * 0x54108000 the VA scan called mapped. Round the
++				 * base up to the page so the fetch starts inside the
++				 * allocation: if the wedge disappears the fetch was
++				 * the problem, if it stays the indices themselves are.
++				 */
++				uint32_t b = out[base + 5u];
++
++				if (b >= 0x50000000u && b < 0x70000000u &&
++				    (b & 0xfffu) != 0u) {
++					out[base + 5u] = (b + 0xfffu) & ~0xfffu;
++					if (gg_ndraw_log < 4) {
++						gg_ndraw_log++;
++						printf("GAUGUIN CP: 0218 idx align"
++						    " at=%u %#x -> %#x\n", base,
++						    b, out[base + 5u]);
++					}
++				}
+ 			}
+ 		}
+ 		at = *np;
+@@ -5275,6 +5298,93 @@
+  */
+ static uint32_t gg_iov_hits;	/* 0214: suspicious address fields printed */
+ 
++/*
++ * 0218: v170 proved the index count of CP_DRAW_INDX_OFFSET is payload[6] (an
++ * 18-index draw wedges, a 0-index draw does not) and the captured index base
++ * 0x54107f40 is 0xC0 below the page-aligned 0x54108000 that the VA scan saw as
++ * mapped. Walk the pages around it so the log can say whether the fetch starts
++ * inside the allocation or before it.
++ */
++static void
++gg_obj_span(uint32_t v, uint32_t *lo, uint32_t *hi)
++{
++	uint32_t p = v & ~0xfffu;
++	uint32_t k;
++
++	*lo = 0u;
++	*hi = 0u;
++	if (gg_gem_pa(v) == 0u) {
++		return;
++	}
++	*lo = p;
++	*hi = p + 0x1000u;
++	for (k = 1u; k <= 64u && p > 0x1000u * k; k++) {
++		if (gg_gem_pa(p - 0x1000u * k) == 0u) {
++			break;
++		}
++		*lo = p - 0x1000u * k;
++	}
++	for (k = 1u; k <= 64u; k++) {
++		if (gg_gem_pa(p + 0x1000u * k) == 0u) {
++			break;
++		}
++		*hi = p + 0x1000u * (k + 1u);
++	}
++}
++
++static void
++gg_idx_report(uint32_t fence, volatile uint32_t *cp, uint32_t n)
++{
++	static uint32_t seen[16];
++	static uint32_t nseen;
++	uint32_t o = 0u;
++
++	while (o < n) {
++		uint32_t h = cp[o];
++		uint32_t type = h >> 28u;
++		uint32_t op = (h >> 16) & 0x7fu;
++		uint32_t plen;
++
++		if (type == 7u) {
++			plen = h & 0x3fffu;
++		} else if (type == 4u) {
++			plen = h & 0x7fu;
++		} else if (type == 0u) {
++			plen = ((h >> 16) & 0x3fffu) + 1u;
++		} else {
++			return;
++		}
++		if (o + 1u + plen > n) {
++			return;
++		}
++		if (type == 7u && op == 0x38u && plen == 7u) {
++			uint32_t base = cp[o + 5u];
++			uint32_t cnt = cp[o + 7u];
++			uint32_t lo, hi, k, dup = 0u;
++
++			for (k = 0; k < nseen; k++) {
++				if (seen[k] == base) {
++					dup = 1u;
++				}
++			}
++			if (dup == 0u) {
++				if (nseen < 16u) {
++					seen[nseen++] = base;
++				}
++				gg_obj_span(base, &lo, &hi);
++				printf("GAUGUIN CP: 0218 idx fence=%#x off=%u"
++				    " base=%#x count=%u page=%#x gem=%u"
++				    " obj=%#x..%#x off=%d%s\n", fence, o, base,
++				    cnt, base & ~0xfffu,
++				    gg_gem_pa(base) != 0u ? 1u : 0u, lo, hi,
++				    (int)(base - lo),
++				    (lo != 0u && base < lo) ? " OUTSIDE" : "");
++			}
++		}
++		o += 1u + plen;
++	}
++}
++
+ static void
+ gg_chk_addr(uint32_t fence, uint32_t off, uint32_t lo, uint32_t hi,
+     const char *what)
+@@ -6369,9 +6479,11 @@
+ 	for (i = 0; i < count; i++) {
+ 		if (mark_mem != 0 && ai[i] >= CP_VA_MARK &&
+ 		    ai[i] < CP_VA_MARK + CPMEM_MARK_SIZE) {
+-			gg_cmd_addr_check(fence,
+-			    (volatile uint32_t *)(mark_mem +
+-			    (vm_offset_t)(ai[i] - CP_VA_MARK)), wi[i]);
++			volatile uint32_t *cp = (volatile uint32_t *)(mark_mem +
++			    (vm_offset_t)(ai[i] - CP_VA_MARK));
++
++			gg_cmd_addr_check(fence, cp, wi[i]);
++			gg_idx_report(fence, cp, wi[i]);
+ 		}
+ 	}
+ 	for (i = 0; i < count; i++) {
