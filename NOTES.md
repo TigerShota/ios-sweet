@@ -1263,3 +1263,36 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
      cpu_init, before arm_vm_init.
   5. panic hook at top of panic_trap_to_debugger: va_copy + _doprnt(fmt, &copy, sweet_early_putc, 16).
   Verify with tools/xnu-cc.py (compile+symbols) and patch-order simulation before the single CI run.
+
+## Device cycle tooling (2026-11-15)
+
+Two scripts cover one full iteration; both take everything machine-specific from
+the environment, so a fresh checkout works without edits.
+
+```
+# 1. dispatch the shim build (prints the queued run id, does not wait)
+export GH_TOKEN=...                 # actions:write on TigerShota/ios-sweet
+python tools/shim-run.py dispatch <xnu_run_id> [extra boot args...]
+
+# 2. wait for it and download the artifacts into out/<tag>/shim/out/shim-boot.img
+python tools/shim-run.py get <shim_run_id> <tag>
+python tools/shim-run.py ls
+
+# 3. clear the SWEETLOG tail, fastboot boot the image, wait, power-cycle
+python tools/gpu-boot-cycle.py phase1 out/<tag>/shim/out/shim-boot.img <tag>
+
+# 4. after the phone is back in recovery: pull, decode, print the verdict
+python tools/gpu-boot-cycle.py phase2 <tag>
+```
+
+`dispatch` appends the extra args to the workflow's own `cmdline` default, so
+`gauguinflat=1 gauguinmark=1 gauguinclr=4` only has to be repeated when the
+default changes. Boot args are parsed as **decimal** by `PE_parse_boot_argn`:
+`gauguinidxlen=0x40` silently fails, `gauguinidxlen=64` works.
+
+Environment knobs for `gpu-boot-cycle.py`: `ADB`, `FB`, `SWEETLOG_OUT`,
+`SWEETLOG_DEV` (default `/dev/block/sda35`), `BOOT_WAIT` (300),
+`LOG_GREP` (`|`-separated substrings to echo, default `GAUGUIN CP:`),
+`LOG_TAIL` (20). The verdict prints a `0NNN` marker histogram, the submit
+counters, the `src px` non-zero count and the tail, so it stays useful as the
+patch numbers keep moving.
