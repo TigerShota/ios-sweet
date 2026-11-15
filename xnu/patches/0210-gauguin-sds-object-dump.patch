@@ -1,0 +1,132 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4822,6 +4822,82 @@
+ }
+ 
+ /*
++ * 0210: v157/v158 both stop right after a CP_SET_DRAW_STATE (op 0x43, header
++ * 0x7043802d = 15 groups) - the last stamp the ME wrote names the packet past
++ * it - and RBBM_STATUS then reads 0x800005, i.e. CP_AHB_CX|CP|GPU_BUSY: a CP
++ * register transaction that never completes. The state objects that packet
++ * points at are executed as PM4 by the ME, and gg_ib_sanitize() has never
++ * walked them - it only follows CP_INDIRECT_BUFFER - so a privileged or
++ * absent register write inside one of them reaches the hardware untouched.
++ * Dump the descriptors of the last such packet in the executed prefix and the
++ * head of every object, with type-4 register names, so the wedging register is
++ * in the log instead of being guessed at.
++ */
++static void
++gg_sds_dump(volatile uint32_t *cp, uint32_t upto)
++{
++	uint32_t o = 0u, last = 0u, found = 0u, g, n;
++
++	while (o < upto) {
++		uint32_t h = cp[o];
++		uint32_t type = h >> 28u;
++		uint32_t plen;
++
++		if (type == 7u) {
++			plen = h & 0x3fffu;
++		} else if (type == 4u) {
++			plen = h & 0x7fu;
++		} else if (type == 0u) {
++			plen = ((h >> 16) & 0x3fffu) + 1u;
++		} else {
++			break;
++		}
++		if (o + 1u + plen > upto) {
++			break;
++		}
++		if (type == 7u && ((h >> 16) & 0x7fu) == 0x43u && plen >= 3u) {
++			last = o;
++			found = 1u;
++		}
++		o += 1u + plen;
++	}
++	if (found == 0u) {
++		printf("GAUGUIN CP: 0210 sds none below %u\n", upto);
++		return;
++	}
++	{
++		uint32_t plen = cp[last] & 0x3fffu;
++		uint32_t groups = plen / 3u;
++
++		printf("GAUGUIN CP: 0210 sds at=%u groups=%u\n", last, groups);
++		for (g = 0; g < groups && g < 16u; g++) {
++			uint32_t d0 = cp[last + 1u + 3u * g];
++			uint64_t iova =
++			    ((uint64_t)cp[last + 3u + 3u * g] << 32) |
++			    (uint64_t)cp[last + 2u + 3u * g];
++			uint32_t sz = d0 & 0xffffu;
++			vm_offset_t m = sz != 0u ? gg_san_map(iova) : 0u;
++
++			printf("GAUGUIN CP: 0210 g%u dw=%#x n=%u va=%#llx map=%u\n",
++			    g, d0, sz, (unsigned long long)iova,
++			    m != 0u ? 1u : 0u);
++			if (m == 0u || sz == 0u || sz > 1024u) {
++				continue;
++			}
++			for (n = 0; n < sz && n < 12u; n++) {
++				uint32_t v = gg_san_rd2(iova, m, 0, n);
++				const char *nm = ((v >> 28u) == 4u) ?
++				    gg_reg_name((v >> 8) & 0x7ffffu) : 0;
++
++				printf("GAUGUIN CP: 0210 g%u %u: %#x %s%s\n", g, n,
++				    v, nm != 0 ? "name=" : "",
++				    nm != 0 ? nm : "");
++			}
++		}
++	}
++}
++
++/*
+  * 0171: CP soft-reset recovery. v118 proved the ME dies in the first real
+  * backboardd submit (AHB stall in the nested amble IB, the ROQ holding its
+  * head dwords) and stays dead: every later submit hits the same STUCK with
+@@ -5968,6 +6044,45 @@
+ 	    gg_rd(gg.gpu, GR(CP_SCRATCH_REG2_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)));
+ 	/*
++	 * 0210: name the CP engines. CSQ_IB1/IB2 are the ring and IB fetch
++	 * queues; SDS/MRB/VSD are the draw-state, memory-read and
++	 * visibility-stream engines the SQE drives for CP_SET_DRAW_STATE; MRQ
++	 * counts read dwords fetched but not consumed. A non-zero REM_SIZE names
++	 * the engine the ME is parked on, while "all zero" plus CP_AHB_CX means a
++	 * bus transaction itself never completed.
++	 */
++	printf("GAUGUIN CP: 0210 csq ib1=%#x ib2=%#x sds=%#x/%#x mrb=%#x/%#x"
++	    " vsd=%#x/%#x mrq=%#x ahb=%#x pool=%u roq2=%#x\n",
++	    gg_rd(gg.gpu, GR(0x949u)), gg_rd(gg.gpu, GR(0x94au)),
++	    gg_rd(gg.gpu, GR(0x92eu)), gg_rd(gg.gpu, GR(0x930u)),
++	    gg_rd(gg.gpu, GR(0x931u)), gg_rd(gg.gpu, GR(0x933u)),
++	    gg_rd(gg.gpu, GR(0x934u)), gg_rd(gg.gpu, GR(0x947u)),
++	    gg_rd(gg.gpu, GR(0x94cu)), gg_rd(gg.gpu, GR(0x98du)),
++	    gg_rd(gg.gpu, GR(0x8c3u)), gg_rd(gg.gpu, GR(0x8c2u)));
++	/*
++	 * 0210: and walk the draw-state objects the ME was executing. The copy
++	 * offset the last stamp names is the packet the ME died in, so everything
++	 * before it is the executed prefix.
++	 */
++	if (gg_flat_opt > 0 && mark_mask != 0u) {
++		volatile uint32_t *srd = mark_rd ? (volatile uint32_t *)mark_rd :
++		    (volatile uint32_t *)mark_mem;
++		uint32_t kk;
++
++		for (kk = 0; kk < count; kk++) {
++			uint32_t v = srd[GG_MARK_BASE / 4u + kk];
++			uint32_t pos = v & 0xffffu;
++
++			if (v == 0u || (mark_mask & (1ull << kk)) == 0u ||
++			    pos == 0u || pos >= wi[kk]) {
++				continue;
++			}
++			printf("GAUGUIN CP: 0210 exec ib=%u pos=%u of=%u\n", kk, pos,
++			    wi[kk]);
++			gg_sds_dump(srd + gg_mark_off[kk] / 4u, pos);
++		}
++	}
++	/*
+ 	 * 0148: IB1 is the buffer the front end stopped in and CP_IB1_REM_SIZE
+ 	 * is what it had left, so the packet that stopped it sits at
+ 	 * words - rem inside that IB.
