@@ -1,0 +1,62 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4916,8 +4916,20 @@
+ 					}
+ 				} else if (gg_idxlen() >= 0 && plen == 7u) {
+ 					/* 0219: small non-zero length, payload[3] intact. */
++					static int idxlen_log;
+ 					uint32_t was = out[base + 7u];
+ 
++					/*
++					 * 0220: v172's gauguinidxlen=0x40 parsed to
++					 * nothing at all (PE_parse_boot_argn takes a
++					 * decimal int and returned false), so say what
++					 * value was actually accepted.
++					 */
++					if (idxlen_log == 0) {
++						idxlen_log = 1;
++						printf("GAUGUIN CP: 0220 idxlen arg=%d\n",
++						    gg_idxlen());
++					}
+ 					out[base + 7u] = (uint32_t)gg_idxlen();
+ 					if (gg_ndraw_log < 8) {
+ 						gg_ndraw_log++;
+@@ -5395,22 +5407,33 @@
+ 		 * 0219: the VFD side, read from the stream rather than the block -
+ 		 * at a wedge the register file can be unreachable, and these writes
+ 		 * are already in the copy the CP executes.
++		 *
++		 * 0220: dedupe per fence, not globally (v172 printed 16 registers from
++		 * fence 0x6000003 only and never showed the wedging submit), cover the
++		 * whole 0xa000..0xa1ff range and stop at 200 lines overall.
+ 		 */
+ 		if (type == 4u) {
+-			static uint32_t vfd_seen[16];
++			static uint32_t vfd_seen[24];
+ 			static uint32_t vfd_n;
++			static uint32_t vfd_fence;
++			static uint32_t vfd_lines;
+ 			uint32_t reg = (h >> 8) & 0x7ffffu;
+ 			uint32_t q, dup = 0u;
+ 
+-			if (reg >= 0xa000u && reg <= 0xa0ffu) {
++			if (vfd_fence != fence) {
++				vfd_fence = fence;
++				vfd_n = 0u;
++			}
++			if (reg >= 0xa000u && reg <= 0xa1ffu && vfd_lines < 200u) {
+ 				for (q = 0; q < vfd_n; q++) {
+ 					if (vfd_seen[q] == reg) {
+ 						dup = 1u;
+ 					}
+ 				}
+-				if (dup == 0u && vfd_n < 16u) {
++				if (dup == 0u && vfd_n < 24u) {
+ 					vfd_seen[vfd_n++] = reg;
+-					printf("GAUGUIN CP: 0219 vfd fence=%#x"
++					vfd_lines++;
++					printf("GAUGUIN CP: 0220 vfd fence=%#x"
+ 					    " off=%u reg=%#x val=%#x\n", fence, o,
+ 					    reg, cp[o + 1u]);
+ 				}
