@@ -39,7 +39,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  	    gg_rd(gg.gpu, GR(RBBM_INT_0_STATUS_DW)));
  }
  
-@@ -5109,6 +5124,76 @@
+@@ -5109,6 +5124,78 @@
  	}
  }
  
@@ -55,6 +55,8 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 + * flag colours and constants, and refusing the submit would stop the very
 + * rendering that is making progress.
 + */
++static uint32_t gg_iov_hits;	/* 0214: suspicious address fields printed */
++
 +static void
 +gg_chk_addr(uint32_t fence, uint32_t off, uint32_t lo, uint32_t hi,
 +    const char *what)
@@ -116,16 +118,15 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  static int gg_rec_left = -1;	/* -1 unparsed; boot-arg gauguinrec */
  static int gg_rec_busy;		/* one recovery at a time */
  static int gg_rec_zaps;		/* 0182: PAS 13 must be shut down before re-INIT */
-@@ -5576,6 +5661,8 @@
+@@ -5576,6 +5663,7 @@
   * step22 path that is proven on this device.
   */
  static int gg_smmu_log;
 +static int gg_smmu_fail_log;	/* 0214: "clear did not take" lines printed */
-+static uint32_t gg_iov_hits;	/* 0214: suspicious address fields printed */
  /*
   * 0204: v151 logged 1001 wedged submits at ~29 lines each and the 4 MiB log
   * ring wrapped, discarding the only submits that still had a live CP. Keep
-@@ -5859,6 +5946,25 @@
+@@ -5859,6 +5947,25 @@
  				}
  				delay(1);
  			}
@@ -151,7 +152,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  			if (gg_smmu_log < 4) {
  				gg_smmu_log++;
  				printf("GAUGUIN CP: 0202 smmu fsr=%#x->%#x"
-@@ -5985,6 +6091,24 @@
+@@ -5985,6 +6092,24 @@
  	for (i = 0; i < count; i++) {
  		gg_ib_sanitize(ai[i], wi[i], 0);
  	}
