@@ -1,0 +1,70 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3572,6 +3572,32 @@
+ 	return n;
+ }
+ 
++/*
++ * 0226: the raster state turned out to be correct (v182's healthy dump has
++ * GRAS_VPORT0 = 562.5 / 1218 with YSCALE -1218 and a 1124x2435 scissor, i.e. the
++ * full 1125x2436 surface), yet no word of RB_MRT0_BASE is ever written. The
++ * cheapest split left is the primitive itself: gauguindrawprim=N rewrites
++ * PRIM_TYPE (draw0 bits 5:0) of every started draw, so N=9 (DI_PT_POINTLIST)
++ * turns the two rect-list vertices into two points. Two dots on screen means
++ * vertices, viewport, FS and ROP all work and only RECTLIST expansion is
++ * missing; nothing at all means the draw never reaches the RB.
++ */
++static int gg_drawprim_opt = -2;
++
++static int
++gg_drawprim(void)
++{
++	if (gg_drawprim_opt == -2) {
++		int v = -1;
++		int got = PE_parse_boot_argn("gauguindrawprim", &v, sizeof(v));
++
++		gg_drawprim_opt = got ? v : -1;
++		printf("GAUGUIN CP: 0226 drawprim parse got=%d val=%d\n", got,
++		    gg_drawprim_opt);
++	}
++	return gg_drawprim_opt;
++}
++
+ static int
+ gg_boot_int(const char *name, int def, int *slot)
+ {
+@@ -5157,6 +5183,21 @@
+ 					    " at=%u\n", at2);
+ 				}
+ 			}
++			/* 0226: see gg_drawprim(). payload[0] is draw0 in both
++			 * forms, and PRIM_TYPE is its low six bits. */
++			base = *np - len;
++			if (gg_drawprim() >= 0 && out[base + 3u] != 0u) {
++				uint32_t was = out[base + 1u];
++
++				out[base + 1u] = (was & ~0x3fu) |
++				    ((uint32_t)gg_drawprim() & 0x3fu);
++				if (gg_ndraw_log < 12) {
++					gg_ndraw_log++;
++					printf("GAUGUIN CP: 0226 drawprim"
++					    " at=%u %#x -> %#x\n", base,
++					    was, out[base + 1u]);
++				}
++			}
+ 		}
+ 		at = *np;
+ 		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+@@ -6013,6 +6054,11 @@
+ 		{ 0xa984u, "SP_FS_OBJ_START_HI" },
+ 		{ 0xab05u, "SP_FS_INSTRLEN" },
+ 		{ 0x8005u, "GRAS_CNTL" },
++		{ 0x8821u, "RB_MRT0_BLEND_CNTL" },
++		{ 0x8824u, "RB_MRT0_ARRAY_PITCH" },
++		{ 0x8827u, "RB_MRT0_BASE_GMEM" },
++		{ 0x8860u, "RB_BLEND_RED_F32" },
++		{ 0x8864u, "RB_ALPHA_CONTROL" },
+ 		{ 0x9304u, "VPC_CNTL_0" },
+ 		{ 0x9804u, "PC_MODE_CNTL" },
+ 		{ 0x9b00u, "PC_PRIMITIVE_CNTL_0" },
