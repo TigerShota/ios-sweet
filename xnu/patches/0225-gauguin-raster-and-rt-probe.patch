@@ -1,0 +1,108 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5092,28 +5092,50 @@
+ 				for (i = 0; i < 3u; i++) {
+ 					uint32_t f = 0xa010u + 4u * i;
+ 					uint32_t fb = gg_rd(gg.gpu, GR(f));
++					uint32_t fbh = gg_rd(gg.gpu, GR(f + 1u));
+ 					uint32_t fs = gg_rd(gg.gpu, GR(f + 2u));
++					uint32_t fst = gg_rd(gg.gpu, GR(f + 3u));
++					uint32_t flo = 0u, fhi = 0u;
+ 
+ 					/* Bound and non-empty: leave it alone. */
+ 					if (fb != 0u && fs != 0u) {
+ 						continue;
+ 					}
++					if (fb == 0u) {
++						fb = va;
++						fbh = 0u;
++					}
++					gg_obj_span(fb, &flo, &fhi);
+ 					w[nw++] = f;
+-					w[nw++] = fb != 0u ? fb : va;
++					w[nw++] = fb;
+ 					w[nw++] = f + 1u;
+-					w[nw++] = 0u;
+-					w[nw++] = f + 2u;
+-					w[nw++] = 0x1000u;
+-					w[nw++] = f + 3u;
+-					w[nw++] = 0x10u;
++					w[nw++] = fbh;
++					if (fs == 0u) {
++						w[nw++] = f + 2u;
++						w[nw++] = gg_fetchbind() >= 2 ?
++						    0x1000u : (fhi > fb ? fhi - fb :
++						    0x10000u);
++					}
++					/*
++					 * 0225: v178/v180 replaced the UMD's real
++					 * STRIDE (0x30) with 0x10 for every repaired
++					 * slot, which moved every vertex but the
++					 * first - and may be what actually let v180
++					 * retire (a shorter read range). Mode 1 keeps
++					 * a non-zero stride, mode 2 reproduces v180.
++					 */
++					if (gg_fetchbind() >= 2 || fst == 0u) {
++						w[nw++] = f + 3u;
++						w[nw++] = 0x10u;
++					}
+ 				}
+ 				ins = base + nw;
+ 				if (nw != 0u && gg_ins(out, np, len, w, nw / 2u) &&
+ 				    gg_fetchbind_log < 4) {
+ 					gg_fetchbind_log++;
+ 					printf("GAUGUIN CP: 0223 fetchbind"
+-					    " at=%u n=%u va=%#x\n", ins,
+-					    nw / 2u, va);
++					    " at=%u n=%u va=%#x mode=%d\n", ins,
++					    nw / 2u, va, gg_fetchbind());
+ 				}
+ 			}
+ 			/*
+@@ -5993,8 +6015,26 @@
+ 		{ 0x9304u, "VPC_CNTL_0" },
+ 		{ 0x9804u, "PC_MODE_CNTL" },
+ 		{ 0x9b00u, "PC_PRIMITIVE_CNTL_0" },
++		/*
++		 * 0225: a draw that retires and still paints nothing is usually a
++		 * viewport or scissor that was never programmed (or is empty), so
++		 * read the raster block too.
++		 */
++		{ 0x8000u, "GRAS_CL_CNTL" },
++		{ 0x8006u, "GRAS_CL_GUARDBAND" },
++		{ 0x8010u, "GRAS_VPORT0_XOFFSET" },
++		{ 0x8011u, "GRAS_VPORT0_XSCALE" },
++		{ 0x8012u, "GRAS_VPORT0_YOFFSET" },
++		{ 0x8013u, "GRAS_VPORT0_YSCALE" },
++		{ 0x8014u, "GRAS_VPORT0_ZOFFSET" },
++		{ 0x8015u, "GRAS_VPORT0_ZSCALE" },
++		{ 0x8090u, "GRAS_SU_CNTL" },
++		{ 0x80b0u, "GRAS_SC_SCISSOR_TL" },
++		{ 0x80b1u, "GRAS_SC_SCISSOR_BR" },
++		{ 0x80d0u, "GRAS_VP_SCISSOR_TL" },
++		{ 0x80d1u, "GRAS_VP_SCISSOR_BR" },
+ 	};
+-	uint32_t i;
++	uint32_t i, mrt, pitch;
+ 
+ 	printf("GAUGUIN CP: 0223 regs fence=%#x\n", fence);
+ 	for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
+@@ -6009,6 +6049,17 @@
+ 	gg_va_dump("vs", gg_rd(gg.gpu, GR(0xa81cu)), 16u);
+ 	gg_va_dump("fs", gg_rd(gg.gpu, GR(0xa983u)), 16u);
+ 	gg_va_dump("vfetch1", gg_rd(gg.gpu, GR(0xa014u)), 8u);
++	/*
++	 * 0225: does anything reach the render target? The draws retire now and
++	 * the present still samples black. Zero words at RB_MRT0_BASE mean the 3D
++	 * block writes nothing at all (viewport/scissor/raster); non-zero words
++	 * mean the pixels exist and the present path reads a different buffer.
++	 */
++	mrt = gg_rd(gg.gpu, GR(0x8825u));
++	pitch = gg_rd(gg.gpu, GR(0x8823u)) << 6;
++	printf("GAUGUIN CP: 0225 mrt base=%#x pitch=%u\n", mrt, pitch);
++	gg_va_dump("mrt0", mrt, 8u);
++	gg_va_dump("mrt0_mid", mrt + pitch * 100u, 4u);
+ 	(void)sweet_log_flush_now();
+ }
+ 
