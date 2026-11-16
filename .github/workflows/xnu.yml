@@ -220,3 +220,6 @@ jobs:
           name: xnu-kernel
           path: out/
           if-no-files-found: warn
+
+# Note: 2026-11-16 the macOS runner queue cancelled five consecutive jobs with
+# runner_name unset (never assigned). Re-push to retry; nothing to fix in the build.
