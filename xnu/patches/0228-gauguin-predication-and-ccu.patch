@@ -1,0 +1,152 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3597,6 +3597,49 @@
+ 	return gg_vout_opt;
+ }
+ 
++/*
++ * 0228: v185/v187 leave every visible input correct - SP/FS ENABLED,
++ * STRIDE_IN_VPC 4, VPC dst 0, raster and target fine, RBBM idle right after the
++ * draw - and still nothing lands in RB_MRT0. Two silent-drop mechanisms remain,
++ * both cheap to test:
++ *  - draw predication: with CP_DRAW_PRED_ENABLE_GLOBAL on and a failing latched
++ *    predicate every draw retires without doing anything (gauguinnopred=1
++ *    inserts CP_DRAW_PRED_ENABLE_GLOBAL(0) in front of each started draw);
++ *  - the colour cache unit: RB_CCU_CNTL is the GMEM/sysmem offset the a6xx docs
++ *    call "important for sysmem path" (a618 sysmem = 0x10000 -> 0x08000000),
++ *    so gauguinccu=1 forces that value before each started draw.
++ */
++static int gg_nopred_opt = -2;
++static int gg_ccu_opt = -2;
++
++static int
++gg_nopred(void)
++{
++	if (gg_nopred_opt == -2) {
++		int v = 0;
++		int got = PE_parse_boot_argn("gauguinnopred", &v, sizeof(v));
++
++		gg_nopred_opt = got ? v : 0;
++		printf("GAUGUIN CP: 0228 nopred parse got=%d val=%d\n", got,
++		    gg_nopred_opt);
++	}
++	return gg_nopred_opt;
++}
++
++static int
++gg_ccu(void)
++{
++	if (gg_ccu_opt == -2) {
++		int v = 0;
++		int got = PE_parse_boot_argn("gauguinccu", &v, sizeof(v));
++
++		gg_ccu_opt = got ? v : 0;
++		printf("GAUGUIN CP: 0228 ccu parse got=%d val=%d\n", got,
++		    gg_ccu_opt);
++	}
++	return gg_ccu_opt;
++}
++
+ /* 0224: dwords the rewrites may insert in front of one draw (see gg_ins). */
+ static uint32_t
+ gg_draw_extra(void)
+@@ -3613,6 +3656,12 @@
+ 		n += 4u;
+ 	}
+ 	if (gg_vout() >= 0) {
++		n += 2u;
++	}
++	if (gg_nopred() > 0) {
++		n += 2u;
++	}
++	if (gg_ccu() > 0) {
+ 		n += 2u;
+ 	}
+ 	return n;
+@@ -4922,6 +4971,29 @@
+ 	return 1;
+ }
+ 
++/* 0228: same move as gg_ins(), for a one-value type-7 packet (op 0x19). */
++static int
++gg_ins_pkt1(volatile uint32_t *out, uint32_t *np, uint32_t len, uint32_t op,
++    uint32_t val)
++{
++	uint32_t save[GG_INS_MAX], base, k;
++
++	if (len > GG_INS_MAX) {
++		return 0;
++	}
++	base = *np - len;
++	for (k = 0; k < len; ++k) {
++		save[k] = out[base + k];
++	}
++	*np = base;
++	out[(*np)++] = gg_pkt7(op, 1u);
++	out[(*np)++] = val;
++	for (k = 0; k < len; ++k) {
++		out[(*np)++] = save[k];
++	}
++	return 1;
++}
++
+ static int
+ gg_flat_copy(uint32_t index, uint64_t iova, uint32_t dwords,
+     volatile uint32_t *out, uint32_t max, uint32_t *np, int depth)
+@@ -5278,6 +5350,32 @@
+ 					    " -> %#x\n", base, w[1]);
+ 				}
+ 			}
++			/* 0228: turn global draw predication off right before
++			 * the draw, so a failing latched predicate cannot drop
++			 * it silently. */
++			base = *np - len;
++			if (gg_nopred() > 0 && out[base + 3u] != 0u) {
++				if (gg_ins_pkt1(out, np, len, 0x19u, 0u) &&
++				    gg_ndraw_log < 18) {
++					gg_ndraw_log++;
++					printf("GAUGUIN CP: 0228 nopred at=%u\n",
++					    base);
++				}
++			}
++			/* 0228: a618 sysmem CCU offset (0x10000 -> 0x08000000). */
++			base = *np - len;
++			if (gg_ccu() > 0 && out[base + 3u] != 0u) {
++				uint32_t w[2];
++
++				w[0] = 0x8e07u;
++				w[1] = 0x08000000u;
++				if (gg_ins(out, np, len, w, 1u) &&
++				    gg_ndraw_log < 20) {
++					gg_ndraw_log++;
++					printf("GAUGUIN CP: 0228 ccu at=%u"
++					    " -> %#x\n", base, w[1]);
++				}
++			}
+ 		}
+ 		at = *np;
+ 		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+@@ -6016,7 +6114,12 @@
+ 			}
+ 			if (type == 7u && (op == 0x38u || op == 0x45u ||
+ 			    op == 0x43u || op == 0x3fu ||
+-			    (op >= 0x30u && op <= 0x33u)) &&
++			    (op >= 0x30u && op <= 0x33u) ||
++			    /* 0228: predication packets. A draw is only issued
++			     * when global and local predication are both on and
++			     * the latched predicate passes, so a 0x19/0x1a/0x4e
++			     * in the stream would explain silent drops. */
++			    op == 0x19u || op == 0x1au || op == 0x4eu) &&
+ 			    pkt_seen < GG_MEM_PKT_MAX) {
+ 				pkt_seen++;
+ 				printf("GAUGUIN CP: 0215 pkt ib=%u off=%u op=%#x"
+@@ -6152,6 +6255,8 @@
+ 		{ 0x0210u, "RBBM_STATUS" },
+ 		{ 0x0211u, "RBBM_STATUS1" },
+ 		{ 0x8821u, "RB_MRT0_BLEND_CNTL" },
++		{ 0x8800u, "RB_BIN_CONTROL" },
++		{ 0x8e07u, "RB_CCU_CNTL" },
+ 		{ 0x8824u, "RB_MRT0_ARRAY_PITCH" },
+ 		{ 0x8827u, "RB_MRT0_BASE_GMEM" },
+ 		{ 0x8860u, "RB_BLEND_RED_F32" },
