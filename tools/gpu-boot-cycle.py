@@ -31,11 +31,16 @@ SDK = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT') or ''
 
 
 def _tool(name):
-    """Prefer $<UPPER> then $ANDROID_HOME/platform-tools/<name>, else PATH."""
+    """$<NAME>, then $ADB's directory, then $ANDROID_HOME, then PATH."""
     exe = name + ('.exe' if os.name == 'nt' else '')
     env = os.environ.get(name.upper())
     if env:
         return env
+    adb_env = os.environ.get('ADB')
+    if adb_env:
+        cand = os.path.join(os.path.dirname(adb_env), exe)
+        if os.path.exists(cand):
+            return cand
     cand = os.path.join(SDK, 'platform-tools', exe)
     if SDK and os.path.exists(cand):
         return cand
