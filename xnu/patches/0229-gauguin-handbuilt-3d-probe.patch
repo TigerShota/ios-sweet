@@ -1,0 +1,231 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3640,6 +3640,174 @@
+ 	return gg_ccu_opt;
+ }
+ 
++/*
++ * 0229: a hand-built 3D draw, issued once, right after the UMD's own failed
++ * draw. It inherits everything the UMD programmed for the VS/FS/VFD decode
++ * (re-using Apple's shaders and attribute formats) and replaces only the parts
++ * the probe must control: the vertex data (a real triangle at a known address),
++ * the render target (the 512x512 step22 buffer), the viewport/scissor and the
++ * RB state. Target halves are separated so one read tells which probe drew:
++ * rows 0..127 take pixel-space vertices, rows 128..255 take NDC ones, so a VS
++ * that converts pixels itself and one that passes NDC through both land inside.
++ * gauguinprobe3d=1, and boot with gauguinflat=1 gauguinmark=1 gauguinclr=4.
++ */
++static int gg_probe3d_opt = -2;
++static int gg_probe_state;		/* 0 idle, 1 armed, 2 reported */
++static int gg_probe_wait;		/* submissions to let finish */
++static uint32_t gg_probe_ck0[2];
++static vm_offset_t gg_probe_map;	/* uncached view of the target */
++
++static int
++gg_probe3d(void)
++{
++	if (gg_probe3d_opt == -2) {
++		int v = 0;
++		int got = PE_parse_boot_argn("gauguinprobe3d", &v, sizeof(v));
++
++		gg_probe3d_opt = got ? v : 0;
++		printf("GAUGUIN CP: 0229 probe3d parse got=%d val=%d\n", got,
++		    gg_probe3d_opt);
++	}
++	return gg_probe3d_opt;
++}
++
++/* The target is WCOMB, so read it through an uncached mapping (0155). */
++static vm_offset_t
++gg_probe_rd(void)
++{
++	if (gg_probe_map == 0 && target_pa != 0) {
++		gg_probe_map = ml_io_map((vm_offset_t)target_pa, TARGET_SIZE);
++	}
++	return gg_probe_map;
++}
++
++/* Hash + non-zero count of 128 rows, so "did anything change" is one number. */
++static uint32_t
++gg_probe_ck(uint32_t off, uint32_t *nz)
++{
++	vm_offset_t m = gg_probe_rd();
++	uint32_t i, s = 0u, n = 0u;
++
++	*nz = 0u;
++	if (m == 0) {
++		return 0u;
++	}
++	for (i = 0u; i < 128u * (TARGET_PITCH / 4u); i++) {
++		uint32_t v = *(volatile uint32_t *)(m + off + 4u * i);
++
++		if (v != 0u) {
++			n++;
++		}
++		s = s * 31u + v;
++	}
++	*nz = n;
++	return s;
++}
++
++/* Two pixel-space and one NDC triangle, 0x30-byte stride like the UMD's. */
++static void
++gg_probe_vb(void)
++{
++	volatile uint32_t *vb =
++	    (volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x1000u);
++	static const uint32_t xy[6][2] = {
++		{ 0x41200000u, 0x41200000u },	/* 10, 10 */
++		{ 0x43fa0000u, 0x41200000u },	/* 500, 10 */
++		{ 0x437a0000u, 0x43fa0000u },	/* 250, 500 */
++		{ 0xbf666666u, 0xbf666666u },	/* -0.9, -0.9 */
++		{ 0x3f666666u, 0xbf666666u },	/* 0.9, -0.9 */
++		{ 0x00000000u, 0x3f666666u },	/* 0, 0.9 */
++	};
++	uint32_t i;
++
++	for (i = 0u; i < 6u; i++) {
++		volatile uint32_t *v = vb + 12u * i;
++
++		v[0] = xy[i][0];
++		v[1] = xy[i][1];
++		v[2] = 0u;
++		v[3] = 0x3f800000u;
++		v[4] = 0x3f800000u;	/* attr1 uv, 32_32_FLOAT */
++		v[5] = 0x3f800000u;
++		v[6] = 0x3c003c00u;	/* attr2 colour, 4x half 1.0 */
++		v[7] = 0x3c003c00u;
++		v[8] = 0u;
++		v[9] = 0u;
++		v[10] = 0u;
++		v[11] = 0u;
++	}
++	flush_dcache64((addr64_t)(cp_pa + CPMEM_SCRATCH + 0x1000u), 0x1000u,
++	    TRUE);
++}
++
++/* Append the probe's state block and its two draws; false if it does not fit. */
++static int
++gg_probe_emit(volatile uint32_t *out, uint32_t *np, uint32_t max, uint32_t tgt,
++    uint32_t vb)
++{
++	static const uint32_t st[] = {
++		0x8820u, 0x7e0u,	/* RB_MRT0_CONTROL: copy, comp mask 0xf */
++		0x8822u, 0x2030u,	/* RB_MRT0_BUF_INFO: 8_8_8_8, linear */
++		0x8823u, 0x20u,		/* RB_MRT0_PITCH: 2048 >> 6 */
++		0x8824u, 0u,		/* RB_MRT0_ARRAY_PITCH */
++		0x8826u, 0u,		/* RB_MRT0_BASE_HI */
++		0x8827u, 0u,		/* RB_MRT0_BASE_GMEM */
++		0x8801u, 0x10u,		/* RB_RENDER_CNTL */
++		0x8800u, 0u,		/* RB_BIN_CONTROL: no binning */
++		0x8871u, 0u,		/* RB_DEPTH_CNTL */
++		0x8e07u, 0x08000000u,	/* RB_CCU_CNTL: a618 sysmem */
++		0x8000u, 0x80u,		/* GRAS_CL_CNTL */
++		0x8090u, 0u,		/* GRAS_SU_CNTL: no cull */
++		0x8010u, 0x43800000u,	/* VPORT0_XOFFSET 256.0 */
++		0x8011u, 0x43800000u,	/* VPORT0_XSCALE 256.0 */
++		0x8012u, 0x43800000u,	/* VPORT0_YOFFSET 256.0 */
++		0x8013u, 0xc3800000u,	/* VPORT0_YSCALE -256.0 */
++		0x8014u, 0u,		/* VPORT0_ZOFFSET */
++		0x8015u, 0x3f800000u,	/* VPORT0_ZSCALE 1.0 */
++		0x80b0u, 0u,		/* scissor TL */
++		0x80b1u, 0x01ff01ffu,	/* scissor BR 511,511 */
++		0x80d0u, 0u,
++		0x80d1u, 0x01ff01ffu,
++		0xa015u, 0u,		/* VFD_FETCH1_BASE_HI */
++		0xa016u, 0x800u,	/* VFD_FETCH1_SIZE */
++		0xa017u, 0x30u,		/* VFD_FETCH1_STRIDE */
++		0xa00eu, 0u,		/* VFD_INDEX_OFFSET */
++		0xa00fu, 0u,		/* VFD_INSTANCE_START */
++		0xa009u, 0u,		/* VFD_ADD_OFFSET */
++		0x9b00u, 0u,		/* PC_PRIMITIVE_CNTL_0 */
++		0x9304u, 0xff00ff00u,	/* VPC_CNTL_0 */
++	};
++	uint32_t need = 2u * (sizeof(st) / 4u) + 20u;
++	uint32_t i;
++
++	if (*np + need > max) {
++		return 0;
++	}
++	for (i = 0u; i < sizeof(st) / 4u; i += 2u) {
++		out[(*np)++] = gg_pkt4(st[i]);
++		out[(*np)++] = st[i + 1u];
++	}
++	/* top half: pixel-space triangle */
++	out[(*np)++] = gg_pkt4(0x8825u);
++	out[(*np)++] = tgt;
++	out[(*np)++] = gg_pkt4(0xa014u);
++	out[(*np)++] = vb;
++	out[(*np)++] = gg_pkt7(0x38u, 3u);
++	out[(*np)++] = 0x104u;		/* DI_PT_TRILIST, VIS_CULL 1 */
++	out[(*np)++] = 1u;		/* instances */
++	out[(*np)++] = 3u;		/* vertices */
++	/* bottom half: NDC triangle */
++	out[(*np)++] = gg_pkt4(0x8825u);
++	out[(*np)++] = tgt + TARGET_PITCH * 128u;
++	out[(*np)++] = gg_pkt4(0xa014u);
++	out[(*np)++] = vb + 3u * 0x30u;
++	out[(*np)++] = gg_pkt7(0x38u, 3u);
++	out[(*np)++] = 0x104u;
++	out[(*np)++] = 1u;
++	out[(*np)++] = 3u;
++	return 1;
++}
++
+ /* 0224: dwords the rewrites may insert in front of one draw (see gg_ins). */
+ static uint32_t
+ gg_draw_extra(void)
+@@ -5374,6 +5542,30 @@
+ 					gg_ndraw_log++;
+ 					printf("GAUGUIN CP: 0228 ccu at=%u"
+ 					    " -> %#x\n", base, w[1]);
++				}
++			}
++			/*
++			 * 0229: append the hand-built probe right after the UMD's
++			 * draw, so the VS/FS/VFD state it loaded is still live.
++			 */
++			base = *np - len;
++			if (gg_probe3d() > 0 && gg_probe_state == 0 &&
++			    out[base + 3u] != 0u) {
++				uint32_t nz0 = 0u, nz1 = 0u;
++
++				gg_probe_ck0[0] = gg_probe_ck(0u, &nz0);
++				gg_probe_ck0[1] = gg_probe_ck(TARGET_PITCH * 128u,
++				    &nz1);
++				gg_probe_vb();
++				if (gg_probe_emit(out, np, max, CP_VA_TARGET,
++				    CP_VA_SCRATCH + 0x1000u)) {
++					gg_probe_state = 1;
++					gg_probe_wait = 2;
++					printf("GAUGUIN CP: 0229 3d armed vb=%#x"
++					    " tgt=%#x ck0=%#x nz0=%u ck1=%#x"
++					    " nz1=%u\n", CP_VA_SCRATCH + 0x1000u,
++					    CP_VA_TARGET, gg_probe_ck0[0], nz0,
++					    gg_probe_ck0[1], nz1);
+ 				}
+ 			}
+ 		}
+@@ -6313,6 +6505,21 @@
+ 	 * are still busy from the previous draw, the pipeline never finished. */
+ 	printf("GAUGUIN CP: 0227 rbbm after=%#x\n",
+ 	    gg_rd(gg.gpu, GR(0x0210u)));
++	/* 0229: the probe's two halves, once a submission has finished. */
++	if (gg_probe_state == 1) {
++		if (gg_probe_wait > 0) {
++			gg_probe_wait--;
++		} else {
++			uint32_t nz0 = 0u, nz1 = 0u;
++			uint32_t c0 = gg_probe_ck(0u, &nz0);
++			uint32_t c1 = gg_probe_ck(TARGET_PITCH * 128u, &nz1);
++
++			gg_probe_state = 2;
++			printf("GAUGUIN CP: 0229 3d done top %#x -> %#x nz=%u"
++			    " bot %#x -> %#x nz=%u\n", gg_probe_ck0[0], c0,
++			    nz0, gg_probe_ck0[1], c1, nz1);
++		}
++	}
+ 	(void)sweet_log_flush_now();
+ }
+ 
