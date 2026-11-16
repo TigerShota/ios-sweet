@@ -1,0 +1,220 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3530,6 +3530,47 @@
+ 	return gg_fetchbind_opt;
+ }
+ 
++/*
++ * 0224: with every descriptor now pointing at legal memory, the next thing that
++ * can stall a six-index draw is the attribute decode itself - the three
++ * VFD_DECODE entries all read fetch buffer 1, so zeroing DECODE_CNT
++ * (VFD_CONTROL_0 bits 13:8, FETCH_CNT stays 3) removes the attribute side while
++ * leaving the draw, the index fetch and the VS in place. Wedge gone = the
++ * decode/fetch path is the stall; wedge unchanged = the VS or the pipeline state
++ * handshake is.
++ */
++static int gg_nodecode_opt = -2;
++static int gg_nodecode_log;
++
++static int
++gg_nodecode(void)
++{
++	if (gg_nodecode_opt == -2) {
++		int v = 0;
++		int got = PE_parse_boot_argn("gauguinnodecode", &v, sizeof(v));
++
++		gg_nodecode_opt = got ? v : 0;
++		printf("GAUGUIN CP: 0224 nodecode parse got=%d val=%d\n", got,
++		    gg_nodecode_opt);
++	}
++	return gg_nodecode_opt;
++}
++
++/* 0224: dwords the rewrites may insert in front of one draw (see gg_ins). */
++static uint32_t
++gg_draw_extra(void)
++{
++	uint32_t n = 0u;
++
++	if (gg_fetchbind() > 0) {
++		n += 24u;
++	}
++	if (gg_nodecode() > 0) {
++		n += 2u;
++	}
++	return n;
++}
++
+ static int
+ gg_boot_int(const char *name, int def, int *slot)
+ {
+@@ -4754,6 +4795,29 @@
+ }
+ 
+ /*
++ * 0224: every descriptor now names a legal address, so dump what the address
++ * holds. A shader whose instructions were never uploaded, or a vertex buffer
++ * that is still all zeroes, stalls the 3D pipeline without any register looking
++ * wrong. gg_flat_rd() resolves through the GEM page cache and returns 0 for a
++ * page with no translation, so an unmapped buffer shows up as zeros plus pa=0.
++ */
++static void
++gg_va_dump(const char *tag, uint32_t va, uint32_t ndw)
++{
++	uint32_t i, k;
++
++	printf("GAUGUIN CP: 0224 va %s addr=%#x pa=%#x\n", tag, va,
++	    (uint32_t)gg_gem_pa(va));
++	for (i = 0; i < ndw; i += 4u) {
++		printf("GAUGUIN CP: 0224 dw %s +%#x:", tag, 4u * i);
++		for (k = 0; k < 4u && i + k < ndw; k++) {
++			printf(" %08x", gg_flat_rd(va, i + k));
++		}
++		printf("\n");
++	}
++}
++
++/*
+  * 0223: insert `nw` one-register type-4 writes (w holds reg/value pairs) in
+  * front of the `len`-dword packet that was just copied to out[*np - len], by
+  * moving that packet up. Every other offset in the copy is unchanged, so the
+@@ -4893,10 +4957,10 @@
+ 			}
+ 		}
+ 		if (inl == 0) {
+-		/* 0223: reserve room for the vertex-fetch writes inserted in
+-		 * front of a draw (three slots, four writes each). */
+-		if (*np + len + 5u + (type == 7u && op == 0x38u &&
+-		    gg_fetchbind() > 0 ? 24u : 0u) > max) {
++		/* 0223/0224: reserve room for the writes inserted in front of a
++		 * draw (vertex fetch binds, attribute-decode count). */
++		if (*np + len + 5u + (type == 7u && op == 0x38u ?
++		    gg_draw_extra() : 0u) > max) {
+ 			return 0;
+ 		}
+ 		for (k = 0; k < len; ++k) {
+@@ -5046,6 +5110,25 @@
+ 					    nw / 2u, va);
+ 				}
+ 			}
++			/*
++			 * 0224: see gg_nodecode(). The draw, the index fetch and
++			 * the VS stay; only the attribute decoders are switched
++			 * off (VFD_CONTROL_0 = FETCH_CNT 3 / DECODE_CNT 0).
++			 */
++			base = *np - len;	/* 0223 may have moved the packet */
++			if (gg_nodecode() > 0 && plen == 7u &&
++			    out[base + 7u] != 0u) {
++				uint32_t w[2], at2 = base + 2u;
++
++				w[0] = 0xa000u;
++				w[1] = 0x3u;
++				if (gg_ins(out, np, len, w, 1u) &&
++				    gg_nodecode_log < 4) {
++					gg_nodecode_log++;
++					printf("GAUGUIN CP: 0224 nodecode"
++					    " at=%u\n", at2);
++				}
++			}
+ 		}
+ 		at = *np;
+ 		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+@@ -5485,11 +5568,51 @@
+ 	}
+ }
+ 
++/*
++ * 0224: the indices the draw will actually read, plus the worst-case vertex
++ * address they produce (VFD_FETCH[1].BASE + index * STRIDE). If that address
++ * leaves the fetch buffer's allocation or has no translation, the VFD waits for
++ * a read that never completes - and the draw is only six indices, so a single
++ * bad index is enough.
++ */
++static void
++gg_idx_data(uint32_t fence, uint32_t base, uint32_t first, uint32_t num)
++{
++	uint32_t i, v, mx = 0u, fb, stride, flo = 0u, fhi = 0u;
++	uint64_t ea;
++
++	/* draw0.INDEX_SIZE reads 1 (16-bit) in every capture */
++	printf("GAUGUIN CP: 0224 idx fence=%#x base=%#x first=%u n=%u:",
++	    fence, base, first, num);
++	for (i = 0u; i < num && i < 256u; i++) {
++		uint32_t w = gg_flat_rd(base, (first + i) / 2u);
++
++		v = ((first + i) & 1u) != 0u ? (w >> 16) : (w & 0xffffu);
++		if (v > mx) {
++			mx = v;
++		}
++		if (i < 8u) {
++			printf(" %u", v);
++		}
++	}
++	printf("\n");
++	fb = gg_rd(gg.gpu, GR(0xa014u));	/* VFD_FETCH[1].BASE_LO */
++	stride = gg_rd(gg.gpu, GR(0xa017u));	/* VFD_FETCH[1].STRIDE */
++	gg_obj_span(fb, &flo, &fhi);
++	ea = (uint64_t)fb + (uint64_t)mx * (uint64_t)stride;
++	printf("GAUGUIN CP: 0224 vtx max_idx=%u fetch1=%#x stride=%u ea=%#llx"
++	    " gem=%u span=%#x..%#x%s\n", mx, fb, stride,
++	    (unsigned long long)ea, gg_gem_pa(ea) != 0u ? 1u : 0u, flo, fhi,
++	    (ea < (uint64_t)flo || (fhi != 0u && ea >= (uint64_t)fhi)) ?
++	    " OUTSIDE" : "");
++}
++
+ static void
+ gg_idx_report(uint32_t fence, volatile uint32_t *cp, uint32_t n)
+ {
+ 	static uint32_t seen[16];
+ 	static uint32_t nseen;
++	static uint32_t gg_idxd_n;	/* 0224: index-content dumps printed */
+ 	uint32_t o = 0u;
+ 
+ 	gg_draw_saw = 0;
+@@ -5574,6 +5697,16 @@
+ 				    gg_gem_pa(base) != 0u ? 1u : 0u, lo, hi,
+ 				    (int)(base - lo),
+ 				    (lo != 0u && base < lo) ? " OUTSIDE" : "");
++				/* 0224: first few distinct buffers, once the VFD
++				 * block is actually programmed (the first frames
++				 * are still the pre-init garbage that v177's
++				 * fence 0x6000003 dump shows). */
++				if (gg_idxd_n < 4u &&
++				    gg_rd(gg.gpu, GR(0xa000u)) != 0u) {
++					gg_idxd_n++;
++					gg_idx_data(fence, base, cp[o + 4u],
++					    cp[o + 3u]);
++				}
+ 			}
+ 		}
+ 		o += 1u + plen;
+@@ -5848,6 +5981,13 @@
+ 		{ 0xa81du, "SP_VS_OBJ_START_HI" },
+ 		{ 0xa824u, "SP_VS_INSTRLEN" },
+ 		{ 0xa980u, "SP_FS_CTRL_REG0" },
++		{ 0xa983u, "SP_FS_OBJ_START_LO" },
++		{ 0xa984u, "SP_FS_OBJ_START_HI" },
++		{ 0xab05u, "SP_FS_INSTRLEN" },
++		{ 0x8005u, "GRAS_CNTL" },
++		{ 0x9304u, "VPC_CNTL_0" },
++		{ 0x9804u, "PC_MODE_CNTL" },
++		{ 0x9b00u, "PC_PRIMITIVE_CNTL_0" },
+ 	};
+ 	uint32_t i;
+ 
+@@ -5856,6 +5996,14 @@
+ 		printf("GAUGUIN CP: 0223 reg %s=%#x\n", regs[i].name,
+ 		    gg_rd(gg.gpu, GR(regs[i].off)));
+ 	}
++	/*
++	 * 0224: the code and the data these descriptors point at. A VS that was
++	 * never uploaded, or a vertex buffer still full of zeroes, stalls the
++	 * pipeline with every register above looking correct.
++	 */
++	gg_va_dump("vs", gg_rd(gg.gpu, GR(0xa81cu)), 16u);
++	gg_va_dump("fs", gg_rd(gg.gpu, GR(0xa983u)), 16u);
++	gg_va_dump("vfetch1", gg_rd(gg.gpu, GR(0xa014u)), 8u);
+ 	(void)sweet_log_flush_now();
+ }
+ 
