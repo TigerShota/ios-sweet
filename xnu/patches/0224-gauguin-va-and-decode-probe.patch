@@ -94,7 +94,35 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  			return 0;
  		}
  		for (k = 0; k < len; ++k) {
-@@ -5046,6 +5110,25 @@
+@@ -5010,15 +5074,21 @@
+ 				}
+ 			}
+ 			/*
+-			 * 0223: see gg_fetchbind(). Only started draws with a
+-			 * non-zero index count are touched (a zero count never
+-			 * fetches a vertex, which is why it never wedges).
++			 * 0223/0224: see gg_fetchbind(). Both draw forms are
++			 * covered: v177's dying packet is the non-indexed
++			 * `n=3` form (`0x188 0x1 0x2`, rect list, two
++			 * vertices), so gating this on the 7-dword form is
++			 * why v178's forced binds never reached it. payload[2]
++			 * is num_indices in both forms, and a zero count never
++			 * fetches a vertex.
+ 			 */
+-			if (gg_fetchbind() > 0 && plen == 7u && len <= GG_INS_MAX &&
+-			    out[base + 7u] != 0u) {
++			if (gg_fetchbind() > 0 && len <= GG_INS_MAX &&
++			    out[base + 3u] != 0u) {
+ 				uint32_t w[2u * 12u], nw = 0u, i, va, ins;
+ 
+-				va = out[base + 5u];
++				/* 7-dword form: its index buffer; otherwise the
++				 * mark window, which the CP already writes to. */
++				va = plen == 7u ? out[base + 5u] : CP_VA_MARK;
+ 				for (i = 0; i < 3u; i++) {
+ 					uint32_t f = 0xa010u + 4u * i;
+ 					uint32_t fb = gg_rd(gg.gpu, GR(f));
+@@ -5046,6 +5116,24 @@
  					    nw / 2u, va);
  				}
  			}
@@ -104,8 +132,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +			 * off (VFD_CONTROL_0 = FETCH_CNT 3 / DECODE_CNT 0).
 +			 */
 +			base = *np - len;	/* 0223 may have moved the packet */
-+			if (gg_nodecode() > 0 && plen == 7u &&
-+			    out[base + 7u] != 0u) {
++			if (gg_nodecode() > 0 && out[base + 3u] != 0u) {
 +				uint32_t w[2], at2 = base + 2u;
 +
 +				w[0] = 0xa000u;
@@ -120,7 +147,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  		}
  		at = *np;
  		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
-@@ -5485,11 +5568,51 @@
+@@ -5485,11 +5573,51 @@
  	}
  }
  
@@ -172,7 +199,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  	uint32_t o = 0u;
  
  	gg_draw_saw = 0;
-@@ -5574,6 +5697,16 @@
+@@ -5574,6 +5702,16 @@
  				    gg_gem_pa(base) != 0u ? 1u : 0u, lo, hi,
  				    (int)(base - lo),
  				    (lo != 0u && base < lo) ? " OUTSIDE" : "");
@@ -189,7 +216,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  			}
  		}
  		o += 1u + plen;
-@@ -5848,6 +5981,13 @@
+@@ -5848,6 +5986,13 @@
  		{ 0xa81du, "SP_VS_OBJ_START_HI" },
  		{ 0xa824u, "SP_VS_INSTRLEN" },
  		{ 0xa980u, "SP_FS_CTRL_REG0" },
@@ -203,7 +230,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  	};
  	uint32_t i;
  
-@@ -5856,6 +5996,14 @@
+@@ -5856,6 +6001,14 @@
  		printf("GAUGUIN CP: 0223 reg %s=%#x\n", regs[i].name,
  		    gg_rd(gg.gpu, GR(regs[i].off)));
  	}
