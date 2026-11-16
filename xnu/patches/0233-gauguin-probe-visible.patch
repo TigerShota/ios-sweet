@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3726,6 +3726,7 @@
+  */
+ static int gg_probe3d_opt = -2;
+ static int gg_probe_state;		/* 0 idle, 1 armed, 2 reported */
++static uint32_t gg_probe_cand;		/* 0233: draws inspected for the probe */
+ static int gg_probe_wait;		/* submissions to let finish */
+ static uint32_t gg_probe_ck0[2];
+ static vm_offset_t gg_probe_map;	/* uncached view of the target */
+@@ -5655,10 +5656,17 @@
+ 			/*
+ 			 * 0229/0232: the probe goes *in front of* the UMD's draw, so
+ 			 * it runs before whatever stalls the ME. Boot with
+-			 * gauguinprobe3d=1 only - no fetchbind - so the annotated
+-			 * copy path (0x4010xxxx) stays in use.
++			 * gauguinflat=1 gauguinmark=1 gauguinclr=4 gauguinprobe3d=1.
+ 			 */
+ 			base = *np - len;
++			/* 0233: a missed match used to be silent - say why. */
++			if (gg_probe3d() > 0 && gg_probe_cand < 8u) {
++				gg_probe_cand++;
++				printf("GAUGUIN CP: 0229 cand off=%u plen=%u"
++				    " cnt=%#x first=%#x state=%d\n", base, len,
++				    out[base + 3u], out[base + 6u],
++				    gg_probe_state);
++			}
+ 			if (gg_probe3d() > 0 && gg_probe_state == 0 &&
+ 			    len <= GG_INS_MAX && out[base + 3u] != 0u) {
+ 				uint32_t pay[128];
+@@ -7220,6 +7228,9 @@
+ 		    " window=%uK max=%u ibs=%u\n", gg_mark_opt, gg_clr_opt,
+ 		    gg_flat_opt, (unsigned long long)mark_pa,
+ 		    CPMEM_MARK_SIZE >> 10, GG_MARK_MAX, GG_MARK_IBS);
++		/* 0233: the probe installs into the annotated copy, so say out
++		 * loud whether it is armed - v192 printed nothing at all. */
++		printf("GAUGUIN CP: 0229 probe3d arg=%d\n", gg_probe3d());
+ 	}
+ 	/*
+ 	 * 0187: annotate whatever fits instead of all-or-nothing. The first
+@@ -7228,7 +7239,7 @@
+ 	 * below runs over ai[] - annotated copy or raw IB - and edits the
+ 	 * stream the CP actually fetches.
+ 	 */
+-	if (gg_mark_opt && mark_mem != 0) {
++	if ((gg_mark_opt || gg_probe3d() > 0) && mark_mem != 0) {
+ 		uint32_t moff = GG_MARK_IB;
+ 		int why = 0, used = 0;
+ 
