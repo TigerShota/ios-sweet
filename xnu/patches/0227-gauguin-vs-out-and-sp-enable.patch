@@ -1,0 +1,139 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3557,6 +3557,46 @@
+ 	return gg_nodecode_opt;
+ }
+ 
++/*
++ * 0227: v184 swapped RECTLIST for POINTLIST and nothing changed, so no primitive
++ * reaches the rasteriser at all. `SP_VS_CONFIG` bit 8 is `ENABLED` (mesa sets it
++ * for every stage, fd6_program.c:250) and `PC_VS_OUT_CNTL` carries
++ * `STRIDE_IN_VPC` - the number of vec4s the VS exports including gl_Position -
++ * so a zero there means the VS has no position for the rasteriser. Both are read
++ * on the healthy path; gauguinspsetup=1 forces the two ENABLED bits and
++ * gauguinvout=N forces PC_VS_OUT_CNTL, in front of every started draw.
++ */
++static int gg_spsetup_opt = -2;
++static int gg_vout_opt = -2;
++
++static int
++gg_spsetup(void)
++{
++	if (gg_spsetup_opt == -2) {
++		int v = 0;
++		int got = PE_parse_boot_argn("gauguinspsetup", &v, sizeof(v));
++
++		gg_spsetup_opt = got ? v : 0;
++		printf("GAUGUIN CP: 0227 spsetup parse got=%d val=%d\n", got,
++		    gg_spsetup_opt);
++	}
++	return gg_spsetup_opt;
++}
++
++static int
++gg_vout(void)
++{
++	if (gg_vout_opt == -2) {
++		int v = -1;
++		int got = PE_parse_boot_argn("gauguinvout", &v, sizeof(v));
++
++		gg_vout_opt = got ? v : -1;
++		printf("GAUGUIN CP: 0227 vout parse got=%d val=%d\n", got,
++		    gg_vout_opt);
++	}
++	return gg_vout_opt;
++}
++
+ /* 0224: dwords the rewrites may insert in front of one draw (see gg_ins). */
+ static uint32_t
+ gg_draw_extra(void)
+@@ -3567,6 +3607,12 @@
+ 		n += 24u;
+ 	}
+ 	if (gg_nodecode() > 0) {
++		n += 2u;
++	}
++	if (gg_spsetup() > 0) {
++		n += 4u;
++	}
++	if (gg_vout() >= 0) {
+ 		n += 2u;
+ 	}
+ 	return n;
+@@ -5198,6 +5244,40 @@
+ 					    was, out[base + 1u]);
+ 				}
+ 			}
++			/* 0227: see gg_spsetup(). Only the ENABLED bit is
++			 * forced, the IBO/TEX/SAMP counts are left alone. */
++			base = *np - len;
++			if (gg_spsetup() > 0 && out[base + 3u] != 0u) {
++				uint32_t w[4];
++
++				w[0] = 0xa823u;
++				w[1] = gg_rd(gg.gpu, GR(0xa823u)) | 0x100u;
++				w[2] = 0xab04u;
++				w[3] = gg_rd(gg.gpu, GR(0xab04u)) | 0x100u;
++				if (gg_ins(out, np, len, w, 2u)) {
++					if (gg_ndraw_log < 16) {
++						gg_ndraw_log++;
++						printf("GAUGUIN CP: 0227 spsetup"
++						    " at=%u vs=%#x fs=%#x\n",
++						    base, w[1], w[3]);
++					}
++				}
++			}
++			/* 0227: see gg_vout(). PC_VS_OUT_CNTL decides how many
++			 * vec4s the VS exports (gl_Position included). */
++			base = *np - len;
++			if (gg_vout() >= 0 && out[base + 3u] != 0u) {
++				uint32_t w[2];
++
++				w[0] = 0x9b01u;
++				w[1] = (uint32_t)gg_vout();
++				if (gg_ins(out, np, len, w, 1u) &&
++				    gg_ndraw_log < 16) {
++					gg_ndraw_log++;
++					printf("GAUGUIN CP: 0227 vout at=%u"
++					    " -> %#x\n", base, w[1]);
++				}
++			}
+ 		}
+ 		at = *np;
+ 		out[(*np)++] = gg_pkt7(CP_EVENT_WRITE, 4u);
+@@ -6054,6 +6134,23 @@
+ 		{ 0xa984u, "SP_FS_OBJ_START_HI" },
+ 		{ 0xab05u, "SP_FS_INSTRLEN" },
+ 		{ 0x8005u, "GRAS_CNTL" },
++		/*
++		 * 0227: the VS->raster handshake. SP_VS_CONFIG bit 8 is ENABLED,
++		 * PC_VS_OUT_CNTL.STRIDE_IN_VPC is how many vec4s the VS exports
++		 * (gl_Position included) and SP_VS_OUT/SP_VS_VPC_DST map the
++		 * varyings; a zero in any of them means the rasteriser has no
++		 * position to work with.
++		 */
++		{ 0xa823u, "SP_VS_CONFIG" },
++		{ 0xa802u, "SP_VS_PRIMITIVE_CNTL" },
++		{ 0xa803u, "SP_VS_OUT0" },
++		{ 0xa804u, "SP_VS_OUT1" },
++		{ 0xa813u, "SP_VS_VPC_DST0" },
++		{ 0xab04u, "SP_FS_CONFIG" },
++		{ 0x9b01u, "PC_VS_OUT_CNTL" },
++		{ 0x9b06u, "PC_PRIMITIVE_CNTL_6" },
++		{ 0x0210u, "RBBM_STATUS" },
++		{ 0x0211u, "RBBM_STATUS1" },
+ 		{ 0x8821u, "RB_MRT0_BLEND_CNTL" },
+ 		{ 0x8824u, "RB_MRT0_ARRAY_PITCH" },
+ 		{ 0x8827u, "RB_MRT0_BASE_GMEM" },
+@@ -6107,6 +6204,10 @@
+ 	printf("GAUGUIN CP: 0225 mrt base=%#x pitch=%u\n", mrt, pitch);
+ 	gg_va_dump("mrt0", mrt, 8u);
+ 	gg_va_dump("mrt0_mid", mrt + pitch * 100u, 4u);
++	/* 0227: the same status read *after* the target dump - if the 3D blocks
++	 * are still busy from the previous draw, the pipeline never finished. */
++	printf("GAUGUIN CP: 0227 rbbm after=%#x\n",
++	    gg_rd(gg.gpu, GR(0x0210u)));
+ 	(void)sweet_log_flush_now();
+ }
+ 
