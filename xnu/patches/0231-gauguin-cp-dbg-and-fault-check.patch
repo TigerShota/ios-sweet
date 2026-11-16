@@ -1,0 +1,67 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -29,6 +29,7 @@
+ extern void gauguin_inject_install(void);
+ /* 0215: SMMU FSR probe, called from bring-up stages that run earlier. */
+ static void gg_smmu_probe(const char *tag);
++static void gg_cp_dbg(const char *tag);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ extern void pmap_set_cache_attributes(ppnum_t, unsigned int);
+ extern kern_return_t pmap_enter(pmap_t, vm_map_offset_t, ppnum_t, vm_prot_t,
+@@ -3172,6 +3173,7 @@
+ 		}
+ 		(void)sweet_log_flush_now();
+ 	}
++	gg_cp_dbg("started");
+ }
+ 
+ static void
+@@ -3483,6 +3485,33 @@
+ 		    gg_rd(cb, SMMU_CB_FAR), gg_rd(cb, SMMU_CB_FSYNR0),
+ 		    gg_rd(s, SMMU_GFSR), gg_rd(cb, SMMU_CB_SCTLR));
+ 	}
++	(void)sweet_log_flush_now();
++}
++
++/*
++ * 0231: two read-only questions left. (a) Did the 0229 probe's own memory
++ * accesses fault? The probe read vertices and wrote its target through VAs that
++ * only the CP's page tables are known to cover, so an SMMU `far` naming one of
++ * them would void that experiment and move the probe into GEM memory. (b) Where
++ * does the front end sit when a draw never completes - ROQ occupancy, SQE status
++ * and the interrupt/protect latches separate "the ME is waiting on the pipeline"
++ * from "the ME never dispatched the draw".
++ */
++static void
++gg_cp_dbg(const char *tag)
++{
++	printf("GAUGUIN CP: 0231 cp %s st=%#x st1=%#x intr=%#x prot=%#x"
++	    " roq=%#x avail=%#x sqe=%#x/%#x rbbm=%#x clk=%#x\n", tag,
++	    gg_rd(gg.gpu, GR(CP_SQE_CNTL_DW)),
++	    gg_rd(gg.gpu, GR(CP_STATUS_1_DW)),
++	    gg_rd(gg.gpu, GR(CP_INTERRUPT_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(CP_PROTECT_STATUS_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_RB_STAT_DW)),
++	    gg_rd(gg.gpu, GR(CP_ROQ_AVAIL_RB_DW)),
++	    gg_rd(gg.gpu, GR(CP_SQE_STAT_ADDR_DW)),
++	    gg_rd(gg.gpu, GR(CP_SQE_STAT_DATA_DW)),
++	    gg_rd(gg.gpu, GR(0x0210u)),
++	    gg_rd(gg.gpu, GR(0x00aeu)));
+ 	(void)sweet_log_flush_now();
+ }
+ 
+@@ -6562,8 +6591,11 @@
+ 			printf("GAUGUIN CP: 0229 3d done top %#x -> %#x nz=%u"
+ 			    " bot %#x -> %#x nz=%u\n", gg_probe_ck0[0], c0,
+ 			    nz0, gg_probe_ck0[1], c1, nz1);
+-		}
+-	}
++			/* 0231: did the probe's own accesses fault? */
++			gg_smmu_probe("probe3d");
++		}
++	}
++	gg_cp_dbg("draw");
+ 	(void)sweet_log_flush_now();
+ }
+ 
