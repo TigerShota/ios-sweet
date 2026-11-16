@@ -1,12 +1,14 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -3813,10 +3813,39 @@
+@@ -3813,10 +3813,41 @@
  	    TRUE);
  }
  
 -/* Append the probe's state block and its two draws; false if it does not fit. */
 +/* 0232: same move-the-packet trick as gg_ins, for a payload we built. */
++#define GG_INS_MAX 8u
++
  static int
 -gg_probe_emit(volatile uint32_t *out, uint32_t *np, uint32_t max, uint32_t tgt,
 -    uint32_t vb)
@@ -44,7 +46,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  {
  	static const uint32_t st[] = {
  		0x8820u, 0x7e0u,	/* RB_MRT0_CONTROL: copy, comp mask 0xf */
-@@ -3851,34 +3880,34 @@
+@@ -3851,34 +3882,34 @@
  		0x9304u, 0xff00ff00u,	/* VPC_CNTL_0 */
  	};
  	uint32_t need = 2u * (sizeof(st) / 4u) + 20u;
@@ -102,7 +104,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  }
  
  /* 0224: dwords the rewrites may insert in front of one draw (see gg_ins). */
-@@ -3904,6 +3933,10 @@
+@@ -3904,6 +3935,10 @@
  	}
  	if (gg_ccu() > 0) {
  		n += 2u;
@@ -113,7 +115,16 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  	}
  	return n;
  }
-@@ -5618,27 +5651,34 @@
+@@ -5186,7 +5221,7 @@
+  * moving that packet up. Every other offset in the copy is unchanged, so the
+  * annotation stamps still name the same positions.
+  */
+-#define GG_INS_MAX 8u
++/* 0232: GG_INS_MAX moved above gg_ins_raw(), which needs it too. */
+ 
+ static int
+ gg_ins(volatile uint32_t *out, uint32_t *np, uint32_t len, const uint32_t *w,
+@@ -5618,27 +5653,34 @@
  				}
  			}
  			/*
