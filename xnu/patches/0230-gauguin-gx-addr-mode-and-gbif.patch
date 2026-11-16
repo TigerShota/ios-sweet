@@ -1,0 +1,54 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3128,6 +3128,50 @@
+ 	 * probe have run, before step22 or the panel blit.
+ 	 */
+ 	gg_smmu_probe("cp-started");
++	/*
++	 * 0230: every 3D block shares one thing this driver has never written - its
++	 * per-block address mode, plus the GBIF/QoS plumbing that upstream's
++	 * a6xx_hw_init() sets up (drivers/gpu/drm/msm/adreno/a6xx_gpu.c:1209-1245).
++	 * A 3D block left in the other address mode issues memory reads the SMMU
++	 * never answers, which is exactly "the CP keeps retiring, the 2D blit
++	 * works, and every 3D draw silently does nothing". gauguingxinit=1 applies
++	 * the upstream values; the reads below show what they were.
++	 */
++	{
++		static const struct {
++			uint32_t off;
++			const char *name;
++		} gx[] = {
++			{ 0x0842u, "CP_ADDR_MODE" },
++			{ 0x8601u, "GRAS_ADDR_MODE" },
++			{ 0x8e05u, "RB_ADDR_MODE" },
++			{ 0x9e01u, "PC_ADDR_MODE" },
++			{ 0xa601u, "VFD_ADDR_MODE" },
++			{ 0x9601u, "VPC_ADDR_MODE" },
++			{ 0xae01u, "SP_ADDR_MODE" },
++			{ 0xb601u, "TPL1_ADDR_MODE" },
++			{ 0xbe05u, "HLSQ_ADDR_MODE" },
++			{ 0x3c45u, "GBIF_HALT" },
++			{ 0x0010u, "VBIF_QOS" },
++		};
++		uint32_t i;
++		int gxopt = 0;
++
++		if (PE_parse_boot_argn("gauguingxinit", &gxopt, sizeof(gxopt)) != 0 &&
++		    gxopt > 0) {
++			for (i = 0u; i < 9u; i++) {
++				gg_wr(gg.gpu, GR(gx[i].off), 1u);
++			}
++			gg_wr(gg.gpu, GR(0x3c45u), 0u);		/* GBIF_HALT */
++			gg_wr(gg.gpu, GR(0x0010u), 3u);		/* VBIF client QoS */
++			printf("GAUGUIN CP: 0230 gxinit applied\n");
++		}
++		for (i = 0u; i < sizeof(gx) / sizeof(gx[0]); i++) {
++			printf("GAUGUIN CP: 0230 gx %s=%#x\n", gx[i].name,
++			    gg_rd(gg.gpu, GR(gx[i].off)));
++		}
++		(void)sweet_log_flush_now();
++	}
+ }
+ 
+ static void
