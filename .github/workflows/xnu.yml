@@ -40,7 +40,7 @@ jobs:
     # macos-15 ships Xcode 16.x only; its iig emits IORPC.kernelContent, which
     # stock xnu-8796 lacks -> patches/0086 back-ports the field + kernel
     # plumbing. (macos-14 / Xcode 15 was retired by GitHub on 2026-11-02.)
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
