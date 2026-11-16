@@ -1,7 +1,15 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -5092,28 +5092,50 @@
+@@ -45,6 +45,7 @@
+ static void gauguin_gem_selftest(void);
+ static bool gg_gem_l2(uint64_t iova, uint32_t * tbl);
+ static uint64_t gg_gem_pa(uint64_t iova);
++static void gg_obj_span(uint32_t v, uint32_t *lo, uint32_t *hi);
+ void gauguin_gpu_init(void);
+ 
+ #define GPU_PA       0x03d00000u
+@@ -5092,28 +5093,50 @@
  				for (i = 0; i < 3u; i++) {
  					uint32_t f = 0xa010u + 4u * i;
  					uint32_t fb = gg_rd(gg.gpu, GR(f));
@@ -60,7 +68,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  				}
  			}
  			/*
-@@ -5993,8 +6015,26 @@
+@@ -5993,8 +6016,26 @@
  		{ 0x9304u, "VPC_CNTL_0" },
  		{ 0x9804u, "PC_MODE_CNTL" },
  		{ 0x9b00u, "PC_PRIMITIVE_CNTL_0" },
@@ -88,7 +96,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  
  	printf("GAUGUIN CP: 0223 regs fence=%#x\n", fence);
  	for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
-@@ -6009,6 +6049,17 @@
+@@ -6009,6 +6050,17 @@
  	gg_va_dump("vs", gg_rd(gg.gpu, GR(0xa81cu)), 16u);
  	gg_va_dump("fs", gg_rd(gg.gpu, GR(0xa983u)), 16u);
  	gg_va_dump("vfetch1", gg_rd(gg.gpu, GR(0xa014u)), 8u);
