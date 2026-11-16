@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -3813,10 +3813,38 @@
+@@ -3813,10 +3813,39 @@
  	    TRUE);
  }
  
@@ -36,14 +36,15 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 + * 0232: build the probe into a buffer so it can be inserted *in front of* the
 + * UMD's draw. Appended behind it (0229) the probe only ran when that draw
 + * completed, and the draw is exactly what stalls the ME. Returns 0 when it would
-+ * not fit.
++ * not fit. Note the probe is only armed for the first started draw of the boot,
++ * so the copy path (and therefore 0215/0222/0223) stays the annotated one.
 + */
 +static uint32_t
 +gg_probe_emit(uint32_t *out, uint32_t max, uint32_t tgt, uint32_t vb)
  {
  	static const uint32_t st[] = {
  		0x8820u, 0x7e0u,	/* RB_MRT0_CONTROL: copy, comp mask 0xf */
-@@ -3851,34 +3879,34 @@
+@@ -3851,34 +3880,34 @@
  		0x9304u, 0xff00ff00u,	/* VPC_CNTL_0 */
  	};
  	uint32_t need = 2u * (sizeof(st) / 4u) + 20u;
@@ -101,7 +102,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  }
  
  /* 0224: dwords the rewrites may insert in front of one draw (see gg_ins). */
-@@ -3904,6 +3932,10 @@
+@@ -3904,6 +3933,10 @@
  	}
  	if (gg_ccu() > 0) {
  		n += 2u;
@@ -112,7 +113,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  	}
  	return n;
  }
-@@ -5618,27 +5650,34 @@
+@@ -5618,27 +5651,34 @@
  				}
  			}
  			/*
