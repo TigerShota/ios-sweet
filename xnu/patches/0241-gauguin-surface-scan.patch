@@ -1,0 +1,49 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5285,6 +5285,33 @@
+ 		}
+ 		printf("\n");
+ 	}
++}
++
++/*
++ * 0241: count what is actually inside a GPU VA. v200 painted both surfaces six
++ * times and still saw zeros at the next present, so the question is no longer
++ * "did the draw run" but "was the triangle ever in that buffer, and who removed
++ * it afterwards".
++ */
++static void
++gg_va_scan(const char *tag, uint32_t va, uint32_t ndw)
++{
++	uint32_t i, nz = 0u, first = 0u, fv = 0u;
++
++	for (i = 0u; i < ndw; i++) {
++		uint32_t v = gg_flat_rd(va, i);
++
++		if (v != 0u) {
++			if (nz == 0u) {
++				first = 4u * i;
++				fv = v;
++			}
++			nz++;
++		}
++	}
++	printf("GAUGUIN CP: 0241 scan %s va=%#x nz=%u first=%#x val=%#x\n",
++	    tag, va, nz, first, fv);
++	(void)sweet_log_flush_now();
+ }
+ 
+ /*
+@@ -6738,6 +6765,11 @@
+ 			    nz0, gg_probe_ck0[1], c1, nz1);
+ 			/* 0231: did the probe's own accesses fault? (prints 0215) */
+ 			gg_smmu_probe("probe3d");
++			/* 0241: is the triangle in the surfaces we painted? */
++			if (gg_probe3d() >= 3) {
++				gg_va_scan("id3", 0x52bca000u, 0x4000u);
++				gg_va_scan("id2", 0x51252000u, 0x4000u);
++			}
+ 			/*
+ 			 * 0235: read back what the probe wrote into the 3D blocks. If
+ 			 * these are Apple's values rather than ours, our CP_REG_WRITE
