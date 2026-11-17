@@ -1,0 +1,75 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3795,13 +3795,25 @@
+ 		{ 0x3f666666u, 0xbf666666u },	/* 0.9, -0.9 */
+ 		{ 0x00000000u, 0x3f666666u },	/* 0, 0.9 */
+ 	};
++	/* 0238: mode 3 paints the real surface, so the triangle has to cover all
++	 * of it - the present check samples the corners, which the small probe
++	 * triangle never reaches. */
++	static const uint32_t full[6][2] = {
++		{ 0xbf800000u, 0xbf800000u },	/* -1, -1 */
++		{ 0x40400000u, 0xbf800000u },	/* 3, -1 */
++		{ 0xbf800000u, 0x40400000u },	/* -1, 3 */
++		{ 0xbf800000u, 0xbf800000u },
++		{ 0x40400000u, 0xbf800000u },
++		{ 0xbf800000u, 0x40400000u },
++	};
++	const uint32_t (*p)[2] = (gg_probe3d() == 3) ? full : xy;
+ 	uint32_t i;
+ 
+ 	for (i = 0u; i < 6u; i++) {
+ 		volatile uint32_t *v = vb + 12u * i;
+ 
+-		v[0] = xy[i][0];
+-		v[1] = xy[i][1];
++		v[0] = p[i][0];
++		v[1] = p[i][1];
+ 		v[2] = 0u;
+ 		v[3] = 0x3f800000u;
+ 		v[4] = 0x3f800000u;	/* attr1 uv, 32_32_FLOAT */
+@@ -3813,6 +3825,23 @@
+ 		v[10] = 0u;
+ 		v[11] = 0u;
+ 	}
++	/*
++	 * 0238: clear the region the scan reads. v197 reported 41k non-zero
++	 * dwords there in mode 3, where the probe writes somewhere else
++	 * entirely - so that region holds somebody else's data and v196's
++	 * reading proved nothing until it is cleared first.
++	 */
++	{
++		volatile uint32_t *z =
++		    (volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x2000u);
++		uint32_t k;
++
++		for (k = 0u; k < 0x40000u / 4u; k++) {
++			z[k] = 0u;
++		}
++	}
++	flush_dcache64((addr64_t)(cp_pa + CPMEM_SCRATCH + 0x2000u), 0x40000u,
++	    TRUE);
+ 	flush_dcache64((addr64_t)(cp_pa + CPMEM_SCRATCH + 0x1000u), 0x1000u,
+ 	    TRUE);
+ }
+@@ -3894,6 +3923,19 @@
+ 	for (i = 0u; i < sizeof(st) / 4u; i += 2u) {
+ 		out[n++] = gg_pkt4(st[i]);
+ 		out[n++] = st[i + 1u];
++	}
++	/*
++	 * 0238: mode 3 targets the real 1125x2436 surface, so use its viewport.
++	 */
++	if (gg_probe3d() == 3) {
++		out[n++] = gg_pkt4(0x8010u);
++		out[n++] = 0x440ca000u;		/* VPORT0_XOFFSET 562.5 */
++		out[n++] = gg_pkt4(0x8011u);
++		out[n++] = 0x440ca000u;		/* VPORT0_XSCALE */
++		out[n++] = gg_pkt4(0x8012u);
++		out[n++] = 0x44984000u;		/* VPORT0_YOFFSET 1218 */
++		out[n++] = gg_pkt4(0x8013u);
++		out[n++] = 0xc4984000u;		/* VPORT0_YSCALE -1218 */
+ 	}
+ 	/*
+ 	 * top half: pixel-space triangle. 0235: gauguinprobe3d=2 points this
