@@ -1,0 +1,75 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3737,6 +3737,10 @@
+  * touches must stay inside CPMEM_SIZE.
+  */
+ #define GG_PROBE_SCAN 0xA000u
++/* 0240: re-arm for the first few submissions so a paint always precedes a
++ * present, and in mode 4 fill BOTH surfaces (id 2 and id 3). */
++#define GG_PROBE_REARM 6u
++static uint32_t gg_probe_rearm;
+ static int gg_probe_wait;		/* submissions to let finish */
+ static uint32_t gg_probe_ck0[2];
+ static vm_offset_t gg_probe_map;	/* uncached view of the target */
+@@ -3813,7 +3817,7 @@
+ 		{ 0x40400000u, 0xbf800000u },
+ 		{ 0xbf800000u, 0x40400000u },
+ 	};
+-	const uint32_t (*p)[2] = (gg_probe3d() == 3) ? full : xy;
++	const uint32_t (*p)[2] = (gg_probe3d() >= 3) ? full : xy;
+ 	uint32_t i;
+ 
+ 	for (i = 0u; i < 6u; i++) {
+@@ -3934,7 +3938,7 @@
+ 	/*
+ 	 * 0238: mode 3 targets the real 1125x2436 surface, so use its viewport.
+ 	 */
+-	if (gg_probe3d() == 3) {
++	if (gg_probe3d() >= 3) {
+ 		out[n++] = gg_pkt4(0x8010u);
+ 		out[n++] = 0x440ca000u;		/* VPORT0_XOFFSET 562.5 */
+ 		out[n++] = gg_pkt4(0x8011u);
+@@ -3967,6 +3971,16 @@
+ 	out[n++] = 0x104u;
+ 	out[n++] = 1u;
+ 	out[n++] = 3u;
++	/* 0240: fill the other presented surface as well, so whichever one the
++	 * next swap shows carries our triangle. */
++	if (gg_probe3d() == 4) {
++		out[n++] = gg_pkt4(0x8825u);
++		out[n++] = (tgt == 0x52bca000u) ? 0x51252000u : 0x52bca000u;
++		out[n++] = gg_pkt7(0x38u, 3u);
++		out[n++] = 0x104u;
++		out[n++] = 1u;
++		out[n++] = 3u;
++	}
+ 	return n;
+ }
+ 
+@@ -5730,7 +5744,7 @@
+ 				    out[base + 6u], (int)(max - *np), GG_PROBE_DW,
+ 				    gg_probe_state);
+ 			}
+-			if (gg_probe3d() > 0 && gg_probe_state == 0 &&
++			if (gg_probe3d() > 0 && gg_probe_rearm < GG_PROBE_REARM &&
+ 			    len <= GG_INS_MAX && out[base + 3u] != 0u &&
+ 			    *np + GG_PROBE_DW <= max) {
+ 				uint32_t pay[GG_PROBE_DW];
+@@ -5748,7 +5762,7 @@
+ 				 * only 0xA000 bytes past +0x2000, too small for a
+ 				 * triangle and outside the mapping if overshot.
+ 				 */
+-				uint32_t tgt = (gg_probe3d() == 3) ? 0x52bca000u :
++				uint32_t tgt = (gg_probe3d() >= 3) ? 0x52bca000u :
+ 				    CP_VA_TARGET;
+ 				uint32_t pn = gg_probe_emit(pay, GG_PROBE_DW, tgt,
+ 				    CP_VA_SCRATCH + 0x1000u);
+@@ -5760,6 +5774,7 @@
+ 					    TARGET_PITCH * 128u, &nz1);
+ 					gg_probe_vb();
+ 					if (gg_ins_raw(out, np, len, pay, pn)) {
++						gg_probe_rearm++;
+ 						gg_probe_state = 1;
+ 						gg_probe_wait = 2;
+ 						printf("GAUGUIN CP: 0229 3d armed"
