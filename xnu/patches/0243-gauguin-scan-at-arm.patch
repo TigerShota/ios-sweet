@@ -1,0 +1,71 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5288,6 +5288,37 @@
+ }
+ 
+ /*
++ * 0243: the 0236 scan never printed in v202 (its state machine never reached the
++ * done branch), so the same count is now also taken at arm time, which cannot be
++ * skipped: arm #2..N runs after the previous paint has had a whole submission to
++ * retire.
++ */
++static void
++gg_probe_scan_scratch(const char *tag, uint32_t at)
++{
++	vm_offset_t m = ml_io_map(cp_pa + CPMEM_SCRATCH + 0x2000u,
++	    GG_PROBE_SCAN);
++	uint32_t k, nz = 0u, first = 0u, fv = 0u;
++
++	if (m != 0) {
++		for (k = 0u; k < GG_PROBE_SCAN / 4u; k++) {
++			uint32_t v = *(volatile uint32_t *)(m + k * 4u);
++
++			if (v != 0u) {
++				if (nz == 0u) {
++					first = k * 4u;
++					fv = v;
++				}
++				nz++;
++			}
++		}
++	}
++	printf("GAUGUIN CP: 0243 scan %s at=%u nz=%u first=%#x val=%#x\n",
++	    tag, at, nz, first, fv);
++	(void)sweet_log_flush_now();
++}
++
++/*
+  * 0241: count what is actually inside a GPU VA. v200 painted both surfaces six
+  * times and still saw zeros at the next present, so the question is no longer
+  * "did the draw run" but "was the triangle ever in that buffer, and who removed
+@@ -5807,6 +5838,11 @@
+ 					gg_probe_vb();
+ 					if (gg_ins_raw(out, np, len, pay, pn)) {
+ 						gg_probe_rearm++;
++						/* 0243: a number that cannot be lost */
++						if (gg_probe3d() < 3) {
++							gg_probe_scan_scratch(
++							    "arm", base);
++						}
+ 						gg_probe_state = 1;
+ 						gg_probe_wait = 2;
+ 						printf("GAUGUIN CP: 0229 3d armed"
+@@ -6761,8 +6797,15 @@
+ 			gg_probe_wait--;
+ 		} else {
+ 			uint32_t nz0 = 0u, nz1 = 0u;
+-			uint32_t c0 = gg_probe_ck(0u, &nz0);
+-			uint32_t c1 = gg_probe_ck(TARGET_PITCH * 128u, &nz1);
++			uint32_t c0;
++			uint32_t c1;
++
++			/* 0243: backstop - the deferred report may never run. */
++			if (gg_probe3d() < 3) {
++				gg_probe_scan_scratch("done", 0u);
++			}
++			c0 = gg_probe_ck(0u, &nz0);
++			c1 = gg_probe_ck(TARGET_PITCH * 128u, &nz1);
+ 
+ 			gg_probe_state = 2;
+ 			printf("GAUGUIN CP: 0229 3d done top %#x -> %#x nz=%u"
