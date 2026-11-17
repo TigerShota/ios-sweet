@@ -1,0 +1,56 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3727,6 +3727,9 @@
+ static int gg_probe3d_opt = -2;
+ static int gg_probe_state;		/* 0 idle, 1 armed, 2 reported */
+ static uint32_t gg_probe_cand;		/* 0233: draws inspected for the probe */
++/* 0234: the state block is 60 dwords plus 20 for the two draws, so the probe
++ * needs 140; v193 handed it a 128-dword buffer and it silently did nothing. */
++#define GG_PROBE_DW 160u
+ static int gg_probe_wait;		/* submissions to let finish */
+ static uint32_t gg_probe_ck0[2];
+ static vm_offset_t gg_probe_map;	/* uncached view of the target */
+@@ -3939,7 +3942,7 @@
+ 	}
+ 	/* 0232: the probe is inserted in front of one draw. */
+ 	if (gg_probe3d() > 0 && gg_probe_state == 0) {
+-		n += 140u;
++		n += GG_PROBE_DW;
+ 	}
+ 	return n;
+ }
+@@ -5659,19 +5662,26 @@
+ 			 * gauguinflat=1 gauguinmark=1 gauguinclr=4 gauguinprobe3d=1.
+ 			 */
+ 			base = *np - len;
+-			/* 0233: a missed match used to be silent - say why. */
++			/*
++			 * 0233/0234: a missed match used to be silent. The probe needs
++			 * GG_PROBE_DW dwords, and v193 proved the 128-dword buffer was
++			 * too small (need is 140), which made gg_probe_emit() return 0
++			 * without a word - so print the budget as well.
++			 */
+ 			if (gg_probe3d() > 0 && gg_probe_cand < 8u) {
+ 				gg_probe_cand++;
+ 				printf("GAUGUIN CP: 0229 cand off=%u plen=%u"
+-				    " cnt=%#x first=%#x state=%d\n", base, len,
+-				    out[base + 3u], out[base + 6u],
++				    " cnt=%#x first=%#x room=%d need=%u"
++				    " state=%d\n", base, len, out[base + 3u],
++				    out[base + 6u], (int)(max - *np), GG_PROBE_DW,
+ 				    gg_probe_state);
+ 			}
+ 			if (gg_probe3d() > 0 && gg_probe_state == 0 &&
+-			    len <= GG_INS_MAX && out[base + 3u] != 0u) {
+-				uint32_t pay[128];
+-				uint32_t pn = gg_probe_emit(pay, 128u, CP_VA_TARGET,
+-				    CP_VA_SCRATCH + 0x1000u);
++			    len <= GG_INS_MAX && out[base + 3u] != 0u &&
++			    *np + GG_PROBE_DW <= max) {
++				uint32_t pay[GG_PROBE_DW];
++				uint32_t pn = gg_probe_emit(pay, GG_PROBE_DW,
++				    CP_VA_TARGET, CP_VA_SCRATCH + 0x1000u);
+ 				uint32_t nz0 = 0u, nz1 = 0u;
+ 
+ 				if (pn != 0u) {
