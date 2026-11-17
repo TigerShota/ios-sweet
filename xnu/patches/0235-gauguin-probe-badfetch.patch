@@ -1,0 +1,41 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3895,11 +3895,16 @@
+ 		out[n++] = gg_pkt4(st[i]);
+ 		out[n++] = st[i + 1u];
+ 	}
+-	/* top half: pixel-space triangle */
++	/*
++	 * top half: pixel-space triangle. 0235: gauguinprobe3d=2 points this
++	 * triangle's vertex fetch at an unmapped VA instead - nothing is drawn
++	 * either way, and the SMMU fault that follows decides whether the VFD
++	 * executed the draw at all.
++	 */
+ 	out[n++] = gg_pkt4(0x8825u);
+ 	out[n++] = tgt;
+ 	out[n++] = gg_pkt4(0xa014u);
+-	out[n++] = vb;
++	out[n++] = (gg_probe3d() == 2) ? 0x7f000ff0u : vb;
+ 	out[n++] = gg_pkt7(0x38u, 3u);
+ 	out[n++] = 0x104u;		/* DI_PT_TRILIST, VIS_CULL 1 */
+ 	out[n++] = 1u;			/* instances */
+@@ -6651,8 +6656,17 @@
+ 			printf("GAUGUIN CP: 0229 3d done top %#x -> %#x nz=%u"
+ 			    " bot %#x -> %#x nz=%u\n", gg_probe_ck0[0], c0,
+ 			    nz0, gg_probe_ck0[1], c1, nz1);
+-			/* 0231: did the probe's own accesses fault? */
++			/* 0231: did the probe's own accesses fault? (prints 0215) */
+ 			gg_smmu_probe("probe3d");
++			/*
++			 * 0235: read back what the probe wrote into the 3D blocks. If
++			 * these are Apple's values rather than ours, our CP_REG_WRITE
++			 * packets never landed and nothing downstream matters.
++			 */
++			printf("GAUGUIN CP: 0235 rd vfd1=%#x mrt0=%#x pitch=%#x"
++			    " xs=%#x ys=%#x\n", gg_rd(gg.gpu, GR(0xa014u)),
++			    gg_rd(gg.gpu, GR(0x8825u)), gg_rd(gg.gpu, GR(0x8824u)),
++			    gg_rd(gg.gpu, GR(0x8011u)), gg_rd(gg.gpu, GR(0x8013u)));
+ 		}
+ 	}
+ 	gg_cp_dbg("draw");
