@@ -1,0 +1,72 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3730,6 +3730,13 @@
+ /* 0234: the state block is 60 dwords plus 20 for the two draws, so the probe
+  * needs 140; v193 handed it a 128-dword buffer and it silently did nothing. */
+ #define GG_PROBE_DW 160u
++/*
++ * 0239: CPMEM_SIZE is 0x20000 and the scratch block starts at 0x14000, so only
++ * 0xA000 bytes above +0x2000 are mapped. v198 panicked writing 0x40000 there
++ * (data abort, far = base + 0xa000, esr 0x96000047) - everything the probe
++ * touches must stay inside CPMEM_SIZE.
++ */
++#define GG_PROBE_SCAN 0xA000u
+ static int gg_probe_wait;		/* submissions to let finish */
+ static uint32_t gg_probe_ck0[2];
+ static vm_offset_t gg_probe_map;	/* uncached view of the target */
+@@ -3836,12 +3843,12 @@
+ 		    (volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x2000u);
+ 		uint32_t k;
+ 
+-		for (k = 0u; k < 0x40000u / 4u; k++) {
++		for (k = 0u; k < GG_PROBE_SCAN / 4u; k++) {
+ 			z[k] = 0u;
+ 		}
+ 	}
+-	flush_dcache64((addr64_t)(cp_pa + CPMEM_SCRATCH + 0x2000u), 0x40000u,
+-	    TRUE);
++	flush_dcache64((addr64_t)(cp_pa + CPMEM_SCRATCH + 0x2000u),
++	    GG_PROBE_SCAN, TRUE);
+ 	flush_dcache64((addr64_t)(cp_pa + CPMEM_SCRATCH + 0x1000u), 0x1000u,
+ 	    TRUE);
+ }
+@@ -3953,7 +3960,7 @@
+ 	out[n++] = 3u;			/* vertices */
+ 	/* bottom half: NDC triangle */
+ 	out[n++] = gg_pkt4(0x8825u);
+-	out[n++] = tgt + TARGET_PITCH * 64u;
++	out[n++] = tgt + TARGET_PITCH * 8u;
+ 	out[n++] = gg_pkt4(0xa014u);
+ 	out[n++] = vb + 3u * 0x30u;
+ 	out[n++] = gg_pkt7(0x38u, 3u);
+@@ -5735,8 +5742,14 @@
+ 				 * answers the other half: is the buffer we sample the one
+ 				 * their draws are supposed to fill.
+ 				 */
++				/*
++				 * 0239: modes 1/2 render into CP_VA_TARGET, the 512x512
++				 * 2D buffer - the CPMEM scratch next to the vertices is
++				 * only 0xA000 bytes past +0x2000, too small for a
++				 * triangle and outside the mapping if overshot.
++				 */
+ 				uint32_t tgt = (gg_probe3d() == 3) ? 0x52bca000u :
+-				    CP_VA_SCRATCH + 0x2000u;
++				    CP_VA_TARGET;
+ 				uint32_t pn = gg_probe_emit(pay, GG_PROBE_DW, tgt,
+ 				    CP_VA_SCRATCH + 0x1000u);
+ 				uint32_t nz0 = 0u, nz1 = 0u;
+@@ -6727,11 +6740,11 @@
+ 			 */
+ 			{
+ 				vm_offset_t m = ml_io_map(cp_pa + CPMEM_SCRATCH + 0x2000u,
+-				    0x40000u);
++				    GG_PROBE_SCAN);
+ 				uint32_t k, nz = 0u, first = 0u, fv = 0u;
+ 
+ 				if (m != 0) {
+-					for (k = 0u; k < 0x40000u / 4u; k++) {
++					for (k = 0u; k < GG_PROBE_SCAN / 4u; k++) {
+ 						uint32_t v =
+ 						    *(volatile uint32_t *)(m + k * 4u);
+ 
