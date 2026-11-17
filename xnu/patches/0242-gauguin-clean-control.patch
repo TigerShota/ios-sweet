@@ -1,0 +1,38 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3799,9 +3799,9 @@
+ 	volatile uint32_t *vb =
+ 	    (volatile uint32_t *)(cpmem + CPMEM_SCRATCH + 0x1000u);
+ 	static const uint32_t xy[6][2] = {
+-		{ 0x41200000u, 0x41200000u },	/* 10, 10 */
+-		{ 0x43fa0000u, 0x41200000u },	/* 500, 10 */
+-		{ 0x437a0000u, 0x43fa0000u },	/* 250, 500 */
++		{ 0x41000000u, 0x40000000u },	/* 8, 2 */
++		{ 0x43fc0000u, 0x40000000u },	/* 504, 2 */
++		{ 0x43800000u, 0x41600000u },	/* 256, 14 */
+ 		{ 0xbf666666u, 0xbf666666u },	/* -0.9, -0.9 */
+ 		{ 0x3f666666u, 0xbf666666u },	/* 0.9, -0.9 */
+ 		{ 0x00000000u, 0x3f666666u },	/* 0, 0.9 */
+@@ -5785,12 +5785,17 @@
+ 				 */
+ 				/*
+ 				 * 0239: modes 1/2 render into CP_VA_TARGET, the 512x512
+-				 * 2D buffer - the CPMEM scratch next to the vertices is
+-				 * only 0xA000 bytes past +0x2000, too small for a
+-				 * triangle and outside the mapping if overshot.
++				 * 2D buffer.
++				 *
++				 * 0242 supersedes that: modes 1/2 now draw into the same
++				 * 0xA000 scratch block that gg_probe_vb clears and the
++				 * scan reads, so clear -> draw -> scan finally point at
++				 * one buffer and nothing else writes it. CP_VA_TARGET is
++				 * the 2D blit's own surface, where a scan would only ever
++				 * report the blit's colour bands.
+ 				 */
+ 				uint32_t tgt = (gg_probe3d() >= 3) ? 0x52bca000u :
+-				    CP_VA_TARGET;
++				    CP_VA_SCRATCH + 0x2000u;
+ 				uint32_t pn = gg_probe_emit(pay, GG_PROBE_DW, tgt,
+ 				    CP_VA_SCRATCH + 0x1000u);
+ 				uint32_t nz0 = 0u, nz1 = 0u;
