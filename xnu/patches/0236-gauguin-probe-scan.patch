@@ -1,0 +1,74 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3857,7 +3857,7 @@
+ 		0x8820u, 0x7e0u,	/* RB_MRT0_CONTROL: copy, comp mask 0xf */
+ 		0x8822u, 0x2030u,	/* RB_MRT0_BUF_INFO: 8_8_8_8, linear */
+ 		0x8823u, 0x20u,		/* RB_MRT0_PITCH: 2048 >> 6 */
+-		0x8824u, 0u,		/* RB_MRT0_ARRAY_PITCH */
++		0x8824u, 0x800u,	/* RB_MRT0_ARRAY_PITCH: 512 * 4 */
+ 		0x8826u, 0u,		/* RB_MRT0_BASE_HI */
+ 		0x8827u, 0u,		/* RB_MRT0_BASE_GMEM */
+ 		0x8801u, 0x10u,		/* RB_RENDER_CNTL */
+@@ -3911,7 +3911,7 @@
+ 	out[n++] = 3u;			/* vertices */
+ 	/* bottom half: NDC triangle */
+ 	out[n++] = gg_pkt4(0x8825u);
+-	out[n++] = tgt + TARGET_PITCH * 128u;
++	out[n++] = tgt + TARGET_PITCH * 64u;
+ 	out[n++] = gg_pkt4(0xa014u);
+ 	out[n++] = vb + 3u * 0x30u;
+ 	out[n++] = gg_pkt7(0x38u, 3u);
+@@ -5686,7 +5686,7 @@
+ 			    *np + GG_PROBE_DW <= max) {
+ 				uint32_t pay[GG_PROBE_DW];
+ 				uint32_t pn = gg_probe_emit(pay, GG_PROBE_DW,
+-				    CP_VA_TARGET, CP_VA_SCRATCH + 0x1000u);
++				    CP_VA_SCRATCH + 0x2000u, CP_VA_SCRATCH + 0x1000u);
+ 				uint32_t nz0 = 0u, nz1 = 0u;
+ 
+ 				if (pn != 0u) {
+@@ -5701,7 +5701,7 @@
+ 						    " vb=%#x tgt=%#x ck0=%#x"
+ 						    " nz0=%u ck1=%#x nz1=%u\n",
+ 						    CP_VA_SCRATCH + 0x1000u,
+-						    CP_VA_TARGET, gg_probe_ck0[0],
++						    CP_VA_SCRATCH + 0x2000u, gg_probe_ck0[0],
+ 						    nz0, gg_probe_ck0[1], nz1);
+ 					}
+ 				}
+@@ -6667,6 +6667,34 @@
+ 			    " xs=%#x ys=%#x\n", gg_rd(gg.gpu, GR(0xa014u)),
+ 			    gg_rd(gg.gpu, GR(0x8825u)), gg_rd(gg.gpu, GR(0x8824u)),
+ 			    gg_rd(gg.gpu, GR(0x8011u)), gg_rd(gg.gpu, GR(0x8013u)));
++			/*
++			 * 0236: the probe draws into a zeroed scratch page instead of
++			 * the 2D target, and the whole 256 KB is scanned afterwards.
++			 * "Did the RB write anywhere at all" is then a number, not an
++			 * inference from eight dwords.
++			 */
++			{
++				vm_offset_t m = ml_io_map(cp_pa + CPMEM_SCRATCH + 0x2000u,
++				    0x40000u);
++				uint32_t k, nz = 0u, first = 0u, fv = 0u;
++
++				if (m != 0) {
++					for (k = 0u; k < 0x40000u / 4u; k++) {
++						uint32_t v =
++						    *(volatile uint32_t *)(m + k * 4u);
++
++						if (v != 0u) {
++							if (nz == 0u) {
++								first = k * 4u;
++								fv = v;
++							}
++							nz++;
++						}
++					}
++				}
++				printf("GAUGUIN CP: 0236 scan nz=%u first=%#x"
++				    " val=%#x\n", nz, first, fv);
++			}
+ 		}
+ 	}
+ 	gg_cp_dbg("draw");
