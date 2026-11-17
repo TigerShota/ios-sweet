@@ -1,0 +1,44 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5685,8 +5685,18 @@
+ 			    len <= GG_INS_MAX && out[base + 3u] != 0u &&
+ 			    *np + GG_PROBE_DW <= max) {
+ 				uint32_t pay[GG_PROBE_DW];
+-				uint32_t pn = gg_probe_emit(pay, GG_PROBE_DW,
+-				    CP_VA_SCRATCH + 0x2000u, CP_VA_SCRATCH + 0x1000u);
++				/*
++				 * 0237: gauguinprobe3d=3 renders into the UMD's own MRT
++				 * (0x52bca000, the base 0225 has been reading all along)
++				 * instead of scratch. v196 proved the whole pipeline
++				 * writes when the target descriptor is ours, so this
++				 * answers the other half: is the buffer we sample the one
++				 * their draws are supposed to fill.
++				 */
++				uint32_t tgt = (gg_probe3d() == 3) ? 0x52bca000u :
++				    CP_VA_SCRATCH + 0x2000u;
++				uint32_t pn = gg_probe_emit(pay, GG_PROBE_DW, tgt,
++				    CP_VA_SCRATCH + 0x1000u);
+ 				uint32_t nz0 = 0u, nz1 = 0u;
+ 
+ 				if (pn != 0u) {
+@@ -5701,7 +5711,7 @@
+ 						    " vb=%#x tgt=%#x ck0=%#x"
+ 						    " nz0=%u ck1=%#x nz1=%u\n",
+ 						    CP_VA_SCRATCH + 0x1000u,
+-						    CP_VA_SCRATCH + 0x2000u, gg_probe_ck0[0],
++						    tgt, gg_probe_ck0[0],
+ 						    nz0, gg_probe_ck0[1], nz1);
+ 					}
+ 				}
+@@ -6692,8 +6702,8 @@
+ 						}
+ 					}
+ 				}
+-				printf("GAUGUIN CP: 0236 scan nz=%u first=%#x"
+-				    " val=%#x\n", nz, first, fv);
++				printf("GAUGUIN CP: 0236 scan mode=%d nz=%u first=%#x"
++				    " val=%#x\n", gg_probe3d(), nz, first, fv);
+ 			}
+ 		}
+ 	}
