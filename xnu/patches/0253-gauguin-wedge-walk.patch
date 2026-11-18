@@ -1,0 +1,55 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3733,6 +3733,8 @@
+ /* 0246: the payload used to be a 640-byte local inside the copy loop - the kind
+  * of stack pressure that turns a bounds slip into a wild jump. */
+ static uint32_t gg_probe_pay[GG_PROBE_DW];
++/* 0253: the wedge walk runs once, on the first stall worth reading. */
++static uint32_t gg_walk_n;
+ /*
+  * 0239: CPMEM_SIZE is 0x20000 and the scratch block starts at 0x14000, so only
+  * 0xA000 bytes above +0x2000 are mapped. v198 panicked writing 0x40000 there
+@@ -7906,6 +7908,42 @@
+ 	    gg_rd(gg.gpu, GR(CP_IB1_BASE_DW + 1u)),
+ 	    gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW)),
+ 	    gg_rd(gg.gpu, GR(CP_RB_WPTR_DW)));
++	/*
++	 * 0253: the stall is localised to the tail of this IB, so print the
++	 * packets the ME was about to execute. Both type-7 (op in bits 15:8) and
++	 * type-4 (register in bits 15:0) carry their payload count in bits 29:16.
++	 */
++	if (gg_walk_n < 1u) {
++		uint32_t a = gg_rd(gg.gpu, GR(CP_IB1_BASE_DW));
++		uint32_t rem = gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW));
++		uint32_t j;
++
++		gg_walk_n++;
++		printf("GAUGUIN CP: 0253 walk from=%#x rem=%u\n", a, rem);
++		for (j = 0u; j < 24u && rem > 0u; j++) {
++			uint32_t h = gg_flat_rd(a, 0u);
++			uint32_t type = h >> 30;
++			uint32_t cnt = (h >> 16) & 0x3fffu;
++			uint32_t op;
++
++			if (type == 7u || type == 4u) {
++				op = (type == 7u) ? ((h >> 8) & 0xffu) :
++				    (h & 0xffffu);
++			} else {
++				printf("GAUGUIN CP: 0253 end type=%u h=%#x"
++				    " at=%#x\n", type, h, a);
++				break;
++			}
++			printf("GAUGUIN CP: 0253 pkt at=%#x op=%#x cnt=%u"
++			    " w0=%#x w1=%#x w2=%#x\n", a, op, cnt,
++			    cnt > 0u ? gg_flat_rd(a, 1u) : 0u,
++			    cnt > 1u ? gg_flat_rd(a, 2u) : 0u,
++			    cnt > 2u ? gg_flat_rd(a, 3u) : 0u);
++			a += cnt + 1u;
++			rem = (rem > cnt + 1u) ? rem - cnt - 1u : 0u;
++		}
++		(void)sweet_log_flush_now();
++	}
+ 	if (gg_sub_n == 1u) {
+ 		gg_smmu_probe("first-submit");
+ 		(void)gg_idxlen();	/* 0221: parse once, print the value */
