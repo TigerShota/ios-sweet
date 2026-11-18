@@ -1,0 +1,23 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5868,6 +5868,19 @@
+ 					pay[2] = 1u;
+ 					pay[3] = 3u;
+ 					pn = 4u;
++					/*
++					 * 0249: v208 armed six times but left no trace of the
++					 * inserted draw and no scan, so "painted nothing" and
++					 * "inserted after the last present" looked identical.
++					 * Print the four dwords, the offset, and what the UMD
++					 * has bound as MRT right now, then scan the surface -
++					 * six arms give six samples spread over the frame.
++					 */
++					printf("GAUGUIN CP: 0249 ins at=%u dw=%#x %#x %#x %#x"
++					    " mrt=%#x base=%#x\n", base, pay[0], pay[1], pay[2],
++					    pay[3], gg_rd(gg.gpu, GR(0x8825u)),
++					    gg_rd(gg.gpu, GR(0xa014u)));
++					gg_va_scan("id3_now", 0x52bca000u, 0x4000u);
+ 				} else {
+ 					pn = gg_probe_emit(pay, GG_PROBE_DW, tgt,
+ 					    CP_VA_SCRATCH + 0x1000u);
