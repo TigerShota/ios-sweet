@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5339,6 +5339,34 @@
+ 	}
+ 	printf("GAUGUIN CP: 0243 scan %s at=%u nz=%u first=%#x val=%#x\n",
+ 	    tag, at, nz, first, fv);
++	(void)sweet_log_flush_now();
++}
++
++/*
++ * 0250: the panel shows a purple rectangle and white lines, so the display path
++ * works and the surface really is on screen - what is missing is the logo image.
++ * An 8x8 sample grid of the presented surface says where the purple is, where
++ * the lines are, and whether the area the logo belongs to is zero (never drawn)
++ * or filled with a placeholder (drawn with the wrong source).
++ */
++static void
++gg_va_grid(const char *tag, uint32_t va, uint32_t w, uint32_t h, uint32_t bpr)
++{
++	uint32_t row, col;
++
++	printf("GAUGUIN CP: 0250 grid %s va=%#x %ux%u bpr=%u\n", tag, va, w, h,
++	    bpr);
++	for (row = 0u; row < 8u; row++) {
++		printf("GAUGUIN CP: 0250 row%u:", row);
++		for (col = 0u; col < 8u; col++) {
++			uint32_t x = (w / 8u) * col + w / 16u;
++			uint32_t y = (h / 8u) * row + h / 16u;
++			uint32_t off = y * bpr + x * 4u;
++
++			printf(" %08x", gg_flat_rd(va + off, 0u));
++		}
++		printf("\n");
++	}
+ 	(void)sweet_log_flush_now();
+ }
+ 
+@@ -6871,6 +6899,8 @@
+ 			    nz0, gg_probe_ck0[1], c1, nz1);
+ 			/* 0231: did the probe's own accesses fault? (prints 0215) */
+ 			gg_smmu_probe("probe3d");
++			/* 0250: what is on the presented surface right now? */
++			gg_va_grid("id3", 0x52bca000u, 1125u, 2436u, 4544u);
+ 			/* 0241: is the triangle in the surfaces we painted? */
+ 			if (gg_probe3d() >= 3) {
+ 				gg_va_scan("id3", 0x52bca000u, 0x4000u);
