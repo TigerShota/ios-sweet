@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5457,6 +5457,7 @@
+     volatile uint32_t *out, uint32_t max, uint32_t *np, int depth)
+ {
+ 	uint32_t o = 0, k, at;
++	uint32_t live_mrt = 0u;	/* 0251: MRT bound at this draw */
+ 
+ 	if (depth > GG_FLAT_DEPTH) {
+ 		return 0;
+@@ -5854,8 +5855,16 @@
+ 				    out[base + 6u], (int)(max - *np), GG_PROBE_DW,
+ 				    gg_probe_state);
+ 			}
++			/*
++			 * 0251: v209 showed mode 5 arming where RB_MRT0_BASE was 0 - the
++			 * pass had no render target bound at all, so that draw could not
++			 * produce anything no matter how healthy the pipeline is. Only arm
++			 * when a target is actually bound, and measure that target.
++			 */
++			live_mrt = gg_rd(gg.gpu, GR(0x8825u));
+ 			if (gg_probe3d() > 0 && gg_probe_rearm < GG_PROBE_REARM &&
+ 			    len <= GG_INS_MAX && out[base + 3u] != 0u &&
++			    (gg_probe3d() != 5 || live_mrt != 0u) &&
+ 			    *np + GG_PROBE_DW <= max) {
+ 				uint32_t *pay = gg_probe_pay;
+ 				/*
+@@ -5904,11 +5913,16 @@
+ 					 * has bound as MRT right now, then scan the surface -
+ 					 * six arms give six samples spread over the frame.
+ 					 */
+-					printf("GAUGUIN CP: 0249 ins at=%u dw=%#x %#x %#x %#x"
+-					    " mrt=%#x base=%#x\n", base, pay[0], pay[1], pay[2],
+-					    pay[3], gg_rd(gg.gpu, GR(0x8825u)),
+-					    gg_rd(gg.gpu, GR(0xa014u)));
+-					gg_va_scan("id3_now", 0x52bca000u, 0x4000u);
++					uint32_t bpr = gg_rd(gg.gpu,
++					    GR(0x8823u)) << 6;
++
++					printf("GAUGUIN CP: 0251 ins at=%u dw=%#x %#x %#x %#x"
++					    " mrt=%#x base=%#x pitch=%u\n", base, pay[0],
++					    pay[1], pay[2], pay[3], live_mrt,
++					    gg_rd(gg.gpu, GR(0xa014u)), bpr);
++					/* 0251: measure the target this draw will use. */
++					gg_va_scan("live", live_mrt, 0x4000u);
++					gg_va_grid("live", live_mrt, 1125u, 2436u, bpr);
+ 				} else {
+ 					pn = gg_probe_emit(pay, GG_PROBE_DW, tgt,
+ 					    CP_VA_SCRATCH + 0x1000u);
