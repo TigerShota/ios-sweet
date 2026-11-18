@@ -1,0 +1,30 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3897,7 +3897,16 @@
+ 		0x8820u, 0x7e0u,	/* RB_MRT0_CONTROL: copy, comp mask 0xf */
+ 		0x8822u, 0x2030u,	/* RB_MRT0_BUF_INFO: 8_8_8_8, linear */
+ 		0x8823u, 0x20u,		/* RB_MRT0_PITCH: 2048 >> 6 */
+-		0x8824u, 0x800u,	/* RB_MRT0_ARRAY_PITCH: 512 * 4 */
++		0x8824u, 0u,		/* RB_MRT0_ARRAY_PITCH: 2D, no array */
++		/*
++		 * 0245: RB_RENDER_COMPONENTS decides which components a render
++		 * target receives at all. It was never written, and 0 there means
++		 * MRT0 gets nothing - the one place left where fragments can vanish
++		 * after the RB accepted them. RB_FS_OUTPUT_CNTL1 says how many MRTs
++		 * the FS writes.
++		 */
++		0x880du, 0xfu,		/* RB_RENDER_COMPONENTS: RT0 = RGBA */
++		0x880cu, 0u,		/* RB_FS_OUTPUT_CNTL1: one MRT */
+ 		0x8826u, 0u,		/* RB_MRT0_BASE_HI */
+ 		0x8827u, 0u,		/* RB_MRT0_BASE_GMEM */
+ 		0x8801u, 0x10u,		/* RB_RENDER_CNTL */
+@@ -6674,6 +6683,8 @@
+ 		const char *name;
+ 	} regs[] = {
+ 		{ 0x8801u, "RB_RENDER_CNTL" },
++		{ 0x880cu, "RB_FS_OUTPUT_CNTL1" },
++		{ 0x880du, "RB_RENDER_COMPONENTS" },
+ 		{ 0x8820u, "RB_MRT0_CONTROL" },
+ 		{ 0x8822u, "RB_MRT0_BUF_INFO" },
+ 		{ 0x8823u, "RB_MRT0_PITCH" },
