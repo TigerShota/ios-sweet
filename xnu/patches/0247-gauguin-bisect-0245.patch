@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3900,16 +3900,7 @@
+ 		0x8820u, 0x7e0u,	/* RB_MRT0_CONTROL: copy, comp mask 0xf */
+ 		0x8822u, 0x2030u,	/* RB_MRT0_BUF_INFO: 8_8_8_8, linear */
+ 		0x8823u, 0x20u,		/* RB_MRT0_PITCH: 2048 >> 6 */
+-		0x8824u, 0u,		/* RB_MRT0_ARRAY_PITCH: 2D, no array */
+-		/*
+-		 * 0245: RB_RENDER_COMPONENTS decides which components a render
+-		 * target receives at all. It was never written, and 0 there means
+-		 * MRT0 gets nothing - the one place left where fragments can vanish
+-		 * after the RB accepted them. RB_FS_OUTPUT_CNTL1 says how many MRTs
+-		 * the FS writes.
+-		 */
+-		0x880du, 0xfu,		/* RB_RENDER_COMPONENTS: RT0 = RGBA */
+-		0x880cu, 0u,		/* RB_FS_OUTPUT_CNTL1: one MRT */
++		0x8824u, 0x800u,	/* RB_MRT0_ARRAY_PITCH */
+ 		0x8826u, 0u,		/* RB_MRT0_BASE_HI */
+ 		0x8827u, 0u,		/* RB_MRT0_BASE_GMEM */
+ 		0x8801u, 0x10u,		/* RB_RENDER_CNTL */
+@@ -3944,7 +3935,7 @@
+ 	 * optional poisoned base (mode 2) and the second surface (mode 4). It is
+ 	 * checked and printed on every arm, so a mismatch can never be silent.
+ 	 */
+-	uint32_t ndw = (uint32_t)(sizeof(st) / 4u) + 16u +
++	uint32_t ndw = (uint32_t)(sizeof(st) / 4u) + 18u +
+ 	    ((gg_probe3d() == 2) ? 2u : 0u) + ((gg_probe3d() == 4) ? 6u : 0u);
+ 	uint32_t i, n = 0u;
+ 
+@@ -3958,6 +3949,16 @@
+ 		out[n++] = gg_pkt4(st[i]);
+ 		out[n++] = st[i + 1u];
+ 	}
++	/*
++	 * 0247: RB_RENDER_COMPONENTS decides whether render target 0 receives any
++	 * component at all, and this driver never wrote it - with RT0 = 0 the RB
++	 * accepts the fragments and stores none of them. It is emitted here, as a
++	 * pair after the block, so the block's own layout stays byte-identical to
++	 * the build that did not panic (0245's edits to st[] are reverted while we
++	 * bisect which of its three changes jumped into data).
++	 */
++	out[n++] = gg_pkt4(0x880du);
++	out[n++] = 0xfu;		/* RT0 = RGBA */
+ 	/*
+ 	 * 0238: mode 3 targets the real 1125x2436 surface, so use its viewport.
+ 	 */
