@@ -1,0 +1,24 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -6828,6 +6828,20 @@
+ 			    gg_rd(gg.gpu, GR(0x8825u)), gg_rd(gg.gpu, GR(0x8824u)),
+ 			    gg_rd(gg.gpu, GR(0x8011u)), gg_rd(gg.gpu, GR(0x8013u)));
+ 			/*
++			 * 0244: the whole render-target encoding as the UMD leaves it.
++			 * Our probe block writes 0x8820=0x7e0, 0x8822=0x2030,
++			 * 0x8823=0x20, 0x8824=0x800 and 0x8801=0x10; comparing field
++			 * by field says whether the sysmem/linear encoding is the one
++			 * this GPU expects, which is the last place a fragment can be
++			 * dropped now that the simplest target also reads zero.
++			 */
++			printf("GAUGUIN CP: 0244 rd ctl=%#x info=%#x pitch=%#x"
++			    " arr=%#x rnd=%#x
++",
++			    gg_rd(gg.gpu, GR(0x8820u)), gg_rd(gg.gpu, GR(0x8822u)),
++			    gg_rd(gg.gpu, GR(0x8823u)), gg_rd(gg.gpu, GR(0x8824u)),
++			    gg_rd(gg.gpu, GR(0x8801u)));
++			/*
+ 			 * 0236: the probe draws into a zeroed scratch page instead of
+ 			 * the 2D target, and the whole 256 KB is scanned afterwards.
+ 			 * "Did the RB write anywhere at all" is then a number, not an
