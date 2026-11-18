@@ -1,0 +1,33 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5851,8 +5851,27 @@
+ 				 */
+ 				uint32_t tgt = (gg_probe3d() >= 3) ? 0x52bca000u :
+ 				    CP_VA_SCRATCH + 0x2000u;
+-				uint32_t pn = gg_probe_emit(pay, GG_PROBE_DW, tgt,
+-				    CP_VA_SCRATCH + 0x1000u);
++				uint32_t pn;
++
++				/*
++				 * 0248: mode 5 writes no state at all - it only adds one
++				 * more draw that runs on everything the UMD already set up:
++				 * their vertex buffer, their viewport, their target. If that
++				 * produces pixels then the pipeline and their state are fine
++				 * and our overrides were the problem - most likely our
++				 * vertices went through their vertex shader and landed off
++				 * screen, which would explain every zero so far.
++				 */
++				if (gg_probe3d() == 5) {
++					pay[0] = gg_pkt7(0x38u, 3u);
++					pay[1] = 0x104u;
++					pay[2] = 1u;
++					pay[3] = 3u;
++					pn = 4u;
++				} else {
++					pn = gg_probe_emit(pay, GG_PROBE_DW, tgt,
++					    CP_VA_SCRATCH + 0x1000u);
++				}
+ 				uint32_t nz0 = 0u, nz1 = 0u;
+ 
+ 				if (pn != 0u) {
