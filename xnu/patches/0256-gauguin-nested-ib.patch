@@ -10,14 +10,14 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 + * the stop offset could not be computed in v196, and IB2 needs its own entry.
 + */
 +#define GG_IB_MAP 16
-+static struct {
++static struct gg_ibw_s {
 +	uint32_t va;
 +	uint32_t dw;
-+} gg_ib_map[GG_IB_MAP];
-+static uint32_t gg_ib_map_n;
++} gg_ibw[GG_IB_MAP];
++static uint32_t gg_ibw_n;
 +
 +static void
-+gg_ib_note(uint32_t va, uint32_t dw)
++gg_ibw_note(uint32_t va, uint32_t dw)
 +{
 +	uint32_t i;
 +
@@ -25,24 +25,24 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +		return;
 +	}
 +	for (i = 0u; i < GG_IB_MAP; i++) {
-+		if (gg_ib_map[i].va == va) {
-+			gg_ib_map[i].dw = dw;
++		if (gg_ibw[i].va == va) {
++			gg_ibw[i].dw = dw;
 +			return;
 +		}
 +	}
-+	gg_ib_map[gg_ib_map_n % GG_IB_MAP].va = va;
-+	gg_ib_map[gg_ib_map_n % GG_IB_MAP].dw = dw;
-+	gg_ib_map_n++;
++	gg_ibw[gg_ibw_n % GG_IB_MAP].va = va;
++	gg_ibw[gg_ibw_n % GG_IB_MAP].dw = dw;
++	gg_ibw_n++;
 +}
 +
 +static uint32_t
-+gg_ib_len(uint32_t va)
++gg_ibw_len(uint32_t va)
 +{
 +	uint32_t i;
 +
 +	for (i = 0u; i < GG_IB_MAP; i++) {
-+		if (gg_ib_map[i].va == va) {
-+			return gg_ib_map[i].dw;
++		if (gg_ibw[i].va == va) {
++			return gg_ibw[i].dw;
 +		}
 +	}
 +	return 0u;
@@ -55,7 +55,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
  			    (unsigned long long)iova, dwords, room, fixed);
  		}
  	}
-+	gg_ib_note((uint32_t)iova, dwords);
++	gg_ibw_note((uint32_t)iova, dwords);
  	if (depth == 0) {
  		gg_san_va = (uint32_t)iova;
  		gg_san_dw = dwords;
@@ -94,7 +94,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +			uint32_t r2 = gg_rd(gg.gpu, GR(CP_IB2_REM_SIZE_DW));
 +			uint32_t b = (b2 != 0u && r2 != 0u) ? b2 : b1;
 +			uint32_t r = (b2 != 0u && r2 != 0u) ? r2 : r1;
-+			uint32_t len = gg_ib_len(b);
++			uint32_t len = gg_ibw_len(b);
 +			uint32_t start, a, k, n, adv_dw;
  
  			gg_walk_n++;
