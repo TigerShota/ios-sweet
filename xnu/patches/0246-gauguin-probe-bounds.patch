@@ -1,0 +1,46 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3730,6 +3730,9 @@
+ /* 0234: the state block is 60 dwords plus 20 for the two draws, so the probe
+  * needs 140; v193 handed it a 128-dword buffer and it silently did nothing. */
+ #define GG_PROBE_DW 160u
++/* 0246: the payload used to be a 640-byte local inside the copy loop - the kind
++ * of stack pressure that turns a bounds slip into a wild jump. */
++static uint32_t gg_probe_pay[GG_PROBE_DW];
+ /*
+  * 0239: CPMEM_SIZE is 0x20000 and the scratch block starts at 0x14000, so only
+  * 0xA000 bytes above +0x2000 are mapped. v198 panicked writing 0x40000 there
+@@ -3935,11 +3938,22 @@
+ 		0x9304u, 0xff00ff00u,	/* VPC_CNTL_0 */
+ 	};
+ 	uint32_t need = 2u * (sizeof(st) / 4u) + 20u;
++	/*
++	 * 0246: `need` is only a rough reservation. This is the exact number of
++	 * dwords written below: the state block, two eight-dword draws, plus the
++	 * optional poisoned base (mode 2) and the second surface (mode 4). It is
++	 * checked and printed on every arm, so a mismatch can never be silent.
++	 */
++	uint32_t ndw = (uint32_t)(sizeof(st) / 4u) + 16u +
++	    ((gg_probe3d() == 2) ? 2u : 0u) + ((gg_probe3d() == 4) ? 6u : 0u);
+ 	uint32_t i, n = 0u;
+ 
+-	if (need > max) {
++	if (need > max || ndw > max) {
++		printf("GAUGUIN CP: 0246 nofit dw=%u need=%u max=%u\n", ndw, need,
++		    max);
+ 		return 0u;
+ 	}
++	printf("GAUGUIN CP: 0246 emit dw=%u need=%u max=%u\n", ndw, need, max);
+ 	for (i = 0u; i < sizeof(st) / 4u; i += 2u) {
+ 		out[n++] = gg_pkt4(st[i]);
+ 		out[n++] = st[i + 1u];
+@@ -5814,7 +5828,7 @@
+ 			if (gg_probe3d() > 0 && gg_probe_rearm < GG_PROBE_REARM &&
+ 			    len <= GG_INS_MAX && out[base + 3u] != 0u &&
+ 			    *np + GG_PROBE_DW <= max) {
+-				uint32_t pay[GG_PROBE_DW];
++				uint32_t *pay = gg_probe_pay;
+ 				/*
+ 				 * 0237: gauguinprobe3d=3 renders into the UMD's own MRT
+ 				 * (0x52bca000, the base 0225 has been reading all along)
