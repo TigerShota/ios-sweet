@@ -1,0 +1,42 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5392,8 +5392,8 @@
+ 			nz++;
+ 		}
+ 	}
+-	printf("GAUGUIN CP: 0241 scan %s va=%#x nz=%u first=%#x val=%#x\n",
+-	    tag, va, nz, first, fv);
++	printf("GAUGUIN CP: 0241 scan %s va=%#x pa=%#x nz=%u first=%#x"
++	    " val=%#x\n", tag, va, (uint32_t)gg_gem_pa(va), nz, first, fv);
+ 	(void)sweet_log_flush_now();
+ }
+ 
+@@ -5920,6 +5920,27 @@
+ 					    " mrt=%#x base=%#x pitch=%u\n", base, pay[0],
+ 					    pay[1], pay[2], pay[3], live_mrt,
+ 					    gg_rd(gg.gpu, GR(0xa014u)), bpr);
++					/*
++					 * 0252: the measurement chain itself was never checked.
++					 * Write a signature through the CPU mapping of this PA,
++					 * read it back through the CPU, then read it through
++					 * the GPU VA path - if the last one does not see it, the
++					 * iova and the present's kernel VA are different
++					 * mappings of different memory and every zero so far was
++					 * measured in the wrong buffer.
++					 */
++					{
++						vm_offset_t sig = ml_io_map((vm_offset_t)
++						    gg_gem_pa(live_mrt), 0x1000u);
++
++						if (sig != 0) {
++							*(volatile uint32_t *)sig = 0xfeedfaceu;
++							printf("GAUGUIN CP: 0252 sig pa=%#x cpu=%#x"
++							    "\n", (uint32_t)gg_gem_pa(live_mrt),
++							    *(volatile uint32_t *)sig);
++							gg_va_scan("sig", live_mrt, 4u);
++						}
++					}
+ 					/* 0251: measure the target this draw will use. */
+ 					gg_va_scan("live", live_mrt, 0x4000u);
+ 					gg_va_grid("live", live_mrt, 1125u, 2436u, bpr);
