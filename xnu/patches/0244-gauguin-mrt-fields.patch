@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 --- a/bsd/dev/gauguin_gpu.c
 +++ b/bsd/dev/gauguin_gpu.c
-@@ -6828,6 +6828,20 @@
+@@ -6828,6 +6828,19 @@
  			    gg_rd(gg.gpu, GR(0x8825u)), gg_rd(gg.gpu, GR(0x8824u)),
  			    gg_rd(gg.gpu, GR(0x8011u)), gg_rd(gg.gpu, GR(0x8013u)));
  			/*
@@ -13,8 +13,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 +			 * dropped now that the simplest target also reads zero.
 +			 */
 +			printf("GAUGUIN CP: 0244 rd ctl=%#x info=%#x pitch=%#x"
-+			    " arr=%#x rnd=%#x
-+",
++			    " arr=%#x rnd=%#x" "\n",
 +			    gg_rd(gg.gpu, GR(0x8820u)), gg_rd(gg.gpu, GR(0x8822u)),
 +			    gg_rd(gg.gpu, GR(0x8823u)), gg_rd(gg.gpu, GR(0x8824u)),
 +			    gg_rd(gg.gpu, GR(0x8801u)));
