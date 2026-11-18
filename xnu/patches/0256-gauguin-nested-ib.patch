@@ -69,7 +69,7 @@ diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
 -	 * the same CP_IB1_BASE and the same REM, which is what gates it now; the
 -	 * whole IB is dumped with `*` on the stop offset, so the packet at the stop
 -	 * is visible even before the decoder gets it right.
-+	 * 0256: v196 decoded the outer IB completely and showed the ME is not in
++	 * 0256: v196 decoded the whole outer IB and showed the ME is not in
 +	 * it: at offset 49 it executes CP_INDIRECT_BUFFER into 0x5045e000 (77
 +	 * dwords), and IB1_REM freezes at 24 while that nested buffer runs. So the
 +	 * deepest buffer is the one to dump - CP_IB2 when it is live - with its
