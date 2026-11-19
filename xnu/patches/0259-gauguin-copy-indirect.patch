@@ -1,0 +1,170 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4743,7 +4743,9 @@
+  */
+ static int gg_nopib_opt = -1;
+ static int gg_scratchib_opt = -1;
++static int gg_copyib_opt;	/* 0259: gauguincopyib=1 - copies, not NOPs */
+ static int gg_mini_ib;
++static int gg_copy_warn;
+ static int gg_fclr_opt = -1;	/* 0198: gauguinfclr=1: all-ones W1C */
+ static uint32_t gg_mark_off[GG_MARK_IBS];	/* 0187: copy offset, bytes */
+ static uint32_t gg_mark_len[GG_MARK_IBS];	/* 0187: copy length, dwords */
+@@ -5246,6 +5248,16 @@
+ 				 * opcode parity bit - and leave the 3-dword address /
+ 				 * size payload untouched, so the draw IB still runs.
+ 				 */
++				/*
++				 * 0259: v218 made the indirect itself the trigger (33 NOPs,
++				 * 67 submits retired) and v219's rebind was invalid because
++				 * gg_ib_map() only maps the GEM window, so the mini IB in
++				 * CP scratch was never written. Both blocks now go through
++				 * the cpmem mapping the probe already uses, and a third flag
++				 * copies the real target (after this pass sanitised it) into
++				 * scratch and retargets the packet: runs -> the original
++				 * placement; still stuck -> the content or the mechanism.
++				 */
+ 				if (gg_nopib_opt < 0) {
+ 					int v = 0;
+ 
+@@ -5259,38 +5271,50 @@
+ 					    "gauguinscratchib", &v,
+ 					    sizeof(v)) ? v : 0;
+ 				}
+-				if (gg_scratchib_opt > 0 && gg_mini_ib == 0) {
+-					vm_offset_t q = gg_ib_map(
+-					    CP_VA_SCRATCH + 0x800u, 4u);
+-
+-					if (q != 0) {
+-						*(volatile uint32_t *)q =
+-						    gg_pkt7(CP_NOP, 3u);
+-						*(volatile uint32_t *)(q + 4u) = 0u;
+-						*(volatile uint32_t *)(q + 8u) = 0u;
+-						*(volatile uint32_t *)(q + 12u) = 0u;
+-						gg_mini_ib = 1;
+-						printf("GAUGUIN CP: 0258 mini"
+-						    " ib=%#x\n",
+-						    CP_VA_SCRATCH + 0x800u);
++				if (gg_copyib_opt < 0) {
++					int v = 0;
++
++					gg_copyib_opt = PE_parse_boot_argn(
++					    "gauguincopyib", &v, sizeof(v)) ? v : 0;
++					if (gg_copyib_opt > 0 && gg_probe3d() > 0 &&
++					    gg_copy_warn == 0) {
++						gg_copy_warn = 1;
++						printf("GAUGUIN CP: 0259 copy off -"
++						    " probe3d owns the scratch\n");
++						gg_copyib_opt = 0;
+ 					}
+ 				}
+-				if (gg_nopib_opt > 0 &&
+-				    ((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER) {
++				if ((gg_scratchib_opt > 0 ||
++				    gg_copyib_opt > 0) && gg_mini_ib == 0) {
++					volatile uint32_t *q = (volatile uint32_t *)
++					    (cpmem + CPMEM_SCRATCH + 0x800u);
++
++					q[0] = gg_pkt7(CP_NOP, 3u);
++					q[1] = 0u;
++					q[2] = 0u;
++					q[3] = 0u;
++					__asm__ volatile("dmb oshst" ::: "memory");
++					gg_mini_ib = 1;
++					printf("GAUGUIN CP: 0259 mini va=%#x w0=%#x\n",
++					    CP_VA_SCRATCH + 0x800u, q[0]);
++				}
++				/*
++				 * Sanitise the target before any copy so the bytes copied
++				 * are the ones this pass actually fixed.
++				 */
++				gg_ib_sanitize(((uint64_t)ah << 32) | al, nst,
++				    depth + 1);
++				if (gg_nopib_opt > 0) {
+ 					gg_san_wr2(iova, m, ismark, o,
+ 					    gg_pkt7(CP_NOP, plen));
+ 					fixed++;
+ 					if (gg_san_log < 240) {
+ 						gg_san_log++;
+-						printf("GAUGUIN CP: 0258 nopib"
+-						    " ib=%#llx n=%u held=%#llx\n",
+-						    (unsigned long long)
+-						    (((uint64_t)ah << 32) | al), nst,
+-						    (unsigned long long)
+-						    (((uint64_t)ah << 32) | al));
++						printf("GAUGUIN CP: 0259 nopib at=%u"
++						    " tgt=%#x n=%u hdr=%#x\n", o, al, nst,
++						    h);
+ 					}
+-				} else if (gg_scratchib_opt > 0 &&
+-				    ((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER) {
++				} else if (gg_scratchib_opt > 0) {
+ 					gg_san_wr2(iova, m, ismark, o + 1u,
+ 					    CP_VA_SCRATCH + 0x800u);
+ 					gg_san_wr2(iova, m, ismark, o + 2u, 0u);
+@@ -5298,14 +5322,57 @@
+ 					fixed++;
+ 					if (gg_san_log < 240) {
+ 						gg_san_log++;
+-						printf("GAUGUIN CP: 0258 rebind"
+-						    " ib=%#llx n=%u was=%#x\n",
+-						    (unsigned long long)
+-						    (((uint64_t)ah << 32) | al), nst,
+-						    al);
++						printf("GAUGUIN CP: 0259 rebind at=%u"
++						    " tgt=%#x n=%u -> mini\n", o, al,
++						    nst);
+ 					}
+-				} else if (gg_pfd_opt > 0 &&
+-				    ((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER) {
++				} else if (gg_copyib_opt > 0 && depth == 0) {
++					uint32_t slot = o / 16u;
++					uint32_t sva = CP_VA_SCRATCH + 0x1000u +
++					    slot * 0x400u;
++					vm_offset_t d = cpmem + CPMEM_SCRATCH +
++					    0x1000u + (vm_offset_t)slot * 0x400u;
++					uint64_t pa;
++					vm_offset_t src;
++					uint32_t j;
++
++					if (slot >= 12u || nst > 256u) {
++						if (gg_san_log < 240) {
++							gg_san_log++;
++							printf("GAUGUIN CP: 0259 copy"
++							    " skip at=%u slot=%u n=%u\n",
++							    o, slot, nst);
++						}
++					} else if ((pa = gg_gem_pa(al)) == 0u) {
++						if (gg_san_log < 240) {
++							gg_san_log++;
++							printf("GAUGUIN CP: 0259 copy"
++							    " pa? tgt=%#x\n", al);
++						}
++					} else if ((src = gg_tmp_map(pa)) != 0u) {
++						src += (vm_offset_t)(al & 0xfffu);
++						for (j = 0u; j < nst; j++) {
++							*(volatile uint32_t *)(d + 4u * j) =
++							    *(volatile uint32_t *)
++							    (src + 4u * j);
++						}
++						__asm__ volatile("dmb oshst" :::
++						    "memory");
++						gg_san_wr2(iova, m, ismark, o + 1u,
++						    sva);
++						gg_san_wr2(iova, m, ismark, o + 2u, 0u);
++						gg_san_wr2(iova, m, ismark, o + 3u,
++						    nst);
++						fixed++;
++						if (gg_san_log < 240) {
++							gg_san_log++;
++							printf("GAUGUIN CP: 0259 copy"
++							    " at=%u tgt=%#x n=%u -> %#x"
++							    " w0=%#x\n", o, al, nst, sva,
++							    *(volatile uint32_t *)d);
++						}
++					}
++				} else if (gg_pfd_opt > 0) {
+ 					gg_san_wr2(iova, m, ismark, o,
+ 					    gg_pkt7(0x37u, plen));
+ 					fixed++;
