@@ -1,0 +1,83 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3750,6 +3750,13 @@
+ 	uint32_t dw;
+ } gg_ibw[GG_IB_MAP];
+ static uint32_t gg_ibw_n;
++/*
++ * 0257: CP_IB1_BASE keeps pointing at the same buffer across frames, so by the
++ * time the wedge report runs the contents belong to a later frame. The first 64
++ * dwords of the outermost IB are copied at sanitize time instead.
++ */
++static uint32_t gg_snap_va;
++static uint32_t gg_snap[64];
+ 
+ static void
+ gg_ibw_note(uint32_t va, uint32_t dw)
+@@ -5326,6 +5333,17 @@
+ 	if (depth == 0) {
+ 		gg_san_va = (uint32_t)iova;
+ 		gg_san_dw = dwords;
++		/* 0257: freeze the head of this buffer before it is reused. `m` is
++		 * the mapping this function already took - calling gg_ib_map()
++		 * again would leak one translation per submit. */
++		{
++			uint32_t j;
++
++			for (j = 0u; j < 64u && j < dwords; j++) {
++				gg_snap[j] = *(volatile uint32_t *)(m + j * 4u);
++			}
++			gg_snap_va = (uint32_t)iova;
++		}
+ 	}
+ 	if (depth == 0 && !gg_quiet) {
+ 		printf("GAUGUIN CP: 0187 san ib=%#llx dwords=%u fixed=%u%s\n",
+@@ -7988,6 +8006,47 @@
+ 			n = (len != 0u) ? len : 96u;
+ 			printf("GAUGUIN CP: 0256 hang ib1=%#x/%u ib2=%#x/%u"
+ 			    " len=%u start=%#x\n", b1, r1, b2, r2, len, start);
++			/*
++			 * 0257: v215 found the stop one dword before a nested
++			 * CP_INDIRECT_BUFFER, i.e. not on a packet header at all, and
++			 * IB2_REM=0 proved the ME never entered that buffer. So when the
++			 * stop is not a type-7 header, walk forward to the next aligned
++			 * one and name it, with the target of an indirect draw.
++			 */
++			{
++				uint32_t h0 = gg_flat_rd(start, 0u);
++
++				if ((h0 >> 28) != 7u) {
++					uint32_t d;
++
++					for (d = 1u; d <= 8u; d++) {
++						uint32_t hv = gg_flat_rd(start + d * 4u, 0u);
++
++						if ((hv >> 28) != 7u) {
++							continue;
++						}
++						printf("GAUGUIN CP: 0257 next at=%#x op=%#x cnt=%u"
++						    " w1=%#x w2=%#x w3=%#x\n",
++						    start + d * 4u, (hv >> 16) & 0x7fu,
++						    hv & 0x3fffu,
++						    gg_flat_rd(start + d * 4u, 1u),
++						    gg_flat_rd(start + d * 4u, 2u),
++						    gg_flat_rd(start + d * 4u, 3u));
++						if (((hv >> 16) & 0x7fu) == 0x3fu) {
++							uint32_t t = gg_flat_rd(
++							    start + d * 4u, 1u);
++
++							printf("GAUGUIN CP: 0257 ind tgt=%#x:"
++							    " %#x %#x %#x %#x\n", t,
++							    gg_flat_rd(t, 0u),
++							    gg_flat_rd(t, 1u),
++							    gg_flat_rd(t, 2u),
++							    gg_flat_rd(t, 3u));
++						}
++						break;
++					}
++				}
++			}
+ 			for (k = 0u; k + 3u < n; k += 4u) {
+ 				printf("GAUGUIN CP: 0256 ib %#x+%u%s: %#x %#x %#x"
+ 				    " %#x\n", b, k * 4u,
