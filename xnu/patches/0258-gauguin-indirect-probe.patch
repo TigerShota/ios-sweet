@@ -1,0 +1,87 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4734,6 +4734,16 @@
+ static int gg_amb_opt = -1;	/* gauguinamb: 1 sanitize, 2 nop the amble */
+ static int gg_skip_nested = -1;	/* gauguinsk: >0 skip N guilty nested IBs */
+ static int gg_pfd_opt = -1;	/* 0198: gauguinpfd=1: PFE -> PFD */
++/*
++ * 0258: two discriminators for a wedge that survives both the PFE and the PFD
++ * form of the packet. gauguinnopib=1 replaces the whole indirect with a NOP of
++ * the same length (does the ME move past the packet?), gauguinscratchib=1 keeps
++ * the packet but points it at a four-dword all-NOP IB in our own scratch (is it
++ * the target or the mechanism itself?).
++ */
++static int gg_nopib_opt = -1;
++static int gg_scratchib_opt = -1;
++static int gg_mini_ib;
+ static int gg_fclr_opt = -1;	/* 0198: gauguinfclr=1: all-ones W1C */
+ static uint32_t gg_mark_off[GG_MARK_IBS];	/* 0187: copy offset, bytes */
+ static uint32_t gg_mark_len[GG_MARK_IBS];	/* 0187: copy length, dwords */
+@@ -5236,7 +5246,65 @@
+ 				 * opcode parity bit - and leave the 3-dword address /
+ 				 * size payload untouched, so the draw IB still runs.
+ 				 */
+-				if (gg_pfd_opt > 0 &&
++				if (gg_nopib_opt < 0) {
++					int v = 0;
++
++					gg_nopib_opt = PE_parse_boot_argn(
++					    "gauguinnopib", &v, sizeof(v)) ? v : 0;
++				}
++				if (gg_scratchib_opt < 0) {
++					int v = 0;
++
++					gg_scratchib_opt = PE_parse_boot_argn(
++					    "gauguinscratchib", &v,
++					    sizeof(v)) ? v : 0;
++				}
++				if (gg_scratchib_opt > 0 && gg_mini_ib == 0) {
++					vm_offset_t q = gg_ib_map(
++					    CP_VA_SCRATCH + 0x800u, 4u);
++
++					if (q != 0) {
++						*(volatile uint32_t *)q =
++						    gg_pkt7(CP_NOP, 3u);
++						*(volatile uint32_t *)(q + 4u) = 0u;
++						*(volatile uint32_t *)(q + 8u) = 0u;
++						*(volatile uint32_t *)(q + 12u) = 0u;
++						gg_mini_ib = 1;
++						printf("GAUGUIN CP: 0258 mini"
++						    " ib=%#x\n",
++						    CP_VA_SCRATCH + 0x800u);
++					}
++				}
++				if (gg_nopib_opt > 0 &&
++				    ((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER) {
++					gg_san_wr2(iova, m, ismark, o,
++					    gg_pkt7(CP_NOP, plen));
++					fixed++;
++					if (gg_san_log < 240) {
++						gg_san_log++;
++						printf("GAUGUIN CP: 0258 nopib"
++						    " ib=%#llx n=%u held=%#llx\n",
++						    (unsigned long long)
++						    (((uint64_t)ah << 32) | al), nst,
++						    (unsigned long long)
++						    (((uint64_t)ah << 32) | al));
++					}
++				} else if (gg_scratchib_opt > 0 &&
++				    ((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER) {
++					gg_san_wr2(iova, m, ismark, o + 1u,
++					    CP_VA_SCRATCH + 0x800u);
++					gg_san_wr2(iova, m, ismark, o + 2u, 0u);
++					gg_san_wr2(iova, m, ismark, o + 3u, 4u);
++					fixed++;
++					if (gg_san_log < 240) {
++						gg_san_log++;
++						printf("GAUGUIN CP: 0258 rebind"
++						    " ib=%#llx n=%u was=%#x\n",
++						    (unsigned long long)
++						    (((uint64_t)ah << 32) | al), nst,
++						    al);
++					}
++				} else if (gg_pfd_opt > 0 &&
+ 				    ((h >> 16) & 0x7fu) == CP_INDIRECT_BUFFER) {
+ 					gg_san_wr2(iova, m, ismark, o,
+ 					    gg_pkt7(0x37u, plen));
