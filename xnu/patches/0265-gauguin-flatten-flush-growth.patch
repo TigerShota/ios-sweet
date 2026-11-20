@@ -1,0 +1,26 @@
+diff --git a/chk/bsd/dev/gauguin_gpu.c b/tree/bsd/dev/gauguin_gpu.c
+index 5ea5f1c..79f42fb 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5856,10 +5856,19 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			flush_dcache64((addr64_t)(mark_pa +
+ 			    (iova - CP_VA_MARK)), 4u * room, TRUE);
+ 		} else {
+-			/* 0194: flush every page the walker touched */
++			/*
++			 * 0265: v231 wedged fence 0x11b, the first submit whose
++			 * spliced IB growth crossed a page. room is still the
++			 * pre-flatten dword count (2411 there), so this loop
++			 * cleaned 12288 bytes while the flattened stream ends
++			 * at 12380 - the last 92 bytes stayed dirty in the CPU
++			 * cache and the ME fetched stale page-4 content (zeros
++			 * on first use, the reused buffer's previous tail).
++			 * Flush to the final dwords, not the entry room.
++			 */
+ 			uint32_t pg;
+ 
+-			for (pg = 0; pg < room; pg += GEM_PAGE / 4u) {
++			for (pg = 0; pg < dwords; pg += GEM_PAGE / 4u) {
+ 				vm_offset_t pm =
+ 				    gg_san_map(iova + 4u * (uint64_t)pg);
+ 
