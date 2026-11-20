@@ -1,0 +1,105 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4879,6 +4879,30 @@
+ }
+ 
+ /*
++ * 0263: a splice can push the grown IB past the 4 KiB page it started in, and
++ * 0194 already walks multi-page IBs dword by dword, so the old
++ * "must still fit in one page" test rejected whole submissions that a v224
++ * log shows are perfectly serviceable (0x56166000 spans 3 pages). Probe one
++ * dword per destination page instead of one flat limit.
++ */
++static int
++gg_flat_map_ok(uint64_t iova, uint32_t from, uint32_t to)
++{
++	uint64_t a = iova + 4u * (uint64_t)from;
++	uint64_t z = iova + 4u * (uint64_t)to;
++
++	while (a < z) {
++		uint64_t next = (a | 0xfffu) + 1u;
++
++		if (gg_san_map(a) == 0u) {
++			return 0;
++		}
++		a = (next < z) ? next : z;
++	}
++	return 1;
++}
++
++/*
+  * 0205: v152's wedge is either a 3D job that never retires or a write the CP
+  * cannot complete. The two are told apart by whether the address the stream
+  * writes (the CACHE_FLUSH_TS target, in the GEM window) still has a valid
+@@ -5601,7 +5625,17 @@
+ 	 * length is registered so the ring packet submits it.
+ 	 */
+ 	if (depth == 0 && gg_splice_n > 0u && !ismark) {
+-		uint32_t k, nflat = 0u, nnop = 0u;
++		uint32_t k, nflat = 0u, nnop = 0u, nskip = 0u;
++		/*
++		 * 0263: the writable envelope is the page-rounded end of the IB we
++		 * were handed, not one page. GEM allocations are page multiples, so
++		 * this never reaches a page the BO cannot own, while a 2411-dword IB
++		 * on 3 pages keeps its 661 dwords of tail slack instead of losing the
++		 * whole submission.
++		 */
++		uint32_t room = (uint32_t)(((uint64_t)(iova & 0xfffu) +
++		    4u * (uint64_t)dwords + GEM_PAGE - 1u) &
++		    ~(uint64_t)(GEM_PAGE - 1u));
+ 
+ 		/*
+ 		 * 0262: the two bisection knobs. Parsed once, on the first flattened
+@@ -5656,9 +5690,18 @@
+ 				nnop++;
+ 				continue;
+ 			}
+-			if (((uint32_t)iova & 0xfffu) + 4u * nl > GEM_PAGE) {
+-				printf("GAUGUIN CP: 0261 skip page at=%u"
+-				    " n=%u\n", so, tn);
++			if (((uint32_t)iova & 0xfffu) + 4u * nl > room) {
++				printf("GAUGUIN CP: 0263 skip room at=%u"
++				    " n=%u end=%u room=%u\n", so, tn,
++				    (uint32_t)((uint32_t)iova & 0xfffu) +
++				    4u * nl, room);
++				nskip++;
++				continue;
++			}
++			if (gg_flat_map_ok(iova, so + 4u, nl) == 0) {
++				printf("GAUGUIN CP: 0263 skip map at=%u"
++				    " n=%u end=%u\n", so, tn, nl);
++				nskip++;
+ 				continue;
+ 			}
+ 			pa = gg_gem_pa(tv);
+@@ -5666,6 +5709,7 @@
+ 			if (src == 0u) {
+ 				printf("GAUGUIN CP: 0261 skip pa at=%u"
+ 				    " tgt=%#x\n", so, tv);
++				nskip++;
+ 				continue;
+ 			}
+ 			src += (vm_offset_t)(tv & 0xfffu);
+@@ -5747,7 +5791,7 @@
+ 					x += lx;
+ 				}
+ 			}
+-			if (gg_hist_log < 6) {
++			if (gg_hist_log < 32) {
+ 				uint32_t qx;
+ 
+ 				gg_hist_log++;
+@@ -5793,9 +5837,10 @@
+ 			    " tgt=%#x n=%u len=%u\n", (uint32_t)iova, so,
+ 			    tv, tn, dwords);
+ 		}
+-		if (gg_flatone_opt >= 0) {
++		if (gg_flatone_opt >= 0 || nskip != 0u) {
+ 			printf("GAUGUIN CP: 0262 pass ib=%#x flat=%u nop=%u"
+-			    " len=%u\n", (uint32_t)iova, nflat, nnop, dwords);
++			    " skip=%u len=%u\n", (uint32_t)iova, nflat, nnop,
++			    nskip, dwords);
+ 		}
+ 		gg_flatib_note((uint32_t)iova, dwords);
+ 		gg_splice_n = 0u;
