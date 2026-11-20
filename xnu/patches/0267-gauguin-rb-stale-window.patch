@@ -1,0 +1,51 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -8901,6 +8901,47 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		(void)sweet_log_flush_now();
+ 		goto recover;
+ 	}
++	/*
++	 * 0267: v233b's first wedge (fence 0x115) left the ME reading past the
++	 * submitted ring: rptr=6672 while this boot's wptr never exceeded 6504
++	 * (the submit spans [6475,6504)), scratch2 held the previous fence
++	 * 0x114, and CP_IB1_BASE/REM_SIZE named 0x5555e000/2871 although every
++	 * size this submit ever grew to is <=2411 - the ME consumed 168 dwords
++	 * this boot never wrote (the ring is a fixed carveout, so they predate
++	 * this boot). Dump the consumed window - the submit itself plus
++	 * everything beyond its end - plus the RB registers the front end
++	 * works from and the submit's IB records for correlation.
++	 */
++	{
++		uint32_t rr = gg_rd(gg.gpu, GR(CP_RB_RPTR_DW));
++		uint32_t ww = gg_rd(gg.gpu, GR(CP_RB_WPTR_DW));
++		uint32_t from = (ww > 48u) ? ww - 48u : 0u;
++		uint32_t to = (rr + 48u < ring_dw) ? rr + 48u : ring_dw;
++		uint32_t k, j;
++
++		printf("GAUGUIN CP: 0267 rb base=%#x:%#x cntl=%#x"
++		    " rptr_addr=%#x:%#x rp=%u wp=%u\n",
++		    gg_rd(gg.gpu, GR(CP_RB_BASE_DW)),
++		    gg_rd(gg.gpu, GR(CP_RB_BASE_DW) + 4u),
++		    gg_rd(gg.gpu, GR(CP_RB_CNTL_DW)),
++		    gg_rd(gg.gpu, GR(CP_RB_RPTR_ADDR_DW)),
++		    gg_rd(gg.gpu, GR(CP_RB_RPTR_ADDR_DW) + 4u),
++		    rr, ww);
++		for (k = 0; k < count; k++) {
++			printf("GAUGUIN CP: 0267 sub %u addr=%#x/%u"
++			    " flat=%#x/%u\n", k,
++			    (uint32_t)addresses[k], words[k],
++			    (uint32_t)ai[k], wi[k]);
++		}
++		for (k = from; k < to; k += 8u) {
++			printf("GAUGUIN CP: 0267 rb %u:", k);
++			for (j = 0; j < 8u && k + j < to; j++) {
++				printf(" %#x", ring[(k + j) % ring_dw]);
++			}
++			printf("\n");
++		}
++		(void)sweet_log_flush_now();
++	}
+ 	/*
+ 	 * 0188: the submit is 4*count+13 dwords; printing its range proves
+ 	 * at a glance whether the CP was pointed past the end of the ring.
