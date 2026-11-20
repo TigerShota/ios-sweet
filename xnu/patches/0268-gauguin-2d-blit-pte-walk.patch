@@ -1,0 +1,127 @@
+From: Trae <trae@local>
+Subject: [PATCH] 0268: gauguin - walk the hung ib2 2D blit
+ addresses and probe their GEM PTEs
+
+v234+v233b verdict: ME dies inside ib2 at offset 224 on the
+CP_BLIT(SCALE) packet of a blit cycle; fence write never ran
+(scratch2 = previous fence). Static walk decodes every packet
+(305/305), parity clean, SMMU cb1 shows no new fault. Remaining
+candidates: missing GEM PTE for the DST/SRC page of that cycle
+or 2D-engine state. Parse the type-4 blit-setup groups in the
+hung ib2, print per-cycle dst/src/tl/br/b4c2 and probe each
+address through the 0205 gg_iova_probe (l2/tbl/pte/pa/pn) -
+one boot decides unmapped-page vs all-PTEs-valid.
+---
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index ee353d5..8cba012 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5015,6 +5015,99 @@ gg_iova_probe(const char *tag, uint64_t iova)
+ 	    tbl, (unsigned long long)pte, (unsigned long long)pa, pn);
+ }
+ 
++/*
++ * 0268: v234 and v233b hang at the same place - the ME stopped inside ib2
++ * at offset 224, the CP_BLIT(SCALE) packet of a 2D blit cycle whose
++ * RB_2D_DST (0x8c20) names a page earlier cycles did not touch (v234:
++ * 0x5697c000 after six 0x1000 steps; v233b: 0x55d54000 after four). The
++ * static walk decodes the whole IB, packet parity is clean and the SMMU
++ * context bank shows no new fault, so what remains is a missing GEM PTE
++ * for that page or a 2D-engine state problem. Parse the type-4 writes of
++ * the hung ib2, keep the payload dwords of the three blit-setup groups
++ * (0xb4c0 GRAS_2D_DST_TL/BR..., 0x8c17 RB_2D_SRC..., 0x8c20 RB_2D_DST...),
++ * print one line per blit and run every address through the 0205 probe -
++ * one boot decides "page unmapped" vs "all PTEs valid".
++ */
++static void
++gg_2d_pte_walk(uint64_t iova, uint32_t dwords)
++{
++	uint32_t g17[4], g20[6], gb[5];
++	uint32_t o, n, cyc = 0u, k;
++	vm_offset_t m;
++
++	m = gg_ib_map(iova, dwords);
++	if (m == 0) {
++		return;
++	}
++	n = dwords < 1024u ? dwords : 1024u;
++	for (k = 0u; k < 4u; k++) {
++		g17[k] = 0u;
++	}
++	for (k = 0u; k < 6u; k++) {
++		g20[k] = 0u;
++	}
++	for (k = 0u; k < 5u; k++) {
++		gb[k] = 0u;
++	}
++	for (o = 0u; o < n; ) {
++		uint32_t h = gg_rd(m, 4u * o);
++
++		if ((h >> 28) == 4u) {
++			uint32_t c4 = h & 0x7fu;
++			uint32_t r4 = (h >> 8) & 0x3ffffu;
++
++			for (k = 0u; k < c4; k++) {
++				uint32_t v = gg_rd(m, 4u * (o + 1u + k));
++				uint32_t r = r4 + k;
++
++				if (r >= 0x8c17u && r < 0x8c1bu) {
++					g17[r - 0x8c17u] = v;
++				}
++				if (r >= 0x8c20u && r < 0x8c26u) {
++					g20[r - 0x8c20u] = v;
++				}
++				if (r >= 0xb4c0u && r < 0xb4c5u) {
++					gb[r - 0xb4c0u] = v;
++				}
++			}
++			o += 1u + c4;
++			continue;
++		}
++		if ((h >> 28) == 7u) {
++			uint32_t cnt = h & 0x7fffu;
++			uint32_t op = (h >> 16) & 0x7fu;
++
++			if (op == 0x2cu) {
++				printf("GAUGUIN CP: 0268 blit cyc=%u at=%u"
++				    " dst=%#x src=%#x tl=%#x br=%#x"
++				    " b4c2=%#x\n", cyc, o, g20[0], g17[1],
++				    gb[0], gb[1], gb[2]);
++				if (g20[0] != 0u) {
++					gg_iova_probe("0268 dst", g20[0]);
++				}
++				if (g17[1] != 0u) {
++					gg_iova_probe("0268 src", g17[1]);
++				}
++				if (gb[2] != 0u) {
++					gg_iova_probe("0268 b4c2", gb[2]);
++				}
++				cyc++;
++			}
++			o += 1u + cnt;
++			continue;
++		}
++		if ((h >> 30) == 0u) {
++			o += ((h >> 16) & 0x3fffu) + 1u;
++			continue;
++		}
++		printf("GAUGUIN CP: 0268 stop at=%u h=%#x type=%u\n",
++		    o, h, h >> 28);
++		return;
++	}
++	printf("GAUGUIN CP: 0268 end cycles=%u\n", cyc);
++	(void)sweet_log_flush_now();
++}
++
+ /* Probe every CACHE_FLUSH_TS target the wedged IB still contains. */
+ static void
+ gg_ib_evprobe(uint64_t iova, uint32_t dwords)
+@@ -9385,6 +9478,7 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		if (ib2 != 0u && rem2 != 0u) {
+ 			gg_ib_all("ib2", ib2, rem2);
+ 			gg_ib_walk("ib2", ib2, rem2);
++			gg_2d_pte_walk(ib2, rem2);
+ 		}
+ 	}
+ 	(void)sweet_log_flush_now();
+
