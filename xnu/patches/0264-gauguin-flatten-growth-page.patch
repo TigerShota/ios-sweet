@@ -1,0 +1,26 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -5627,15 +5627,16 @@
+ 	if (depth == 0 && gg_splice_n > 0u && !ismark) {
+ 		uint32_t k, nflat = 0u, nnop = 0u, nskip = 0u;
+ 		/*
+-		 * 0263: the writable envelope is the page-rounded end of the IB we
+-		 * were handed, not one page. GEM allocations are page multiples, so
+-		 * this never reaches a page the BO cannot own, while a 2411-dword IB
+-		 * on 3 pages keeps its 661 dwords of tail slack instead of losing the
+-		 * whole submission.
++		 * 0264: v228 showed the envelope was still the page-rounded end of the
++		 * *original* length, so the growth itself had nowhere to go - the
++		 * 2411-dword IB stopped 92 bytes short of its 4th page and two whole
++		 * submissions kept their indirect. Give the splice one page past the
++		 * original span; gg_flat_map_ok() still has to find every destination
++		 * page backed before a single dword is moved.
+ 		 */
+ 		uint32_t room = (uint32_t)(((uint64_t)(iova & 0xfffu) +
+ 		    4u * (uint64_t)dwords + GEM_PAGE - 1u) &
+-		    ~(uint64_t)(GEM_PAGE - 1u));
++		    ~(uint64_t)(GEM_PAGE - 1u)) + GEM_PAGE;
+ 
+ 		/*
+ 		 * 0262: the two bisection knobs. Parsed once, on the first flattened
