@@ -1,0 +1,102 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4135,14 +4135,96 @@ gg_boot_int(const char *name, int def, int *slot)
+ /* 0216: memory post-mortems are only useful for the first wedges. */
+ static uint32_t gg_mem_n;
+ 
++/*
++ * 0266: v232 booted with gauguinregs=1 as the last cmdline token (574 of
++ * 608 bytes, nothing truncated; gauguinflatnop from the same buffer parsed
++ * fine at first submit) yet at the first wedge PE_parse_boot_argn said no
++ * and the register post-mortem never ran - while the kern.bootargs sysctl
++ * later read the very same PE_boot_args() buffer back intact. Parse once
++ * with a full report: the return value, the raw buffer pointer, its length
++ * and the tail 120 bytes, then - if PE_parse still says no - hand-scan the
++ * same buffer so the dump runs regardless of which layer lied.
++ */
+ static int
+ gg_regs_enabled(void)
+ {
+ 	if (gg_regs_opt < 0) {
+ 		int v = 0;
++		boolean_t ok = PE_parse_boot_argn("gauguinregs", &v, sizeof(v));
++		char *args = PE_boot_args();
++		char tail[121];
++		unsigned int len = 0u, k, n;
++
++		while (len < 607u && args[len] != '\0') {
++			len++;
++		}
++		n = (len > 120u) ? len - 120u : 0u;
++		for (k = 0u; k + n < len; k++) {
++			tail[k] = args[n + k];
++		}
++		tail[k] = '\0';
++		printf("GAUGUIN CP: 0266 regs parse ok=%d v=%d args@%p len=%u"
++		    " tail=[%s]\n", ok ? 1 : 0, v, (void *)args, len, tail);
++		(void)sweet_log_flush_now();
++		if (ok) {
++			gg_regs_opt = v;
++			return gg_regs_opt;
++		}
++		{
++			const char *s;
+ 
+-		gg_regs_opt = PE_parse_boot_argn("gauguinregs", &v, sizeof(v)) ?
+-		    v : 0;
++			for (s = args; *s != '\0';) {
++				while (*s == ' ' || *s == '\t') {
++					s++;
++				}
++				if (*s == '\0') {
++					break;
++				}
++				if (s[0] == 'g' &&
++				    strncmp(s, "gauguinregs=", 12) == 0) {
++					const char *p = s + 12;
++					unsigned int acc = 0u;
++
++					if (p[0] == '0' &&
++					    (p[1] == 'x' || p[1] == 'X')) {
++						for (p += 2;; p++) {
++							if (*p >= '0' && *p <= '9') {
++								acc = acc * 16u +
++								    (unsigned)(*p - '0');
++							} else if (*p >= 'a' &&
++							    *p <= 'f') {
++								acc = acc * 16u +
++								    (unsigned)(*p - 'a') + 10u;
++							} else if (*p >= 'A' &&
++							    *p <= 'F') {
++								acc = acc * 16u +
++								    (unsigned)(*p - 'A') + 10u;
++							} else {
++								break;
++							}
++						}
++					} else {
++						for (; *p >= '0' && *p <= '9';
++						    p++) {
++							acc = acc * 10u +
++							    (unsigned)(*p - '0');
++						}
++					}
++					gg_regs_opt = (acc != 0u) ? (int)acc : 1;
++					printf("GAUGUIN CP: 0266 regs fallback"
++					    " matched=%d\n", gg_regs_opt);
++					(void)sweet_log_flush_now();
++					return gg_regs_opt;
++				}
++				while (*s != '\0' && *s != ' ' && *s != '\t') {
++					s++;
++				}
++			}
++		}
++		printf("GAUGUIN CP: 0266 regs fallback no token\n");
++		(void)sweet_log_flush_now();
++		gg_regs_opt = 0;
++		return gg_regs_opt;
+ 	}
+ 	return gg_regs_opt;
+ }
