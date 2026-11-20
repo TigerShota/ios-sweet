@@ -1,0 +1,241 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4758,7 +4758,7 @@
+ #define GG_FLAT_IBS 24
+ static int gg_flatib_opt = -1;
+ struct gg_splice_s {
+-	uint32_t o, tgt, n;
++	uint32_t o, tgt, n, pl;
+ };
+ static struct gg_splice_s gg_splice[GG_SPLICE_IB];
+ static uint32_t gg_splice_n;
+@@ -4766,6 +4766,26 @@
+ 	uint32_t va, len, gen;
+ } gg_flatib_tab[GG_FLAT_IBS];
+ static uint32_t gg_flatib_n, gg_flatib_gen;
++/*
++ * 0262: v224 showed the flattened stream is consumed to its end (IB1_REM 0,
++ * ib2 never loaded) and still never retires, so what remains is a stop inside
++ * the spliced bytes. Bisect by opcode, not by offset:
++ *   gauguinflatnop=0xNN  rewrite every type-7 packet with that opcode inside a
++ *                        spliced range to a length-preserving CP_NOP;
++ *   gauguinflatone=<at>  splice ONLY the indirect that sits at ring offset
++ *                        <at> and NOP the others (v218: dropping the packet
++ *                        makes the IB retire).
++ * Both default off, so the 0261 stream is unchanged.
++ */
++#define GG_FLAT_OPS 8
++static int gg_flatnop_opt = -2;	/* -2 unparsed, -1 off, >=0 opcode */
++static int gg_flatone_opt = -2;	/* -2 unparsed, -1 all, >=0 ring offset */
++static uint32_t gg_flat_hits;
++static uint8_t gg_flatmk[512];		/* 0 keep, 1 zero, 2 CP_NOP header */
++static uint32_t gg_flatnopv[512];
++static uint32_t gg_histop[GG_FLAT_OPS];
++static uint32_t gg_histn[GG_FLAT_OPS];
++static uint32_t gg_histops, gg_hist_pk, gg_hist4, gg_histof, gg_hist_log;
+ 
+ static void
+ gg_flatib_note(uint32_t va, uint32_t len)
+@@ -5381,6 +5401,7 @@
+ 					gg_splice[gg_splice_n].o = o;
+ 					gg_splice[gg_splice_n].tgt = al;
+ 					gg_splice[gg_splice_n].n = nst;
++					gg_splice[gg_splice_n].pl = len;
+ 					gg_splice_n++;
+ 					if (gg_san_log < 240) {
+ 						gg_san_log++;
+@@ -5580,16 +5601,61 @@
+ 	 * length is registered so the ring packet submits it.
+ 	 */
+ 	if (depth == 0 && gg_splice_n > 0u && !ismark) {
+-		uint32_t k;
++		uint32_t k, nflat = 0u, nnop = 0u;
++
++		/*
++		 * 0262: the two bisection knobs. Parsed once, on the first flattened
++		 * depth-0 IB, so the log always states which mode ran.
++		 */
++		if (gg_flatnop_opt == -2) {
++			int v = 0;
+ 
++			gg_flatnop_opt = PE_parse_boot_argn("gauguinflatnop",
++			    &v, sizeof(v)) ? v : -1;
++			if (gg_flatnop_opt >= 0) {
++				printf("GAUGUIN CP: 0262 nop op=%#x armed\n",
++				    (uint32_t)gg_flatnop_opt);
++			}
++		}
++		if (gg_flatone_opt == -2) {
++			int v = 0;
++
++			gg_flatone_opt = PE_parse_boot_argn("gauguinflatone",
++			    &v, sizeof(v)) ? v : -1;
++			if (gg_flatone_opt >= 0) {
++				printf("GAUGUIN CP: 0262 one at=%d armed\n",
++				    gg_flatone_opt);
++			}
++		}
+ 		for (k = gg_splice_n; k-- > 0u; ) {
+ 			uint32_t so = gg_splice[k].o;
+ 			uint32_t tn = gg_splice[k].n;
+ 			uint32_t tv = gg_splice[k].tgt;
++			uint32_t tpl = gg_splice[k].pl;
+ 			uint32_t j, nl = dwords + tn - 4u;
+ 			uint64_t pa;
+ 			vm_offset_t src;
+ 
++			/*
++			 * 0262: the control - drop every indirect except the one the
++			 * boot-arg names. Length preserving, so the earlier offsets
++			 * (handled after this one) stay valid.
++			 */
++			if (gg_flatone_opt >= 0 && (int)so != gg_flatone_opt) {
++				gg_san_wr2(iova, m, ismark, so,
++				    gg_pkt7(CP_NOP, tpl - 1u));
++				for (j = 1u; j < tpl; j++) {
++					gg_san_wr2(iova, m, ismark, so + j, 0u);
++				}
++				fixed++;
++				if (gg_san_log < 240) {
++					gg_san_log++;
++					printf("GAUGUIN CP: 0262 nop at=%u"
++					    " tgt=%#x n=%u\n", so, tv, tn);
++				}
++				nnop++;
++				continue;
++			}
+ 			if (((uint32_t)iova & 0xfffu) + 4u * nl > GEM_PAGE) {
+ 				printf("GAUGUIN CP: 0261 skip page at=%u"
+ 				    " n=%u\n", so, tn);
+@@ -5603,6 +5669,100 @@
+ 				continue;
+ 			}
+ 			src += (vm_offset_t)(tv & 0xfffu);
++			/*
++			 * 0262: one decode pass over the sanitised target. It builds
++			 * the type-7 opcode histogram (type-4 state writes counted as
++			 * a group) and, when gauguinflatnop names an opcode, marks
++			 * those packets for a length-preserving CP_NOP.
++			 */
++			gg_hist_pk = 0u;
++			gg_hist4 = 0u;
++			gg_histops = 0u;
++			gg_histof = 0u;
++			gg_flat_hits = 0u;
++			for (j = 0u; j < tn; j++) {
++				gg_flatmk[j] = 0u;
++			}
++			{
++				uint32_t x = 0u;
++
++				while (x < tn) {
++					uint32_t hx = *(volatile uint32_t *)
++					    (src + 4u * x);
++					uint32_t tx = hx >> 28;
++					uint32_t px, lx, kx, qx;
++
++					if (tx == 7u) {
++						px = hx & 0x3fffu;
++					} else if (tx == 4u) {
++						px = hx & 0x7fu;
++					} else if (tx == 3u) {
++						px = hx & 0x3ffu;
++					} else {
++						break;
++					}
++					lx = 1u + px;
++					if (x + lx > tn) {
++						break;
++					}
++					gg_hist_pk++;
++					if (tx == 4u) {
++						gg_hist4++;
++					} else if (tx == 7u) {
++						kx = (hx >> 16) & 0x7fu;
++						for (qx = 0u; qx < gg_histops;
++						    qx++) {
++							if (gg_histop[qx] ==
++							    kx) {
++								gg_histn[qx]++;
++								break;
++							}
++						}
++						if (qx == gg_histops) {
++							if (gg_histops <
++							    GG_FLAT_OPS) {
++								gg_histop[gg_histops]
++								    = kx;
++								gg_histn[gg_histops]
++								    = 1u;
++								gg_histops++;
++							} else {
++								gg_histof++;
++							}
++						}
++						if (gg_flatnop_opt >= 0 &&
++						    kx == (uint32_t)
++						    gg_flatnop_opt) {
++							gg_flatmk[x] = 2u;
++							gg_flatnopv[x] =
++							    gg_pkt7(CP_NOP, px);
++							for (qx = 1u; qx < lx;
++							    qx++) {
++								gg_flatmk[x + qx]
++								    = 1u;
++							}
++							gg_flat_hits++;
++						}
++					}
++					x += lx;
++				}
++			}
++			if (gg_hist_log < 6) {
++				uint32_t qx;
++
++				gg_hist_log++;
++				printf("GAUGUIN CP: 0262 hist at=%u n=%u"
++				    " pk=%u t4=%u nop=%u", so, tn, gg_hist_pk,
++				    gg_hist4, gg_flat_hits);
++				for (qx = 0u; qx < gg_histops; qx++) {
++					printf(" %#x:%u", gg_histop[qx],
++					    gg_histn[qx]);
++				}
++				if (gg_histof != 0u) {
++					printf(" more=%u", gg_histof);
++				}
++				printf("\n");
++			}
+ 			for (j = dwords; j-- > so + 4u; ) {
+ 				vm_offset_t a = gg_san_map(iova +
+ 				    4u * (uint64_t)(j + tn - 4u));
+@@ -5616,15 +5776,27 @@
+ 				    *(volatile uint32_t *)b;
+ 			}
+ 			for (j = 0u; j < tn; j++) {
+-				gg_san_wr2(iova, m, ismark, so + j,
+-				    *(volatile uint32_t *)(src + 4u * j));
++				uint32_t v = *(volatile uint32_t *)
++				    (src + 4u * j);
++
++				if (gg_flatmk[j] == 2u) {
++					v = gg_flatnopv[j];
++				} else if (gg_flatmk[j] == 1u) {
++					v = 0u;
++				}
++				gg_san_wr2(iova, m, ismark, so + j, v);
+ 			}
+ 			dwords = nl;
+ 			fixed++;
++			nflat++;
+ 			printf("GAUGUIN CP: 0261 flat ib=%#x at=%u"
+ 			    " tgt=%#x n=%u len=%u\n", (uint32_t)iova, so,
+ 			    tv, tn, dwords);
+ 		}
++		if (gg_flatone_opt >= 0) {
++			printf("GAUGUIN CP: 0262 pass ib=%#x flat=%u nop=%u"
++			    " len=%u\n", (uint32_t)iova, nflat, nnop, dwords);
++		}
+ 		gg_flatib_note((uint32_t)iova, dwords);
+ 		gg_splice_n = 0u;
+ 		(void)sweet_log_flush_now();
