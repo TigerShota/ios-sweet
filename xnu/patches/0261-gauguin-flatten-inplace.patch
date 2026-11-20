@@ -1,0 +1,211 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4748,6 +4748,56 @@
+ static int gg_copy_warn;
+ static int gg_gemib_opt = -1;	/* 0260: gauguingemib=1 - copy into a GEM page */
+ static uint32_t gg_gem_slot;	/* 0260: sequential slots, reset per depth-0 IB */
++/*
++ * 0261: gauguinflatib=1 splices each depth-0 indirect's sanitised target into
++ * the outer IB in place (v218 proved the outer stream retires; v222/v223 proved
++ * every placement of the packet itself wedges), and the ring packet's size
++ * dword is overridden from this table so the CP fetches the grown stream.
++ */
++#define GG_SPLICE_IB 8
++#define GG_FLAT_IBS 24
++static int gg_flatib_opt = -1;
++struct gg_splice_s {
++	uint32_t o, tgt, n;
++};
++static struct gg_splice_s gg_splice[GG_SPLICE_IB];
++static uint32_t gg_splice_n;
++static struct {
++	uint32_t va, len, gen;
++} gg_flatib_tab[GG_FLAT_IBS];
++static uint32_t gg_flatib_n, gg_flatib_gen;
++
++static void
++gg_flatib_note(uint32_t va, uint32_t len)
++{
++	uint32_t i;
++
++	for (i = 0u; i < GG_FLAT_IBS; i++) {
++		if (gg_flatib_tab[i].va == va &&
++		    gg_flatib_tab[i].gen == gg_flatib_gen) {
++			gg_flatib_tab[i].len = len;
++			return;
++		}
++	}
++	gg_flatib_tab[gg_flatib_n % GG_FLAT_IBS].va = va;
++	gg_flatib_tab[gg_flatib_n % GG_FLAT_IBS].len = len;
++	gg_flatib_tab[gg_flatib_n % GG_FLAT_IBS].gen = gg_flatib_gen;
++	gg_flatib_n++;
++}
++
++static uint32_t
++gg_flatib_len(uint32_t va)
++{
++	uint32_t i;
++
++	for (i = 0u; i < GG_FLAT_IBS; i++) {
++		if (gg_flatib_tab[i].va == va &&
++		    gg_flatib_tab[i].gen == gg_flatib_gen) {
++			return gg_flatib_tab[i].len;
++		}
++	}
++	return 0u;
++}
+ static int gg_fclr_opt = -1;	/* 0198: gauguinfclr=1: all-ones W1C */
+ static uint32_t gg_mark_off[GG_MARK_IBS];	/* 0187: copy offset, bytes */
+ static uint32_t gg_mark_len[GG_MARK_IBS];	/* 0187: copy length, dwords */
+@@ -5292,6 +5342,19 @@
+ 					gg_gemib_opt = PE_parse_boot_argn(
+ 					    "gauguingemib", &v, sizeof(v)) ? v : 0;
+ 				}
++				if (gg_flatib_opt < 0) {
++					int v = 0;
++
++					gg_flatib_opt = PE_parse_boot_argn(
++					    "gauguinflatib", &v, sizeof(v)) ?
++					    v : 0;
++					if (gg_flatib_opt > 0 && ismark) {
++						printf("GAUGUIN CP: 0261 flat"
++						    " off - mark copies"
++						    " only\n");
++						gg_flatib_opt = 0;
++					}
++				}
+ 				if ((gg_scratchib_opt > 0 ||
+ 				    gg_copyib_opt > 0) && gg_mini_ib == 0) {
+ 					volatile uint32_t *q = (volatile uint32_t *)
+@@ -5312,7 +5375,20 @@
+ 				 */
+ 				gg_ib_sanitize(((uint64_t)ah << 32) | al, nst,
+ 				    depth + 1);
+-				if (gg_nopib_opt > 0) {
++				if (gg_flatib_opt > 0 && depth == 0 &&
++				    nst >= 4u && nst <= 512u &&
++				    gg_splice_n < GG_SPLICE_IB) {
++					gg_splice[gg_splice_n].o = o;
++					gg_splice[gg_splice_n].tgt = al;
++					gg_splice[gg_splice_n].n = nst;
++					gg_splice_n++;
++					if (gg_san_log < 240) {
++						gg_san_log++;
++						printf("GAUGUIN CP: 0261 take"
++						    " at=%u tgt=%#x n=%u\n", o,
++						    al, nst);
++					}
++				} else if (gg_nopib_opt > 0) {
+ 					gg_san_wr2(iova, m, ismark, o,
+ 					    gg_pkt7(CP_NOP, plen));
+ 					fixed++;
+@@ -5496,6 +5572,62 @@
+ 			}
+ 		}
+ 		o += len;
++	}
++	/*
++	 * 0261: splice the collected targets in place, last first so the
++	 * earlier offsets stay valid. The bytes copied are the sanitised
++	 * ones (the recursion above has already edited them), and the new
++	 * length is registered so the ring packet submits it.
++	 */
++	if (depth == 0 && gg_splice_n > 0u && !ismark) {
++		uint32_t k;
++
++		for (k = gg_splice_n; k-- > 0u; ) {
++			uint32_t so = gg_splice[k].o;
++			uint32_t tn = gg_splice[k].n;
++			uint32_t tv = gg_splice[k].tgt;
++			uint32_t j, nl = dwords + tn - 4u;
++			uint64_t pa;
++			vm_offset_t src;
++
++			if (((uint32_t)iova & 0xfffu) + 4u * nl > GEM_PAGE) {
++				printf("GAUGUIN CP: 0261 skip page at=%u"
++				    " n=%u\n", so, tn);
++				continue;
++			}
++			pa = gg_gem_pa(tv);
++			src = (pa != 0u) ? gg_tmp_map(pa) : 0u;
++			if (src == 0u) {
++				printf("GAUGUIN CP: 0261 skip pa at=%u"
++				    " tgt=%#x\n", so, tv);
++				continue;
++			}
++			src += (vm_offset_t)(tv & 0xfffu);
++			for (j = dwords; j-- > so + 4u; ) {
++				vm_offset_t a = gg_san_map(iova +
++				    4u * (uint64_t)(j + tn - 4u));
++				vm_offset_t b = gg_san_map(iova +
++				    4u * (uint64_t)j);
++
++				if (a == 0u || b == 0u) {
++					break;
++				}
++				*(volatile uint32_t *)a =
++				    *(volatile uint32_t *)b;
++			}
++			for (j = 0u; j < tn; j++) {
++				gg_san_wr2(iova, m, ismark, so + j,
++				    *(volatile uint32_t *)(src + 4u * j));
++			}
++			dwords = nl;
++			fixed++;
++			printf("GAUGUIN CP: 0261 flat ib=%#x at=%u"
++			    " tgt=%#x n=%u len=%u\n", (uint32_t)iova, so,
++			    tv, tn, dwords);
++		}
++		gg_flatib_note((uint32_t)iova, dwords);
++		gg_splice_n = 0u;
++		(void)sweet_log_flush_now();
+ 	}
+ 	if (fixed != 0u) {
+ 		/*
+@@ -8168,6 +8300,7 @@
+ 		gg_san_opt = PE_parse_boot_argn("gauguinsan", &san,
+ 		    sizeof(san)) ? san : 1;
+ 	}
++	gg_flatib_gen++;	/* 0261: stale lengths must not leak into a submit */
+ 	for (i = 0; i < count; i++) {
+ 		gg_ib_sanitize(ai[i], wi[i], 0);
+ 	}
+@@ -8314,14 +8447,29 @@
+ 		 * v76 bug) makes the CP treat the size as address bits 32..63
+ 		 * and it stalls inside the IB fetch with RPTR already at WPTR.
+ 		 */
+-		ring[wp % ring_dw] = gg_pkt7(CP_INDIRECT_BUFFER, 3u);
+-		wp++;
+-		ring[wp % ring_dw] = (uint32_t)ai[i];
+-		wp++;
+-		ring[wp % ring_dw] = (uint32_t)(ai[i] >> 32);
+-		wp++;
+-		ring[wp % ring_dw] = wi[i];
+-		wp++;
++		{
++			uint32_t sz = wi[i];
++			uint32_t nl = gg_flatib_len((uint32_t)ai[i]);
++
++			/* 0261: an in-place flattened IB grew - submit that. */
++			if (nl != 0u && nl != sz) {
++				if (gg_san_log < 240) {
++					gg_san_log++;
++					printf("GAUGUIN CP: 0261 ring ib=%u"
++					    " %#x size %u -> %u\n", i,
++					    (uint32_t)ai[i], sz, nl);
++				}
++				sz = nl;
++			}
++			ring[wp % ring_dw] = gg_pkt7(CP_INDIRECT_BUFFER, 3u);
++			wp++;
++			ring[wp % ring_dw] = (uint32_t)ai[i];
++			wp++;
++			ring[wp % ring_dw] = (uint32_t)(ai[i] >> 32);
++			wp++;
++			ring[wp % ring_dw] = sz;
++			wp++;
++		}
+ 	}
+ 	ring[wp % ring_dw] = gg_pkt4(CP_SCRATCH_REG2_DW);
+ 	wp++;
