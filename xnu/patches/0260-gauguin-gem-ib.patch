@@ -1,0 +1,103 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4743,9 +4743,11 @@
+  */
+ static int gg_nopib_opt = -1;
+ static int gg_scratchib_opt = -1;
+-static int gg_copyib_opt;	/* 0259: gauguincopyib=1 - copies, not NOPs */
++static int gg_copyib_opt = -1;	/* 0259: gauguincopyib=1 - copies, not NOPs */
+ static int gg_mini_ib;
+ static int gg_copy_warn;
++static int gg_gemib_opt = -1;	/* 0260: gauguingemib=1 - copy into a GEM page */
++static uint32_t gg_gem_slot;	/* 0260: sequential slots, reset per depth-0 IB */
+ static int gg_fclr_opt = -1;	/* 0198: gauguinfclr=1: all-ones W1C */
+ static uint32_t gg_mark_off[GG_MARK_IBS];	/* 0187: copy offset, bytes */
+ static uint32_t gg_mark_len[GG_MARK_IBS];	/* 0187: copy length, dwords */
+@@ -5284,6 +5286,12 @@
+ 						gg_copyib_opt = 0;
+ 					}
+ 				}
++				if (gg_gemib_opt < 0) {
++					int v = 0;
++
++					gg_gemib_opt = PE_parse_boot_argn(
++					    "gauguingemib", &v, sizeof(v)) ? v : 0;
++				}
+ 				if ((gg_scratchib_opt > 0 ||
+ 				    gg_copyib_opt > 0) && gg_mini_ib == 0) {
+ 					volatile uint32_t *q = (volatile uint32_t *)
+@@ -5372,6 +5380,65 @@
+ 							    *(volatile uint32_t *)d);
+ 						}
+ 					}
++				} else if (gg_gemib_opt > 0 && depth == 0) {
++					/*
++					 * 0260: v220 showed the packet's payload is
++					 * serviced (IB2_BASE loaded our mini) yet the
++					 * ME never crosses the packet, and v218 showed
++					 * NOPping it retires everything. This variant
++					 * keeps the packet and copies the sanitised
++					 * target into the tail of the outer IB's own
++					 * page - a GEM page the CP provably fetches -
++					 * so "still stuck" cannot be blamed on the
++					 * scratch placement.
++					 */
++					uint32_t base_dw = 128u +
++					    gg_gem_slot * 200u;
++					uint32_t sva = ((uint32_t)iova &
++					    ~0xfffu) + base_dw * 4u;
++					uint64_t pa;
++					vm_offset_t src;
++					uint32_t j;
++
++					if (nst > 196u || gg_gem_slot >= 4u) {
++						if (gg_san_log < 240) {
++							gg_san_log++;
++							printf("GAUGUIN CP: 0260 gem"
++							    " skip at=%u slot=%u"
++							    " n=%u\n", o,
++							    gg_gem_slot, nst);
++						}
++					} else if ((pa = gg_gem_pa(al)) == 0u) {
++						if (gg_san_log < 240) {
++							gg_san_log++;
++							printf("GAUGUIN CP: 0260 gem"
++							    " pa? tgt=%#x\n", al);
++						}
++					} else if ((src = gg_tmp_map(pa)) != 0u) {
++						src += (vm_offset_t)(al & 0xfffu);
++						for (j = 0u; j < nst; j++) {
++							gg_san_wr2(iova, m,
++							    ismark, base_dw + j,
++							    *(volatile uint32_t *)
++							    (src + 4u * j));
++						}
++						gg_san_wr2(iova, m, ismark, o + 1u,
++						    sva);
++						gg_san_wr2(iova, m, ismark, o + 2u,
++						    0u);
++						gg_san_wr2(iova, m, ismark, o + 3u,
++						    nst);
++						gg_gem_slot++;
++						fixed++;
++						if (gg_san_log < 240) {
++							gg_san_log++;
++							printf("GAUGUIN CP: 0260 gem"
++							    " at=%u tgt=%#x n=%u"
++							    " -> %#x slot=%u\n",
++							    o, al, nst, sva,
++							    gg_gem_slot);
++						}
++					}
+ 				} else if (gg_pfd_opt > 0) {
+ 					gg_san_wr2(iova, m, ismark, o,
+ 					    gg_pkt7(0x37u, plen));
+@@ -5468,6 +5535,7 @@
+ 	if (depth == 0) {
+ 		gg_san_va = (uint32_t)iova;
+ 		gg_san_dw = dwords;
++		gg_gem_slot = 0u;	/* 0260: slots are per outer IB */
+ 		/* 0257: freeze the head of this buffer before it is reused. `m` is
+ 		 * the mapping this function already took - calling gg_ib_map()
+ 		 * again would leak one translation per submit. */
