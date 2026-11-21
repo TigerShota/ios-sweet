@@ -1,0 +1,100 @@
+From: Trae <trae@local>
+Subject: [PATCH] 0269: gauguin - shrink the blit rect inside
+ spliced streams (gauguinflatbr)
+
+v235 verdict (0268 walk + 0205 probes): all nine blit cycles
+show l2ok=1, pte&3=3, pa!=0 - including the death cycle cyc=6
+at=224 (dst 0x55d6c000).  The ROQ tail still matches memory
+ib2[224..227] exactly, so the ME dies on the same CP_BLIT(SCALE)
+as v233b/v234.  Missing GEM PTE is falsified; what remains is 2D
+engine state.  This knob is a length-preserving experiment that
+reuses the 0262 flatmk rewrite frame: gauguinflatbr=<val>
+replaces every GRAS_2D_DST_BR (0xb4c1) payload inside spliced
+streams.  Boot with gauguinflatbr=0x80008 to cut the rect from
+x64,y32 to x8,y8: if the dead cycle moves or vanishes the wedge
+is workload-dependent; if it stays at cycle 7 the next step is a
+length-growing CP_WAIT_FOR_IDLE splice.
+---
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 8cba012..95ef12d 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4861,6 +4861,11 @@ static uint32_t gg_flatib_n, gg_flatib_gen;
+  */
+ #define GG_FLAT_OPS 8
+ static int gg_flatnop_opt = -2;	/* -2 unparsed, -1 off, >=0 opcode */
++/* 0269: gauguinflatbr=<val> - rewrite every type-4 payload that
++ * writes GRAS_2D_DST_BR (0xb4c1) inside a spliced stream.  Zero
++ * growth, reuses the flatmk marks. */
++static int gg_flatbr_opt = -2;	/* -2 unparsed, -1 off, >=0 val */
++static uint32_t gg_flatbr_hits;
+ static int gg_flatone_opt = -2;	/* -2 unparsed, -1 all, >=0 ring offset */
+ static uint32_t gg_flat_hits;
+ static uint8_t gg_flatmk[512];		/* 0 keep, 1 zero, 2 CP_NOP header */
+@@ -5837,6 +5842,16 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				    gg_flatone_opt);
+ 			}
+ 		}
++		if (gg_flatbr_opt == -2) {
++			int v = 0;
++
++			gg_flatbr_opt = PE_parse_boot_argn("gauguinflatbr",
++			    &v, sizeof(v)) ? v : -1;
++			if (gg_flatbr_opt >= 0) {
++				printf("GAUGUIN CP: 0269 br val=%#x armed\n",
++				    (uint32_t)gg_flatbr_opt);
++			}
++		}
+ 		for (k = gg_splice_n; k-- > 0u; ) {
+ 			uint32_t so = gg_splice[k].o;
+ 			uint32_t tn = gg_splice[k].n;
+@@ -5900,6 +5915,7 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			gg_histops = 0u;
+ 			gg_histof = 0u;
+ 			gg_flat_hits = 0u;
++			gg_flatbr_hits = 0u;
+ 			for (j = 0u; j < tn; j++) {
+ 				gg_flatmk[j] = 0u;
+ 			}
+@@ -5915,7 +5931,18 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 					if (tx == 7u) {
+ 						px = hx & 0x3fffu;
+ 					} else if (tx == 4u) {
++						uint32_t r4 = (hx >> 8) &
++						    0x3ffffu;
++
+ 						px = hx & 0x7fu;
++						for (kx = 0u; kx < px; kx++) {
++							if (gg_flatbr_opt >= 0 &&
++							    r4 + kx == 0xb4c1u) {
++								gg_flatmk[x + 1u + kx] =
++								    3u;
++								gg_flatbr_hits++;
++							}
++						}
+ 					} else if (tx == 3u) {
+ 						px = hx & 0x3ffu;
+ 					} else {
+@@ -6003,6 +6030,8 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 					v = gg_flatnopv[j];
+ 				} else if (gg_flatmk[j] == 1u) {
+ 					v = 0u;
++				} else if (gg_flatmk[j] == 3u) {
++					v = (uint32_t)gg_flatbr_opt;
+ 				}
+ 				gg_san_wr2(iova, m, ismark, so + j, v);
+ 			}
+@@ -6012,6 +6041,12 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			printf("GAUGUIN CP: 0261 flat ib=%#x at=%u"
+ 			    " tgt=%#x n=%u len=%u\n", (uint32_t)iova, so,
+ 			    tv, tn, dwords);
++			if (gg_flatbr_hits != 0u) {
++				printf("GAUGUIN CP: 0269 br at=%u n=%u"
++				    " hits=%u val=%#x\n", so, tn,
++				    gg_flatbr_hits,
++				    (uint32_t)gg_flatbr_opt);
++			}
+ 		}
+ 		if (gg_flatone_opt >= 0 || nskip != 0u) {
+ 			printf("GAUGUIN CP: 0262 pass ib=%#x flat=%u nop=%u"
+
