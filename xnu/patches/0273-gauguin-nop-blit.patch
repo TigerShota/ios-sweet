@@ -1,0 +1,147 @@
+From: Trae <trae@local>
+Subject: [PATCH] 0273: gauguin - swap CP_BLIT hdrs for CP_NOP
+ in the spliced stream
+
+v239 verdict: per-blit CP_WAIT_FOR_IDLE changed nothing - the
+ME still wedged at the bit-identical sqe_pc 0x4:0x2883003f
+after crossing thousands of dwords of WFI->BLIT pairs.
+Per-blit sync is refuted.  0273 swaps every CP_BLIT(SCALE)
+hdr 0x702c0001 for a count-1 CP_NOP 0x70100001 that swallows
+the 0x3 payload - length unchanged, the type4 0xb4c0 config
+stays in place (0269 still rewrites its BR).  Dead point
+gone = executing the blit is required; still hung =
+stream-level state, the blit itself is irrelevant.
+---
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 9358e23..b524861 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4866,6 +4866,7 @@ static int gg_flatnop_opt = -2;	/* -2 unparsed, -1 off, >=0 opcode */
+  * growth, reuses the flatmk marks. */
+ static int gg_flatbr_opt = -2;	/* -2 unparsed, -1 off, >=0 val */
+ static int gg_wfi_opt = -2;	/* 0272: -2 unparsed, -1 off, >=0 on */
++static int gg_nop_opt = -2;	/* 0273: -2 unparsed, -1 off, >=0 on */
+ static uint32_t gg_flatbr_hits;
+ static int gg_flatone_opt = -2;	/* -2 unparsed, -1 all, >=0 ring offset */
+ static uint32_t gg_flat_hits;
+@@ -5863,6 +5864,16 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				    gg_wfi_opt);
+ 			}
+ 		}
++		if (gg_nop_opt == -2) {
++			int v = 0;
++
++			gg_nop_opt = PE_parse_boot_argn("gauguinnop",
++			    &v, sizeof(v)) ? v : -1;
++			if (gg_nop_opt >= 0) {
++				printf("GAUGUIN CP: 0273 nop val=%d armed\n",
++				    gg_nop_opt);
++			}
++		}
+ 		for (k = gg_splice_n; k-- > 0u; ) {
+ 			uint32_t so = gg_splice[k].o;
+ 			uint32_t tn = gg_splice[k].n;
+@@ -6071,10 +6082,11 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 		 * stream.  One decode pass over the finished shadow,
+ 		 * rewriting every GRAS_2D_DST_BR payload in place.
+ 		 */
+-		if ((gg_flatbr_opt >= 0 || gg_wfi_opt >= 0) &&
++		if ((gg_flatbr_opt >= 0 || gg_wfi_opt >= 0 ||
++		    gg_nop_opt >= 0) &&
+ 		    dwords != 0u) {
+ 			uint32_t x = 0u, hit = 0u, stp = dwords, ins = 0u,
+-			    wf = 0u;
++			    wf = 0u, nh = 0u;
+ 			uint32_t hx, tx, px, lx, kx, r4;
+ 			vm_offset_t a;
+ 
+@@ -6114,7 +6126,7 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 					 * pages so the ME prefetches new values. */
+ 					uint64_t tiova;
+ 					uint32_t nsz, y2, h2, t2, p2, r2, k2, ih,
+-					    ni, wf2;
++					    ni, wf2, nn;
+ 					vm_offset_t c, p1, p3, p4;
+ 
+ 					p1 = gg_san_map(iova +
+@@ -6133,6 +6145,7 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 						}
+ 						ih = 0u;
+ 						ni = 0u;
++						nn = 0u;
+ 						y2 = 0u;
+ 						while (y2 < nsz) {
+ 							c = gg_san_map(tiova +
+@@ -6145,6 +6158,17 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 							t2 = h2 >> 28;
+ 							if (t2 == 7u) {
+ 								p2 = h2 & 0x3fffu;
++								/* 0273: swap the CP_BLIT hdr for a
++								 * count-1 CP_NOP that swallows the
++								 * 0x3 payload - length unchanged,
++								 * blit never executes. */
++								if (gg_nop_opt >= 0 &&
++								    ((h2 >> 16) &
++								    0x7fu) == 0x2cu) {
++									*(volatile uint32_t *)c =
++									    0x70100001u;
++									nn++;
++								}
+ 								/* 0272: same per-blit WFI as the
+ 								 * outer scan, here in the nested
+ 								 * target the ME really executes. */
+@@ -6246,6 +6270,21 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 								}
+ 							}
+ 						}
++						if (nn != 0u) {
++							printf("GAUGUIN CP: 0273 nop nest"
++							    " iova=%#x n=%u nop=%u\n",
++							    (uint32_t)tiova, nsz, nn);
++							for (k2 = 0u; k2 < nsz;
++							    k2 += GEM_PAGE / 4u) {
++								c = gg_san_map(tiova +
++								    4u * (uint64_t)k2);
++								if (c != 0u) {
++									flush_dcache64(
++									    (addr64_t)c,
++									    GEM_PAGE, FALSE);
++								}
++							}
++						}
+ 						if (ni != 0u) {
+ 							printf("GAUGUIN CP: 0272 wfi nest"
+ 							    " iova=%#x n=%u ins=%u\n",
+@@ -6263,6 +6302,19 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 						}
+ 					}
+ 				}
++				/* 0273: v239 verdict - per-blit WFI changed
++				 * nothing (bit-identical sqe_pc), so test whether
++				 * executing the blit is required at all: swap the
++				 * hdr for a count-1 CP_NOP that swallows the 0x3
++				 * payload, length unchanged, config left in place
++				 * (0269 still rewrites its BR).  Dead point gone
++				 * = CP_BLIT execution is required; still hung =
++				 * stream-level state, blit irrelevant. */
++				if (gg_nop_opt >= 0 && tx == 7u &&
++				    ((hx >> 16) & 0x7fu) == 0x2cu) {
++					*(volatile uint32_t *)a = 0x70100001u;
++					nh++;
++				}
+ 				/* 0272: repro1 - the BR shrink was live in the
+ 				 * ME-consumed stream and the wedge stayed at the
+ 				 * bit-identical SQE PC, so the hang is per-blit
+@@ -6326,6 +6378,11 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				    " n=%u ins=%u\n", (uint32_t)iova,
+ 				    dwords, ins);
+ 			}
++			if (nh != 0u) {
++				printf("GAUGUIN CP: 0273 nop iova=%#x"
++				    " n=%u nop=%u\n", (uint32_t)iova,
++				    dwords, nh);
++			}
+ 		}
+ 		gg_flatib_note((uint32_t)iova, dwords);
+ 		gg_splice_n = 0u;
+
