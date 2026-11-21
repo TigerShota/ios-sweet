@@ -1,0 +1,91 @@
+From: Trae <trae@local>
+Subject: [PATCH] 0270: gauguin - rewrite GRAS_2D_DST_BR in the
+ finished spliced stream (outer pass)
+
+v236 verdict: 0269 armed once and scored 285 hits, but every hit
+sat on a depth-0 indirect target with n<=77 (one CP_BLIT each);
+n=305 appears nowhere in the log because the 0262/0269 decode is
+gated on depth==0 targets while the 10-cycle blit the ME hangs on
+is inline content of the spliced outer stream (len 3095).  The
+death is bit-identical to v235 (ROQ tail == memory ib2[224..227],
+ME HUNG, raw ib2 br=0x200040) - the shrunk rect never reached the
+executed stream, so v236 was a null experiment.  0270 adds one
+decode pass over the finished sanitized shadow right before
+gg_flatib_note() records it: type-7/4/3 advance identical to the
+0262 loop, every type-4 payload whose register sequence hits
+0xb4c1 is rewritten to gauguinflatbr in place, and one line per
+submit prints n/hits/stop so the next log shows whether the
+executed blit really carried the shrunk rect.
+---
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 95ef12d..b2e2621 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -6053,6 +6053,66 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 			    " skip=%u len=%u\n", (uint32_t)iova, nflat, nnop,
+ 			    nskip, dwords);
+ 		}
++		/*
++		 * 0270: the 0269 decode only covered depth-0 indirect
++		 * targets (v236: 285 hits, all n<=77); the 10-cycle blit
++		 * the ME hangs on is inline content of the final spliced
++		 * stream.  One decode pass over the finished shadow,
++		 * rewriting every GRAS_2D_DST_BR payload in place.
++		 */
++		if (gg_flatbr_opt >= 0 && dwords != 0u) {
++			uint32_t x = 0u, hit = 0u, stp = dwords;
++			uint32_t hx, tx, px, lx, kx, r4;
++			vm_offset_t a;
++
++			while (x < dwords) {
++				a = gg_san_map(iova + 4u * (uint64_t)x);
++				if (a == 0u) {
++					stp = x;
++					break;
++				}
++				hx = *(volatile uint32_t *)a;
++				tx = hx >> 28;
++				if (tx == 7u) {
++					px = hx & 0x3fffu;
++				} else if (tx == 4u) {
++					px = hx & 0x7fu;
++				} else if (tx == 3u) {
++					px = hx & 0x3ffu;
++				} else {
++					stp = x;
++					break;
++				}
++				lx = 1u + px;
++				if (x + lx > dwords) {
++					stp = x;
++					break;
++				}
++				if (tx == 4u) {
++					r4 = (hx >> 8) & 0x3ffffu;
++					for (kx = 0u; kx < px; kx++) {
++						vm_offset_t b;
++
++						if (r4 + kx != 0xb4c1u) {
++							continue;
++						}
++						b = gg_san_map(iova +
++						    4u * (uint64_t)(x + 1u +
++						    kx));
++						if (b == 0u) {
++							continue;
++						}
++						*(volatile uint32_t *)b =
++						    (uint32_t)gg_flatbr_opt;
++						hit++;
++					}
++				}
++				x += lx;
++			}
++			printf("GAUGUIN CP: 0270 br outer iova=%#x n=%u"
++			    " hits=%u stop=%u\n", (uint32_t)iova, dwords,
++			    hit, stp);
++		}
+ 		gg_flatib_note((uint32_t)iova, dwords);
+ 		gg_splice_n = 0u;
+ 		(void)sweet_log_flush_now();
+
