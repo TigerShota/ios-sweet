@@ -1,0 +1,236 @@
+From: Trae <trae@local>
+Subject: [PATCH] 0272: gauguin - splice CP_WAIT_FOR_IDLE before
+ every CP_BLIT in the spliced stream
+
+v238 repro1 verdict: the 0269 BR shrink (0x80008) was confirmed
+inside the ME-consumed stream (flat offset 232, payload
+[0,0x80008,0,0,0]) and the ME still wedged at the bit-identical
+SQE microcode PC 0x4:0x2883003f (same as v237), ccu/ncmode/crash/
+smmu_stalled/gx_reset all identical.  Fill-area dependence is
+refuted; per-blit 2D engine state / missing synchronization is
+the standing hypothesis.  0272 makes the depth-0 post-splice scan
+length-growing: one CP_WAIT_FOR_IDLE dword is spliced in front of
+every type7 op 0x2c CP_BLIT (outer + 0271 nested path), the
+stream and the nested-target size dword grow accordingly, and
+touched pages are cache-cleaned.  Boot arg gauguinwfi=1.
+Verdict: wedge persists at the same sqe_pc -> engine state deeper
+than sync; dead point moves/vanishes -> per-blit sync missing.
+---
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 51a067b..9358e23 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -4865,6 +4865,7 @@ static int gg_flatnop_opt = -2;	/* -2 unparsed, -1 off, >=0 opcode */
+  * writes GRAS_2D_DST_BR (0xb4c1) inside a spliced stream.  Zero
+  * growth, reuses the flatmk marks. */
+ static int gg_flatbr_opt = -2;	/* -2 unparsed, -1 off, >=0 val */
++static int gg_wfi_opt = -2;	/* 0272: -2 unparsed, -1 off, >=0 on */
+ static uint32_t gg_flatbr_hits;
+ static int gg_flatone_opt = -2;	/* -2 unparsed, -1 all, >=0 ring offset */
+ static uint32_t gg_flat_hits;
+@@ -5852,6 +5853,16 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 				    (uint32_t)gg_flatbr_opt);
+ 			}
+ 		}
++		if (gg_wfi_opt == -2) {
++			int v = 0;
++
++			gg_wfi_opt = PE_parse_boot_argn("gauguinwfi",
++			    &v, sizeof(v)) ? v : -1;
++			if (gg_wfi_opt >= 0) {
++				printf("GAUGUIN CP: 0272 wfi val=%d armed\n",
++				    gg_wfi_opt);
++			}
++		}
+ 		for (k = gg_splice_n; k-- > 0u; ) {
+ 			uint32_t so = gg_splice[k].o;
+ 			uint32_t tn = gg_splice[k].n;
+@@ -6060,8 +6071,10 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 		 * stream.  One decode pass over the finished shadow,
+ 		 * rewriting every GRAS_2D_DST_BR payload in place.
+ 		 */
+-		if (gg_flatbr_opt >= 0 && dwords != 0u) {
+-			uint32_t x = 0u, hit = 0u, stp = dwords;
++		if ((gg_flatbr_opt >= 0 || gg_wfi_opt >= 0) &&
++		    dwords != 0u) {
++			uint32_t x = 0u, hit = 0u, stp = dwords, ins = 0u,
++			    wf = 0u;
+ 			uint32_t hx, tx, px, lx, kx, r4;
+ 			vm_offset_t a;
+ 
+@@ -6071,6 +6084,7 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 					stp = x;
+ 					break;
+ 				}
++				wf = 0u;
+ 				hx = *(volatile uint32_t *)a;
+ 				tx = hx >> 28;
+ 				if (tx == 7u) {
+@@ -6099,7 +6113,8 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 					 * payloads in place, and clean the target
+ 					 * pages so the ME prefetches new values. */
+ 					uint64_t tiova;
+-					uint32_t nsz, y2, h2, t2, p2, r2, k2, ih;
++					uint32_t nsz, y2, h2, t2, p2, r2, k2, ih,
++					    ni, wf2;
+ 					vm_offset_t c, p1, p3, p4;
+ 
+ 					p1 = gg_san_map(iova +
+@@ -6117,6 +6132,7 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 							nsz = 4096u;
+ 						}
+ 						ih = 0u;
++						ni = 0u;
+ 						y2 = 0u;
+ 						while (y2 < nsz) {
+ 							c = gg_san_map(tiova +
+@@ -6124,10 +6140,60 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 							if (c == 0u) {
+ 								break;
+ 							}
++							wf2 = 0u;
+ 							h2 = *(volatile uint32_t *)c;
+ 							t2 = h2 >> 28;
+ 							if (t2 == 7u) {
+ 								p2 = h2 & 0x3fffu;
++								/* 0272: same per-blit WFI as the
++								 * outer scan, here in the nested
++								 * target the ME really executes. */
++								if (gg_wfi_opt >= 0 &&
++								    ((h2 >> 16) &
++								    0x7fu) == 0x2cu &&
++								    gg_san_map(tiova +
++								    4u * (uint64_t)
++								    nsz) != 0u) {
++									uint32_t w;
++
++									for (w = nsz;
++									    w-- > y2; ) {
++										vm_offset_t s,
++										    t;
++
++										s = gg_san_map(
++										    tiova +
++										    4u *
++										    (uint64_t)w);
++										t = gg_san_map(
++										    tiova +
++										    4u *
++										    (uint64_t)
++										    (w + 1u));
++										if (s == 0u ||
++										    t == 0u) {
++											break;
++										}
++										*(volatile
++										    uint32_t *)t =
++										    *(volatile
++										    uint32_t *)
++										    s;
++									}
++									*(volatile uint32_t *)c =
++									    gg_pkt7(
++									    CP_WAIT_FOR_IDLE,
++									    0u);
++									nsz++;
++									ni++;
++									wf2 = 1u;
++								}
++								/* advance inside the branch: the old
++								 * t2==7u path never moved y2 (0271
++								 * latent infinite loop on type7
++								 * targets - never triggered before
++								 * 0272 exercised this path) */
++								y2 += 1u + p2 + wf2;
+ 							} else if (t2 == 4u) {
+ 								r2 = (h2 >> 8) &
+ 								    0x3ffffu;
+@@ -6160,6 +6226,11 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 								break;
+ 							}
+ 						}
++						if (ni != 0u) {
++							/* the ME reads the nested target
++							 * length from this size dword */
++							*(volatile uint32_t *)p4 = nsz;
++						}
+ 						if (ih != 0u) {
+ 							printf("GAUGUIN CP: 0271 br nest"
+ 							    " iova=%#x n=%u hits=%u\n",
+@@ -6175,8 +6246,57 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 								}
+ 							}
+ 						}
++						if (ni != 0u) {
++							printf("GAUGUIN CP: 0272 wfi nest"
++							    " iova=%#x n=%u ins=%u\n",
++							    (uint32_t)tiova, nsz, ni);
++							for (k2 = 0u; k2 < nsz;
++							    k2 += GEM_PAGE / 4u) {
++								c = gg_san_map(tiova +
++								    4u * (uint64_t)k2);
++								if (c != 0u) {
++									flush_dcache64(
++									    (addr64_t)c,
++									    GEM_PAGE, FALSE);
++								}
++							}
++						}
+ 					}
+ 				}
++				/* 0272: repro1 - the BR shrink was live in the
++				 * ME-consumed stream and the wedge stayed at the
++				 * bit-identical SQE PC, so the hang is per-blit
++				 * 2D engine state, not fill area.  Length-growing
++				 * splice: one CP_WAIT_FOR_IDLE before every
++				 * CP_BLIT(SCALE); the ring entry picks the final
++				 * length up from gg_ibw_note(). */
++				if (gg_wfi_opt >= 0 && tx == 7u &&
++				    ((hx >> 16) & 0x7fu) == 0x2cu &&
++				    gg_san_map(iova + 4u *
++				    (uint64_t)dwords) != 0u) {
++					uint32_t j;
++
++					for (j = dwords; j-- > x; ) {
++						vm_offset_t s, t;
++
++						s = gg_san_map(iova +
++						    4u * (uint64_t)j);
++						t = gg_san_map(iova +
++						    4u * (uint64_t)(j + 1u));
++						if (s == 0u || t == 0u) {
++							break;
++						}
++						*(volatile uint32_t *)t =
++						    *(volatile uint32_t *)s;
++					}
++					*(volatile uint32_t *)a = gg_pkt7(
++					    CP_WAIT_FOR_IDLE, 0u);
++					dwords++;
++					ins++;
++					wf = 1u;
++					printf("GAUGUIN CP: 0272 wfi at=%u"
++					    " len=%u\n", x, dwords);
++				}
+ 				if (tx == 4u) {
+ 					r4 = (hx >> 8) & 0x3ffffu;
+ 					for (kx = 0u; kx < px; kx++) {
+@@ -6196,11 +6316,16 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 						hit++;
+ 					}
+ 				}
+-				x += lx;
++				x += lx + wf;
+ 			}
+ 			printf("GAUGUIN CP: 0270 br outer iova=%#x n=%u"
+ 			    " hits=%u stop=%u\n", (uint32_t)iova, dwords,
+ 			    hit, stp);
++			if (ins != 0u) {
++				printf("GAUGUIN CP: 0272 wfi iova=%#x"
++				    " n=%u ins=%u\n", (uint32_t)iova,
++				    dwords, ins);
++			}
+ 		}
+ 		gg_flatib_note((uint32_t)iova, dwords);
+ 		gg_splice_n = 0u;
+
