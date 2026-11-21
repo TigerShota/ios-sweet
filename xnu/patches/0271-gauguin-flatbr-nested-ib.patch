@@ -1,0 +1,124 @@
+From: Trae <trae@local>
+Subject: [PATCH] 0271: gauguin - rewrite the BR inside nested
+ indirect buffers (0271 br nest)
+
+v237 verdict: the 0270 flat scan walked the spliced stream
+0x55556000 (n=3095) clean to the end and found one accidental
+0xb4c1 payload (hits=1, stop=3095), while the ME still died at
+ib2+224 CP_BLIT(SCALE) with the ROQ tail bit-identical to
+v235/v236.  The hung dump names the real target:
+CP_IB2 = 0x55546000 / 305 dwords, and the ib2 dump is the
+9-cycle blit stream (type4 reg 0xb4c0 count 5, BR payload
+0x200040).  The spliced ib1 reaches it through a second-level
+CP_INDIRECT_BUFFER inside the 58-dword target flattened at
+offset 32; 0261 leaves it nested (depth gate) and 0270 skips
+pointers, so no experiment has ever touched the stream the ME
+dies in.  0271 extends the outer scan: a type7 op 0x3f payload
+(lo, hi, size) is read via gg_san_map and the target stream is
+scanned and rewritten one level deep, then its pages are
+cache-cleaned.  gauguinflatbr=0x80008 now reaches the real
+blit rect (x64,y32 -> x8,y8): dead cycle moves/vanishes =
+workload dependent; still at ib2+224 = per-blit 2D engine
+state (next: length-growing CP_WAIT_FOR_IDLE splice).
+---
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index b2e2621..51a067b 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -6088,6 +6088,95 @@ gg_ib_sanitize(uint64_t iova, uint32_t dwords, int depth)
+ 					stp = x;
+ 					break;
+ 				}
++				if (tx == 7u && ((hx >> 16) & 0x7fu) == 0x3fu &&
++				    px == 3u) {
++					/* 0271: v237 verdict - the ME hangs inside a
++					 * second-level IB (CP_IB2 0x55546000/305, ROQ
++					 * tail = ib2[224..227]) that 0261 leaves
++					 * nested and the 0270 flat scan skips as a
++					 * pointer.  Follow the CP_INDIRECT_BUFFER
++					 * target one level deep, rewrite its 0xb4c1
++					 * payloads in place, and clean the target
++					 * pages so the ME prefetches new values. */
++					uint64_t tiova;
++					uint32_t nsz, y2, h2, t2, p2, r2, k2, ih;
++					vm_offset_t c, p1, p3, p4;
++
++					p1 = gg_san_map(iova +
++					    4u * (uint64_t)(x + 1u));
++					p3 = gg_san_map(iova +
++					    4u * (uint64_t)(x + 2u));
++					p4 = gg_san_map(iova +
++					    4u * (uint64_t)(x + 3u));
++					if (p1 != 0u && p3 != 0u && p4 != 0u) {
++						tiova = ((uint64_t)
++						    *(volatile uint32_t *)p3 <<
++						    32) | *(volatile uint32_t *)p1;
++						nsz = *(volatile uint32_t *)p4;
++						if (nsz > 4096u) {
++							nsz = 4096u;
++						}
++						ih = 0u;
++						y2 = 0u;
++						while (y2 < nsz) {
++							c = gg_san_map(tiova +
++							    4u * (uint64_t)y2);
++							if (c == 0u) {
++								break;
++							}
++							h2 = *(volatile uint32_t *)c;
++							t2 = h2 >> 28;
++							if (t2 == 7u) {
++								p2 = h2 & 0x3fffu;
++							} else if (t2 == 4u) {
++								r2 = (h2 >> 8) &
++								    0x3ffffu;
++								p2 = h2 & 0x7fu;
++								for (k2 = 0u; k2 < p2;
++								    k2++) {
++									vm_offset_t d;
++
++									if (r2 + k2 !=
++									    0xb4c1u) {
++										continue;
++									}
++									d = gg_san_map(tiova +
++									    4u * (uint64_t)
++									    (y2 + 1u + k2));
++									if (d == 0u) {
++										continue;
++									}
++									*(volatile uint32_t *)d =
++									    (uint32_t)
++									    gg_flatbr_opt;
++									hit++;
++									ih++;
++								}
++							y2 += 1u + p2;
++							} else if (t2 == 3u) {
++								p2 = h2 & 0x3ffu;
++								y2 += 1u + p2;
++							} else {
++								break;
++							}
++						}
++						if (ih != 0u) {
++							printf("GAUGUIN CP: 0271 br nest"
++							    " iova=%#x n=%u hits=%u\n",
++							    (uint32_t)tiova, nsz, ih);
++							for (k2 = 0u; k2 < nsz;
++							    k2 += GEM_PAGE / 4u) {
++								c = gg_san_map(tiova +
++								    4u * (uint64_t)k2);
++								if (c != 0u) {
++									flush_dcache64(
++									    (addr64_t)c,
++									    GEM_PAGE, FALSE);
++								}
++							}
++						}
++					}
++				}
+ 				if (tx == 4u) {
+ 					r4 = (hx >> 8) & 0x3ffffu;
+ 					for (kx = 0u; kx < px; kx++) {
+
