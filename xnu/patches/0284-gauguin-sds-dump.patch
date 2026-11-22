@@ -1,0 +1,69 @@
+From: SweetAdreno bring-up
+Subject: [PATCH] gauguin: 0284 SDS object dump, skip preamble IBs
+
+v244 verdict (144-dword ROQ dump decoded with the gg_ib_walk
+rules - ROQ words are the raw PM4 stream, odd parity, no marker
+bits): ROQ rptr=0x53 points at the submit-tail fence writes
+(type4 reg=0x885 val=0x6000003 + op 0x46 cnt=4 writing fence
+0x6000003 to 0x40020140), all un-executed; dwords 63..82 are
+five CP_INDIRECT_BUFFER_PFE packets, the fifth being the parked
+IB 0x5046a000/751. With IB1 rem=0 (main IB finished) the ME
+wedged in the CP_SET_DRAW_STATE engine: CSQ 0x92e/0x930 read
+SDS base=0x50419900 rem=0x18 - 24 dwords of a draw state object
+still to run - at the same SQE PC (0x4:0x2883003f) as the v133
+wedge after NOPing every suspect packet. The v244 main-IB dump
+truncated at raw offset 112 because the four preamble IB dumps
+(bit identical every boot) ate the 4 MiB ring. 0284 skips
+non-parked IB dumps and adds a dump+walk of the SDS object.
+
+---
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -9934,8 +9934,17 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			printf("\n");
+ 		}
+ 		for (k = 0; k < count; k++) {
+-			gg_ib_dwords("hung", addresses[k], words[k],
+-			    (uint32_t)addresses[k] == stuck ? orig : 0u);
++			/*
++			 * 0284: the four preamble IBs repeat bit-for-bit
++			 * every boot (v243/v244), and their dumps ate the
++			 * 4 MiB ring budget before the parked IB's walk - the
++			 * v244 main-IB dump truncated at raw offset 112. Dump
++			 * only the IB the CP is parked in.
++			 */
++			if ((uint32_t)addresses[k] != stuck) {
++				continue;
++			}
++			gg_ib_dwords("hung", addresses[k], words[k], orig);
+ 			if (ai != addresses) {
+ 				gg_ib_dwords("hungcopy", ai[k], wi[k],
+ 				    (uint32_t)ai[k] == stuck ? pos : 0u);
+@@ -9943,6 +9952,26 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			gg_ib_all("hung", addresses[k], words[k]);
+ 			gg_ib_walk("hung", addresses[k], words[k]);
+ 		}
++		/*
++		 * 0284: v244 named the wedge engine - CSQ 0x92e/0x930 read
++		 * SDS base=0x50419900 rem=0x18 while IB1 rem=0 and the ROQ
++		 * tail (rptr=83) held only the un-executed fence writes, so
++		 * the ME parks inside a CP_SET_DRAW_STATE object with 24
++		 * dwords still to run (sqe_pc=0x4:0x2883003f, same PC as the
++		 * v133 wedge after NOPing every suspect packet). Dump the
++		 * object and its walk so the tail names the exact packet.
++		 */
++		{
++			uint32_t sdsb = gg_rd(gg.gpu, GR(0x92eu));
++			uint32_t sdsr = gg_rd(gg.gpu, GR(0x930u));
++
++			printf("GAUGUIN CP: 0284 sds base=%#x rem=%u\n",
++			    sdsb, sdsr);
++			if (sdsb != 0u && sdsr != 0u) {
++				gg_ib_all("sds", sdsb, sdsr + 32u);
++				gg_ib_walk("sds", sdsb, sdsr + 32u);
++			}
++		}
+ 		if (ib2 != 0u && rem2 != 0u) {
+ 			gg_ib_all("ib2", ib2, rem2);
+ 			gg_ib_walk("ib2", ib2, rem2);
