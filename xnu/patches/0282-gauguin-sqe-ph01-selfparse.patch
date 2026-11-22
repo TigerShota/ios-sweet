@@ -1,0 +1,45 @@
+From: SweetAdreno bring-up
+Subject: [PATCH] gauguin: SQE dbg ph0/ph1 self-parse boot-arg
+
+v242 verdict prep: the 0281 ph0/ph1 trigger at the submit entry
+tested gg_imem_opt before the gg_ib_sanitize armed point parsed
+gauguinimem, so both entry dumps never fired (v242 log line 8480
+arms after submit #1 and inside submit #2). ph2 (the v241 point)
+fired normally and its tag array matched v241 bit-for-bit (122
+filled / 27 space-1 / 6 inv), proving the ROM restore image is
+deterministic across boots. 0282 makes the trigger block parse
+the boot-arg itself (static local, -2 sentinel) instead of
+depending on the armed ordering.
+
+---
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -8753,10 +8753,24 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	 * after submit 0 completed. ph2 (the v241 point) samples after the
+ 	 * ME consumed ring work. Restore image present at ph0 -> boot-time
+ 	 * load; appears only by ph2 -> ME-execution driven.
++	 * 0282: parse the boot-arg here instead of relying on the
++	 * gg_ib_sanitize armed point - v242 showed that point arms only
++	 * after the first submit entry (and inside submit #2), so the
++	 * 0281 check on gg_imem_opt never fired at ph0/ph1.
+ 	 */
+-	if (gg_imem_opt >= 0 && gg_submit_seen < 2) {
+-		gg_sqe_dump(gg_submit_seen);
+-		gg_submit_seen++;
++	{
++		static int ph_en = -2;
++		int v = -1;
++
++		if (ph_en == -2) {
++			(void)PE_parse_boot_argn("gauguinimem", &v,
++			    sizeof(v));
++			ph_en = v;
++		}
++		if (ph_en >= 0 && gg_submit_seen < 2) {
++			gg_sqe_dump(gg_submit_seen);
++			gg_submit_seen++;
++		}
+ 	}
+ 	need = 4u * count + 13u;	/* + 2 invalidates, + scratch, + RB_CCU_CNTL */
+ 	if (gg_wai_opt < 0) {
