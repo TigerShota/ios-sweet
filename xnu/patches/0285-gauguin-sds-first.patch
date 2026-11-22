@@ -1,0 +1,64 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 8ba1f65..65ac10d 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -9933,6 +9933,32 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			}
+ 			printf("\n");
+ 		}
++		/*
++		 * 0285: v245 verdict - the wedge signature re-confirmed
++		 * across independent boots: IB1 rem=0 with SDS rem=0x18 on
++		 * v244 (fence 0x6000115, ib 0x5046a000/751) and on v245
++		 * (fence 0x6000003, third submit, ib 0x50476000/241) - the
++		 * ME parks inside a CP_SET_DRAW_STATE object with exactly
++		 * 24 dwords left. The 0284 SDS dump sat after walk("hung"),
++		 * whose output consumed the remaining 4 MiB ring budget
++		 * mid-walk (truncated at raw offset 35, half line), so the
++		 * SDS dump output was lost even when executed - same ring
++		 * exhaustion mechanism as the v244 preamble dumps. Move the
++		 * SDS dump before the hung dumps: the object is rem+32
++		 * (~56) dwords, its all+walk output (~3 KiB) fits the head
++		 * room with certainty, so the tail names the exact packet.
++		 */
++		{
++			uint32_t sdsb = gg_rd(gg.gpu, GR(0x92eu));
++			uint32_t sdsr = gg_rd(gg.gpu, GR(0x930u));
++
++			printf("GAUGUIN CP: 0285 sds base=%#x rem=%u\n",
++			    sdsb, sdsr);
++			if (sdsb != 0u && sdsr != 0u) {
++				gg_ib_all("sds", sdsb, sdsr + 32u);
++				gg_ib_walk("sds", sdsb, sdsr + 32u);
++			}
++		}
+ 		for (k = 0; k < count; k++) {
+ 			/*
+ 			 * 0284: the four preamble IBs repeat bit-for-bit
+@@ -9952,26 +9978,6 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 			gg_ib_all("hung", addresses[k], words[k]);
+ 			gg_ib_walk("hung", addresses[k], words[k]);
+ 		}
+-		/*
+-		 * 0284: v244 named the wedge engine - CSQ 0x92e/0x930 read
+-		 * SDS base=0x50419900 rem=0x18 while IB1 rem=0 and the ROQ
+-		 * tail (rptr=83) held only the un-executed fence writes, so
+-		 * the ME parks inside a CP_SET_DRAW_STATE object with 24
+-		 * dwords still to run (sqe_pc=0x4:0x2883003f, same PC as the
+-		 * v133 wedge after NOPing every suspect packet). Dump the
+-		 * object and its walk so the tail names the exact packet.
+-		 */
+-		{
+-			uint32_t sdsb = gg_rd(gg.gpu, GR(0x92eu));
+-			uint32_t sdsr = gg_rd(gg.gpu, GR(0x930u));
+-
+-			printf("GAUGUIN CP: 0284 sds base=%#x rem=%u\n",
+-			    sdsb, sdsr);
+-			if (sdsb != 0u && sdsr != 0u) {
+-				gg_ib_all("sds", sdsb, sdsr + 32u);
+-				gg_ib_walk("sds", sdsb, sdsr + 32u);
+-			}
+-		}
+ 		if (ib2 != 0u && rem2 != 0u) {
+ 			gg_ib_all("ib2", ib2, rem2);
+ 			gg_ib_walk("ib2", ib2, rem2);
