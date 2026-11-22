@@ -1,0 +1,97 @@
+From: SweetAdreno bring-up
+Subject: [PATCH] gauguin: 0283 ROQ dump at hang, retire ph0/ph1
+
+v243 verdict (preregs met): boot-time load. ph0 fired at the
+first submit entry with space-1=43 lines already resident in the
+SQE icache - the ME fetched the ROM restore firmware during CP
+init, before any ring work - so restore is unrelated to the
+hang. All four hang snapshots are bit-identical
+(rbbm=800005 status1=8100032e roq=5c0053 avail=70003):
+CP_ROQ_RB_STAT rptr=0x53 wptr=0x5c, ROQ_AVAIL_RB REM=7, i.e.
+~9 fetched dwords sit unexecuted in the RB ROQ while the CP AHB
+master is busy. 0283 reads them out at the hang point through
+the CP_ROQ_DBG_ADDR/DATA port (0x90c/0x90d, same family as the
+proven 0x908/0x910 SQE dbg port) and retires ph0/ph1 (verdict
+recorded) to make ring budget; walk dump limit 2->8 covers the
+full 5-IB chain.
+
+---
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -3416,8 +3416,7 @@ static int gg_hung_log;
+ static int gg_ib_dump_log;
+ static int gg_wrap_log;
+ static int gg_imem_opt = -2;	/* 0281: -2 unparsed, -1 off, >=0 on */
+-static int gg_imem_done;	/* 0281: ph2 (v241 point) fired */
+-static int gg_submit_seen;	/* 0281: ph0/ph1 fire at submit 0/1 entry */
++static int gg_imem_done;	/* 0283: ph2 (v241 point) fired */
+ 
+ /*
+  * 0281: three-point SQE icache sampling to time the on-chip ROM context
+@@ -8748,30 +8747,11 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		return 0;
+ 	}
+ 	/*
+-	 * 0281: ph0/ph1 at submit entry. ph0 = submit 0, before any ring
+-	 * write (ME has not seen any work this boot); ph1 = submit 1,
+-	 * after submit 0 completed. ph2 (the v241 point) samples after the
+-	 * ME consumed ring work. Restore image present at ph0 -> boot-time
+-	 * load; appears only by ph2 -> ME-execution driven.
+-	 * 0282: parse the boot-arg here instead of relying on the
+-	 * gg_ib_sanitize armed point - v242 showed that point arms only
+-	 * after the first submit entry (and inside submit #2), so the
+-	 * 0281 check on gg_imem_opt never fired at ph0/ph1.
++	 * 0283: ph0/ph1 retired - v243 preregs met: boot-time load. ph0
++	 * fired at the first submit entry with 43 space-1 lines already
++	 * resident, so the ROM restore firmware is unrelated to the hang.
++	 * The live evidence now is the ROQ dump below.
+ 	 */
+-	{
+-		static int ph_en = -2;
+-		int v = -1;
+-
+-		if (ph_en == -2) {
+-			(void)PE_parse_boot_argn("gauguinimem", &v,
+-			    sizeof(v));
+-			ph_en = v;
+-		}
+-		if (ph_en >= 0 && gg_submit_seen < 2) {
+-			gg_sqe_dump(gg_submit_seen);
+-			gg_submit_seen++;
+-		}
+-	}
+ 	need = 4u * count + 13u;	/* + 2 invalidates, + scratch, + RB_CCU_CNTL */
+ 	if (gg_wai_opt < 0) {
+ 		int wai = 0;
+@@ -9772,8 +9752,29 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 		gg_imem_done = 1;
+ 		gg_sqe_dump(2);
+ 	}
++	/*
++	 * 0283: ROQ contents at hang. All four hang snapshots are
++	 * bit-identical with ROQ_RB_STAT rptr=0x53/wptr=0x5c and
++	 * ROQ_AVAIL_RB REM=7: fetched-but-unexecuted dwords sit in the RB
++	 * ROQ while the CP AHB master stays busy. CP_ROQ_DBG_ADDR/DATA
++	 * (0x90c/0x90d) is the same dbg-port family as the proven
++	 * 0x908/0x910 SQE port; kgsl reads hang ROQs the same way.
++	 */
++	{
++		uint32_t qi, qv;
++
++		for (qi = 0; qi < 144u; qi++) {
++			gg_wr(gg.gpu, GR(0x90cu), qi);
++			qv = gg_rd(gg.gpu, GR(0x90du));
++			printf("GAUGUIN CP: 0283 roq[%u]=%#x\n", qi, qv);
++			if ((qi & 63u) == 63u) {
++				(void)sweet_log_flush_now();
++			}
++		}
++		(void)sweet_log_flush_now();
++	}
+ 	gg_rbbm_busy();
+-	if (gg_ib_dump_log < 2) {
++	if (gg_ib_dump_log < 8) {
+ 		uint32_t stuck = gg_rd(gg.gpu, GR(CP_IB1_BASE_DW));
+ 		uint32_t rem = gg_rd(gg.gpu, GR(CP_IB1_REM_SIZE_DW));
+ 		uint32_t ib2 = gg_rd(gg.gpu, GR(CP_IB2_BASE_DW));
