@@ -1,0 +1,39 @@
+diff --git a/bsd/dev/gauguin_gpu.c b/bsd/dev/gauguin_gpu.c
+index 65ac10d..633b7f4 100644
+--- a/bsd/dev/gauguin_gpu.c
++++ b/bsd/dev/gauguin_gpu.c
+@@ -9638,6 +9638,34 @@ gauguin_cp_submit(const uint64_t * addresses, const uint32_t * words, uint32_t c
+ 	    gg_rd(gg.gpu, GR(0x934u)), gg_rd(gg.gpu, GR(0x947u)),
+ 	    gg_rd(gg.gpu, GR(0x94cu)), gg_rd(gg.gpu, GR(0x98du)),
+ 	    gg_rd(gg.gpu, GR(0x8c3u)), gg_rd(gg.gpu, GR(0x8c2u)));
++	/*
++	 * 0286: v246 decoded the parked SDS group - 12 fully legal type4
++	 * SP/PC writes (walk 56/56, no BAD), ring drained (rptr==wptr),
++	 * CP_IB1_REM=0, ROQ empty, CP_HW_FAULT=0x40000 + CP_INT bit2
++	 * latched. The ME is stuck INSIDE the SDS engine on legal data, so
++	 * dump the whole CP SQE/SDS register window once: FIFO fill, credit
++	 * and engine-internal counters of the parked draw-state engine.
++	 */
++	{
++		uint32_t w;
++
++		for (w = 0x900u; w <= 0x94fu; w += 8u) {
++			uint32_t q;
++
++			printf("GAUGUIN CP: 0286 win %x:", w);
++			for (q = w; q < w + 8u; q++)
++				printf(" %x=%#x", q, gg_rd(gg.gpu, GR(q)));
++			printf("\n");
++		}
++		for (w = 0x980u; w <= 0x98fu; w += 8u) {
++			uint32_t q;
++
++			printf("GAUGUIN CP: 0286 win %x:", w);
++			for (q = w; q < w + 8u; q++)
++				printf(" %x=%#x", q, gg_rd(gg.gpu, GR(q)));
++			printf("\n");
++		}
++	}
+ 	/*
+ 	 * 0210: and walk the draw-state objects the ME was executing. The copy
+ 	 * offset the last stamp names is the packet the ME died in, so everything
